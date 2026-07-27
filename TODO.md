@@ -2,11 +2,11 @@
 
 - [x] Inspect BLACK SIGNAL contracts and isolate reusable primitives.
 - [x] Write engine architecture, mathematical scope, and threat model before implementation.
-- [ ] Implement exact, versioned commit/reveal and Bayesian market primitives.
-- [ ] Implement reference configurations, protocol guardrails, verifier, and RGS example.
-- [ ] Add deterministic, exhaustive, adversarial, replay, serialization, concurrency, and load tests.
-- [ ] Produce reproducible benchmark evidence and CI.
-- [ ] Create, push, and verify the private `metaforismo/reveal-engine` repository.
+- [x] Implement exact, versioned commit/reveal and Bayesian market primitives.
+- [x] Implement reference configurations, protocol guardrails, verifier, and RGS example.
+- [x] Add deterministic, exhaustive, adversarial, replay, serialization, concurrency, and load tests.
+- [x] Produce reproducible benchmark evidence and CI.
+- [x] Create, push, and verify the private `metaforismo/reveal-engine` repository (hosted CI is billing-blocked; local suite passed).
 
 ## Non-negotiable boundaries
 
