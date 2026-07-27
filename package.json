@@ -1,0 +1,37 @@
+{
+  "name": "@axiom-games/reveal-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Proprietary progressive-reveal game technology for Axiom Games",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "reveal-verify": "./dist/cli/verify.js"
+  },
+  "scripts": {
+    "format:check": "prettier --check .",
+    "lint": "eslint src tests --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:stress": "tsx scripts/stress.ts",
+    "bench": "tsx scripts/benchmark.ts",
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run test:stress"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
+  }
+}

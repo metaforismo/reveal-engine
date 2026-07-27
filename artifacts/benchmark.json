@@ -1,0 +1,9 @@
+{
+  "schema": "reveal-engine-benchmark/v1",
+  "samples": 100,
+  "events": 12000,
+  "elapsedMs": 34.886875,
+  "eventsPerSecond": 343968.8994786721,
+  "thresholdMs": 5000,
+  "status": "pass"
+}
