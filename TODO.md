@@ -1,12 +1,15 @@
-# Delivery checklist
+# Reveal Engine 0.2 hardening checklist
 
-- [x] Inspect BLACK SIGNAL contracts and isolate reusable primitives.
-- [x] Write engine architecture, mathematical scope, and threat model before implementation.
-- [x] Implement exact, versioned commit/reveal and Bayesian market primitives.
-- [x] Implement reference configurations, protocol guardrails, verifier, and RGS example.
-- [x] Add deterministic, exhaustive, adversarial, replay, serialization, concurrency, and load tests.
-- [x] Produce reproducible benchmark evidence and CI.
-- [x] Create, push, and verify the private `metaforismo/reveal-engine` repository (hosted CI is billing-blocked; local suite passed).
+- [x] Record the pre-implementation gaps and risks in `docs/upgrade-gap-audit.md`.
+- [x] Freeze a versioned public API, adapter fingerprint, and typed failure taxonomy.
+- [x] Add strict wire codecs, legacy transcript migration, deterministic replay, and frozen fixtures.
+- [x] Bind commit/reveal to canonical fields, deterministic truth, adapter economics, and model version.
+- [x] Harden stale-frame, idempotency, race, settlement, snapshot, accounting, and chain-cap behavior.
+- [x] Prove generality with four-outcome, three-outcome, and two-outcome adapters plus conformance tooling.
+- [x] Add independent mathematical oracles, deterministic property seeds, adversarial tests, and real-path stress.
+- [x] Add export/package smoke checks, a Node compatibility matrix, coverage gates, security checks, and bounded load CI.
+- [x] Record final local evidence and prepare scoped implementation/evidence commits.
+- [ ] Hosted Actions execution (externally blocked by the account billing/spending limit; no runner steps execute).
 
 ## Non-negotiable boundaries
 

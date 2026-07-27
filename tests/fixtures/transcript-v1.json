@@ -1,0 +1,16 @@
+{
+  "schema": "reveal-engine/transcript-v1",
+  "adapterVersion": "1.0.0",
+  "context": {
+    "gameId": "binary-beacon-conformance-v1",
+    "roundId": "legacy-1",
+    "contractVersion": "reveal-engine/commit-v1"
+  },
+  "truth": 1,
+  "evidence": [
+    { "index": 0, "target": 1, "favour": "7", "other": "3", "label": "beacon-0" },
+    { "index": 1, "target": 1, "favour": "7", "other": "3", "label": "beacon-1" },
+    { "index": 2, "target": 1, "favour": "7", "other": "3", "label": "beacon-2" }
+  ],
+  "commitment": "ac0036d009e3b98bec1f422ce3fe838efd8db643ff2c4cea30056da0e1669f38"
+}

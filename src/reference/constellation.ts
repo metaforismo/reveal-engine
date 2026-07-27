@@ -1,7 +1,10 @@
 import { uniform } from '../core/fairness.js';
 import { rational } from '../core/rational.js';
 import type { EvidenceSchedule, GameDefinition } from '../core/contracts.js';
+import { ENGINE_API_VERSION } from '../core/contracts.js';
+import { defineGame } from '../core/adapter.js';
 const schedule: EvidenceSchedule = {
+  modelVersion: 'constellation-evidence/v1',
   eventCount: 7,
   derive(seed, context, truth) {
     return Object.freeze(
@@ -23,7 +26,9 @@ const schedule: EvidenceSchedule = {
   },
 };
 /** Materially different: three outcomes, non-uniform priors, seven alternating clues, no continuation. */
-export const constellationReference: GameDefinition = Object.freeze({
+export const constellationReference: GameDefinition = defineGame({
+  apiVersion: ENGINE_API_VERSION,
+  adapterVersion: '1.0.0',
   id: 'constellation-synthetic-v1',
   outcomes: ['nova', 'quasar', 'pulsar'],
   priorWeights: [5n, 3n, 2n],

@@ -1,7 +1,17 @@
-# Mathematical scope and assumptions
+# Mathematical scope, theorem, and payable bounds
 
-For outcomes `i`, positive prior weights `w_i`, and an evidence event targeting `t` with positive likelihood weights `(a,b)`, the update is `w'_t = a w_t` and `w'_i = b w_i` for `i != t`. Therefore `p_i = w_i / sum(w)` is exact. A first entry pays `r/p_i`, where `r` is the configured theoretical RTP; unshaded re-entry pays `1/p_i`. Fair liquidation is `p_i * contingent-payout` before any configured spread.
+For outcome `i`, positive prior weight `w_i`, and evidence targeting `t` with likelihood weights `(a,b)`, the engine applies `w'_t = a·w_t` and `w'_i = b·w_i` for `i ≠ t`, then divides all weights by their GCD. This preserves exact ratios and yields `p_i = w_i / Σw` with exact normalization.
 
-Under these assumptions—finite known model, evidence generated from those likelihoods, exact arithmetic, zero liquidation spread, no cap, no payable rounding, no continuation, and a self-financing predictable within-round strategy—the conditional value is a martingale and the first entry's expected theoretical value is exactly `r` times stake. This does **not** establish equality for rounded credits, max-win caps, spreads, arbitrary operator timing, or ride/parlay chains. Those are separate product economics and must be measured independently.
+The first entry multiplier is `r/p_i`; an unshaded re-entry multiplier is `1/p_i`; pre-spread liquidation value is `p_i·claim`. The rational claim is not floored at entry.
 
-The tests exhaustively enumerate short evidence schedules and adversarial strategies as regression guards; they are not a certification or a proof for an adopter's altered model.
+## Within-round invariance theorem
+
+For a finite declared likelihood model, truth sampled from declared priors, evidence sampled from that model, exact arithmetic, zero liquidation spread, no cap, no payable rounding, no continuation, self-financing re-entry, and a predictable strategy using only observed history, conditional claim value is a martingale. A first entry therefore has exact theoretical expectation `stake·r`; unshaded switches do not add another margin.
+
+The exhaustive oracle tests cover hold, sell-after-evidence, and adaptive sell/re-entry policies on every two-tick binary path. Independent raw-weight tests cross-multiply against the engine across all bundled adapters.
+
+## Payable boundary
+
+With floor rounding, `0 ≤ theoretical − credited < 1` before a cap. For entry payout quantization, the expected loss is strictly less than the selected outcome probability. Spread and cap are monotone non-increasing adjustments. The engine never describes payable credits as exact theoretical equality.
+
+Continuation/ride economics are outside the theorem. The current core validates continuation configuration but does not implement a production ride ledger. An adopter must model and test that state machine separately.

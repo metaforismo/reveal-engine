@@ -1,37 +1,83 @@
 {
   "name": "@axiom-games/reveal-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Proprietary progressive-reveal game technology for Axiom Games",
   "type": "module",
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./api": {
+      "types": "./dist/api/index.d.ts",
+      "default": "./dist/api/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "default": "./dist/protocol/index.js"
+    },
+    "./serialization": {
+      "types": "./dist/serialization/index.d.ts",
+      "default": "./dist/serialization/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance/index.d.ts",
+      "default": "./dist/conformance/index.js"
+    },
+    "./integration": {
+      "types": "./dist/integration/index.d.ts",
+      "default": "./dist/integration/index.js"
+    },
+    "./reference": {
+      "types": "./dist/reference/index.d.ts",
+      "default": "./dist/reference/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
-    "reveal-verify": "./dist/cli/verify.js"
+    "reveal-verify": "./dist/cli/verify.js",
+    "reveal-conformance": "./dist/cli/conformance.js"
   },
   "scripts": {
     "format:check": "prettier --check .",
-    "lint": "eslint src tests --max-warnings=0",
+    "lint": "eslint src tests scripts --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "test:stress": "tsx scripts/stress.ts",
-    "bench": "tsx scripts/benchmark.ts",
-    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run test:stress"
+    "test:coverage": "vitest run --coverage",
+    "test:security": "vitest run tests/security && npm audit --omit=dev --audit-level=high",
+    "conformance": "node --import tsx src/cli/conformance.ts",
+    "test:package": "npm run build && node scripts/package-smoke.mjs",
+    "test:stress": "node --import tsx scripts/stress.ts --output artifacts/runtime/stress.json",
+    "bench": "node --import tsx scripts/benchmark.ts --output artifacts/runtime/benchmark.json",
+    "artifacts:update": "node --import tsx scripts/stress.ts --output artifacts/stress-v2.json && node --import tsx scripts/benchmark.ts --output artifacts/benchmark-v2.json",
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run conformance && npm run build && npm run test:package && npm run test:stress && npm run bench"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^9.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.8.0",
     "prettier": "^3.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.10"
   }
 }

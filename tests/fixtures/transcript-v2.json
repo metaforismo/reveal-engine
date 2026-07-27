@@ -1,0 +1,13 @@
+{
+  "schema": "reveal-engine/transcript-v2",
+  "proofVersion": "reveal-engine/commit-v2",
+  "adapter": { "id": "binary-beacon-conformance-v1", "version": "1.0.0" },
+  "roundId": "fixture-v2",
+  "truth": 0,
+  "evidence": [
+    { "index": 0, "target": 0, "favour": "7", "other": "3", "label": "beacon-0" },
+    { "index": 1, "target": 1, "favour": "7", "other": "3", "label": "beacon-1" },
+    { "index": 2, "target": 1, "favour": "7", "other": "3", "label": "beacon-2" }
+  ],
+  "commitment": "3a211b46634d50af00b0b1679b27a73b7bb087e25fd3e665cef824a9417b0c1a"
+}

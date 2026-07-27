@@ -1,14 +1,31 @@
 import { uniform } from '../core/fairness.js';
 import { rational } from '../core/rational.js';
 import type { EvidenceSchedule, GameDefinition } from '../core/contracts.js';
+import { ENGINE_API_VERSION } from '../core/contracts.js';
+import { defineGame } from '../core/adapter.js';
 const schedule: EvidenceSchedule = {
+  modelVersion: 'black-signal-evidence/v1',
   eventCount: 120,
   derive(seed, context, truth) {
+    const spikeStrengths = [
+      { favour: 3n, other: 1n },
+      { favour: 3n, other: 1n },
+      { favour: 42n, other: 11n },
+    ] as const;
+    const spikeAt = new Map<number, (typeof spikeStrengths)[number]>();
+    const span = 40;
+    spikeStrengths.forEach((strength, spikeIndex) => {
+      const low = spikeIndex === 0 ? 5 : spikeIndex * span;
+      const high = spikeIndex === spikeStrengths.length - 1 ? 115 : (spikeIndex + 1) * span;
+      let index = low + uniform(seed, context, 'spike', spikeIndex, high - low);
+      while (spikeAt.has(index)) index = low + ((index + 1 - low) % (high - low));
+      spikeAt.set(index, strength);
+    });
     return Object.freeze(
       Array.from({ length: 120 }, (_, index) => {
-        const spike = [30, 70, 100].includes(index);
-        const favour = spike ? (index === 100 ? 42n : 3n) : 9n;
-        const other = spike ? (index === 100 ? 11n : 1n) : 8n;
+        const spike = spikeAt.get(index);
+        const favour = spike?.favour ?? 9n;
+        const other = spike?.other ?? 8n;
         const total = Number(favour + 3n * other);
         const roll = uniform(seed, context, 'evidence', index, total);
         const target = roll < Number(favour) ? truth : (truth + 1 + (roll % 3)) % 4;
@@ -18,7 +35,9 @@ const schedule: EvidenceSchedule = {
   },
 };
 /** Compatibility adapter only; it contains no BLACK SIGNAL UI, art, story, or copy. */
-export const blackSignalReference: GameDefinition = Object.freeze({
+export const blackSignalReference: GameDefinition = defineGame({
+  apiVersion: ENGINE_API_VERSION,
+  adapterVersion: '1.0.0',
   id: 'black-signal-reference-v1',
   outcomes: ['A', 'B', 'C', 'D'],
   priorWeights: [1n, 1n, 1n, 1n],

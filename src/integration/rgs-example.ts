@@ -1,4 +1,10 @@
-import type { OpenRequest, Receipt, RoundBook, SellRequest } from '../protocol/round-book.js';
+import type {
+  OpenRequest,
+  Receipt,
+  RoundBook,
+  SellRequest,
+  SettleRequest,
+} from '../protocol/round-book.js';
 /** Sketch of an RGS adapter: replace this process-local map with one DB transaction and durable receipt store. */
 export class RgsExample {
   constructor(private readonly books: Map<string, RoundBook>) {}
@@ -8,8 +14,8 @@ export class RgsExample {
   sell(roundId: string, request: SellRequest): Promise<Receipt> {
     return this.require(roundId).sell(request);
   }
-  settle(roundId: string, key: string, truth: number): Promise<Receipt> {
-    return this.require(roundId).settle(key, truth);
+  settle(roundId: string, request: SettleRequest): Promise<Receipt> {
+    return this.require(roundId).settle(request);
   }
   private require(roundId: string): RoundBook {
     const book = this.books.get(roundId);

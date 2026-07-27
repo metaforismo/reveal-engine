@@ -1,21 +1,42 @@
-# Threat model
+# Repository threat model
 
-## Assets and trust boundaries
+## Overview
 
-The protected assets are a precommitted server seed, unmodified evidence transcript, exact price frame, player balance, original stake/cap chain, and immutable receipt. Clients and transport are untrusted. The operator/RGS is trusted to persist atomically; this library cannot make a database transaction on its own.
+Reveal Engine™ is a private library and reference protocol for progressive-reveal instant games. Its primary runtime surfaces are adapter validation, exact pricing, deterministic outcome/evidence generation, commit-reveal verification, frame/action handling, receipt accounting, and snapshot restoration. CLIs, tests, benchmarks, and examples are supporting surfaces.
 
-## Required controls
+## Threat Model, Trust Boundaries, and Assumptions
 
-| Risk                                | Control                                                                                                 |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Outcome/transcript substitution     | versioned, domain-separated SHA-256 commitment binds seed, round, truth and canonical transcript        |
-| Modulo bias / cross-game seed reuse | rejection sampling; HMAC labels include contract version, game id, round id and purpose                 |
-| Stale frame price                   | optimistic frame revision is mandatory for opens/closes                                                 |
-| Replay / double debit               | durable idempotency key and receipt replay                                                              |
-| Re-entrant or out-of-order callback | serialized round book, terminal-state guard, monotonic revision                                         |
-| Sell-path max-win bypass            | cap is applied to _every_ payable credit, including liquidation and settlement                          |
-| Ride-chain accounting error         | cap base is original stake; continuation is explicitly outside within-round proof                       |
-| Misleading claims                   | no engine certificate/RTP claim; theoretical equality excludes rounding, caps, spreads and continuation |
-| Coupled presentation logic          | engine exposes no tone, compliance or content APIs                                                      |
+Protected assets are the unrevealed seed, one precommitted truth/evidence transcript, adapter/config identity, exact price frame, original cap basis, money-movement receipts, terminal state, and replayable audit history.
 
-Seed secrecy remains an operational obligation. A seed is revealed only after terminal settlement. Production adopters need access control, key rotation, append-only audit retention, rate limits, reconciliation, and an independently reviewed RNG/key-management design.
+- Player clients, network payloads, transcript files, action keys, expected revisions, and reconnect snapshots are attacker-controlled.
+- Seeds, adapter selection, commitment publication timing, key custody, durable transactions, player authorization, balances, and callback ordering are operator/RGS-controlled.
+- Adapter code, versions, CI/release artifacts, and dependency changes are developer-controlled.
+
+The library assumes a cryptographically random 32-byte seed committed before actionable player information. Deterministic weighted truth derivation prevents post-seed truth selection but does **not** prevent an operator from grinding many seeds before publishing one. Production designs need auditable seed generation, publication ordering, retention, and preferably external/client entropy or an independently verifiable RNG source.
+
+## Attack Surface, Mitigations, and Attacker Stories
+
+| Attack story                                                         | Control / residual boundary                                                                                                          |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Delimiter or cross-field commitment collision                        | v2 length-prefixed typed fields; frozen collision vectors; v1 verification-only                                                      |
+| Seed spelling, wrong purpose, modulus, game, round, or version reuse | canonical seed bytes and domain-separated HMAC payloads containing every domain field                                                |
+| Operator substitutes truth, evidence, or economics after commitment  | deterministic prior-weighted truth, deterministic evidence, and adapter fingerprint bound into v2 proof                              |
+| Malicious/buggy adapter leaks truth through likelihood strength      | conformance compares schedule structure across every truth; adapter code remains trusted and must be reviewed/versioned              |
+| Oversized transcript/BigInt/event/key denial of service              | public byte/count/bit limits and validation before derivation/hashing where possible                                                 |
+| Stale or out-of-order price/callback                                 | monotonic frame fence and proof-bound settlement                                                                                     |
+| Duplicate, re-entrant, or cross-action retry                         | serialized action queue plus command-bound idempotency fingerprint                                                                   |
+| Sell/re-entry cap bypass                                             | first-entry cap basis persists; self-financing re-entry; already-liquid value reduces remaining credit cap                           |
+| Exception opens an FSM terminal hole                                 | validate and compute receipt before state mutation; atomicity regressions                                                            |
+| Reconnect state or receipt tampering                                 | snapshot checksum, adapter binding, evidence replay, receipt/accounting/cap validation; production still needs authenticated storage |
+| Tone/compliance logic changes math                                   | no presentation, content, jurisdiction, or compliance API exists in core                                                             |
+
+Out of scope: player authentication/authorization, database isolation, seed vault/HSM, network TLS, operator insolvency, jurisdictional rules, front-end security, and formal certification. Those can dominate deployment risk even if this library is correct.
+
+## Severity Calibration (Critical, High, Medium, Low)
+
+- **Critical:** remote or operator-reachable control that enables undetected outcome substitution, arbitrary payout/cap bypass, seed disclosure before commitment, or cross-player durable balance corruption.
+- **High:** canonical proof collision, accepted forged settlement, deterministic cross-adapter state confusion, or replay race producing duplicate credits under realistic integration assumptions.
+- **Medium:** bounded denial of service, misleading verifier taxonomy, corrupt reconnect state rejected only late, or adapter footgun requiring trusted developer error.
+- **Low:** developer-only CLI ergonomics, documentation drift with no runtime effect, or performance regression below production relevance.
+
+No vulnerability severity implies a certification conclusion; exploitability depends on the adopter's RGS, storage, authorization, and key-management boundaries.

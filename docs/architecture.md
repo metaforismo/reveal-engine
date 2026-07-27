@@ -1,19 +1,18 @@
 # Architecture
 
-Reveal Engine™ is Axiom Games' reusable technology for progressive-reveal instant games. It is not a game title. The repository is split deliberately:
+| Layer               | Responsibility                                        | Deliberate boundary                            |
+| ------------------- | ----------------------------------------------------- | ---------------------------------------------- |
+| `src/api`           | stable versions, limits, typed errors                 | no algorithms                                  |
+| `src/core`          | exact math, adapters, posterior, truth/evidence proof | no player balance or presentation              |
+| `src/protocol`      | frames, actions, receipts, cap/accounting, snapshots  | in-memory reference, not a production database |
+| `src/serialization` | bounded JSON wire formats and migration               | untrusted input boundary                       |
+| `src/conformance`   | mechanical adapter checks                             | evidence, not certification                    |
+| `src/reference`     | three game configurations                             | no title UI/assets/content                     |
+| `src/integration`   | illustrative RGS boundary                             | not production persistence                     |
+| `src/cli`           | independent verifier/conformance tools                | revealed seeds only                            |
 
-| Layer             | Responsibility                                         | Cannot contain                                 |
-| ----------------- | ------------------------------------------------------ | ---------------------------------------------- |
-| `src/core`        | exact posterior, pricing, caps, commitments, contracts | game art, copy, UI, regulation claims          |
-| `src/protocol`    | frame revisions, idempotency, ordered transitions      | random outcome logic                           |
-| `src/reference`   | BLACK SIGNAL-compatible and synthetic configurations   | title UI/assets                                |
-| `src/integration` | RGS boundary example                                   | operator credentials or production persistence |
-| `src/cli`         | independent transcript verification                    | private seeds before reveal                    |
+Exact values remain reduced rational BigInts. A position stores a rational contingent claim; only liquidation or settlement calls payable rounding/cap logic. The protocol keeps price-frame revision separate from receipt-ledger revision, so a duplicate action cannot create a stale price and a new frame cannot impersonate a money movement.
 
-All value calculations are `bigint` rationals until an explicit payable rounding boundary. A game definition supplies outcome identifiers and prior weights, a deterministic evidence model, pricing, rounding, risk/cap policy, and an optional continuation policy. It may use any finite outcome count of two or more.
+Each successful command is bound to its idempotency key by a canonical fingerprint. Exact retries replay their receipt; a changed payload or action fails with `IDEMPOTENCY_CONFLICT`. Failed operations do not mutate state. Snapshot restoration replays evidence, validates adapter identity, receipt ordering/accounting, cap state, and a deterministic snapshot checksum.
 
-`BLACK SIGNAL — Powered by Reveal Engine™ — An Axiom Games original` is the product-line wording for the first adapter. The ™ symbol is a common-law notice, not a claim of registration.
-
-## State and concurrency
-
-An integration owns balances and durable storage. It must apply each action in one transaction keyed by `(playerId, roundId, idempotencyKey)`, fence it against the expected frame revision, append the receipt before returning it, and enforce `open -> (open|settled)` only. The in-memory `RoundBook` is an executable reference for those rules, not a production ledger.
+The checksum detects corruption and supports deterministic replay; it is not an operator signature. Production storage still requires authenticated records and a transaction around idempotency, debit/credit, state transition, and receipt append.

@@ -6,32 +6,62 @@ The first reference integration is **BLACK SIGNAL**:
 
 > BLACK SIGNAL — Powered by Reveal Engine™ — An Axiom Games original
 
-Reveal Engine™ is not BLACK SIGNAL and carries no game UI, art, narrative, marketing, or player-facing content. The ™ marks are not assertions of registered-trademark status.
+Reveal Engine™ is technology, BLACK SIGNAL is a title, and Axiom Games is the studio. The repository contains no BLACK SIGNAL art, UI, story, or player-facing copy. The ™ symbol is not a registered-trademark claim.
 
-## What it provides
+## What is stable in 0.2
 
-- exact `bigint` rational Bayesian posteriors for any finite outcome set;
-- deterministic, rejection-sampled seed derivation and versioned domain-separated commitments;
-- first-entry RTP pricing, unshaded re-entry, fair-value liquidation, explicit rounding, and credit-boundary max-win caps;
-- an integration-oriented state machine with frame fencing and idempotent receipts;
-- two intentionally different reference configurations: a four-outcome BLACK SIGNAL compatibility adapter and a synthetic three-outcome constellation game;
-- an independent CLI verifier, bounded stress harness, and machine-readable benchmark artifact.
+- `reveal-engine/api-v1`: adapter, posterior, pricing, proof, error, and protocol contracts;
+- exact normalized `bigint` rational arithmetic through the payable credit boundary;
+- deterministic prior-weighted truth derivation and symmetric Bayesian evidence updates;
+- `reveal-engine/commit-v2`: length-prefixed canonical encoding, adapter fingerprint binding, domain-separated rejection sampling, and typed verification;
+- `reveal-engine/transcript-v2`, `receipt-v1`, and `round-book-v1` JSON-safe wire contracts;
+- frame-fenced, action-bound idempotent protocol operations with exact claims, original cap basis, replayable receipts, and reconnect snapshots;
+- mechanical adapter conformance plus three fixtures: four-outcome BLACK SIGNAL compatibility, a non-uniform three-outcome synthetic game, and a minimal binary fixture.
+
+Legacy `commit-v1` is verification-only. New rounds must use `commit-v2`.
 
 ## Quick start
 
 ```ts
-import { constellationReference, initialPosterior, quote } from '@axiom-games/reveal-engine';
-const posterior = initialPosterior(constellationReference);
-const price = quote(constellationReference, posterior, 0, true, 0);
+import {
+  binaryBeaconReference,
+  initialPosterior,
+  makeTranscript,
+  RoundBook,
+} from '@axiom-games/reveal-engine';
+
+const seed = '01'.padStart(64, '0');
+const transcript = makeTranscript(seed, binaryBeaconReference, 'round-42');
+const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+
+await book.open({
+  idempotencyKey: 'player-action-1',
+  expectedFrameRevision: 0,
+  outcome: 0,
+  stake: 100n,
+});
+for (const event of transcript.evidence) await book.advanceFrame(event);
+await book.settle({
+  idempotencyKey: 'settlement-1',
+  expectedFrameRevision: book.frame.revision,
+  revealedSeed: seed,
+  transcript,
+});
 ```
 
-Run `npm run verify`; `npm run bench` writes `artifacts/benchmark.json`. Use `reveal-verify transcript.json revealed-seed-hex` after a round reveals.
+## Verification commands
 
-## Read next
+```sh
+npm run verify
+npm run test:coverage
+npm run test:security
+npm run artifacts:update   # intentional baseline refresh only
+```
 
-- [Architecture](docs/architecture.md) and [API contract](docs/api-contract.md)
-- [Math assumptions](docs/math.md) and [threat model](docs/threat-model.md)
-- [Integration guide](docs/integration.md), [BLACK SIGNAL adoption](docs/black-signal-migration.md), and [certification boundary](docs/certification-boundary.md)
-- [Evidence ledger](docs/evidence-ledger.md), [contributing](CONTRIBUTING.md), and [security](SECURITY.md)
+`reveal-verify` verifies a revealed transcript. `reveal-conformance` checks the bundled adapters. Routine stress and benchmark runs write ignored files under `artifacts/runtime/`; tracked baselines change only through `artifacts:update`.
 
-No package publication, public release, or certification is implied or authorized.
+## Documentation path
+
+Start with [architecture](docs/architecture.md), then [API reference](docs/api-reference.md), [integration checklist](docs/integration-checklist.md), and [versioning](docs/versioning.md). Mathematical and security claims are bounded by [math assumptions](docs/math.md), [threat model](docs/threat-model.md), [certification boundary](docs/certification-boundary.md), and the [evidence ledger](docs/evidence-ledger.md).
+
+This package is `private`, `UNLICENSED`, and unpublished. Tests and synthetic benchmarks are engineering evidence, not production capacity, RTP certification, regulatory approval, or a fairness certificate.
