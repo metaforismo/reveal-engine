@@ -46,4 +46,17 @@ describe('round protocol adversarial guards', () => {
       capped: true,
     });
   });
+  it('prices a sell-and-re-enter action without a second RTP shade', async () => {
+    const book = new RoundBook(constellationReference, initialPosterior(constellationReference));
+    await book.open({ idempotencyKey: 'open', expectedRevision: 0, outcome: 0, stake: 1000n });
+    await book.sell({ idempotencyKey: 'sell', expectedRevision: 1 });
+    const reentry = await book.open({
+      idempotencyKey: 'reopen',
+      expectedRevision: 2,
+      outcome: 0,
+      stake: 1000n,
+    });
+    expect(reentry.revision).toBe(3);
+    expect(book.position?.contingentPayout).toBe(2000n);
+  });
 });

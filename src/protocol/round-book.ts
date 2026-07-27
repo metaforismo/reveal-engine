@@ -28,6 +28,7 @@ export interface SellRequest {
 }
 export class RoundBook {
   #position: Position | undefined;
+  #entryCount = 0;
   #revision = 0;
   #terminal = false;
   #receipts = new Map<string, Receipt>();
@@ -42,13 +43,17 @@ export class RoundBook {
   get terminal(): boolean {
     return this.#terminal;
   }
+  /** Read-only state for an integration's snapshot serializer; never client authority. */
+  get position(): Position | undefined {
+    return this.#position;
+  }
   async open(request: OpenRequest): Promise<Receipt> {
     return this.#serial(() => {
       const old = this.#receipts.get(request.idempotencyKey);
       if (old) return old;
       this.#assertFrame(request.expectedRevision);
       if (this.#terminal || this.#position || request.stake <= 0n) throw new Error('OPEN_REJECTED');
-      const first = true;
+      const first = this.#entryCount === 0;
       const multiplier = quote(
         this.game,
         this.posterior,
@@ -61,8 +66,9 @@ export class RoundBook {
         outcome: request.outcome,
         contingentPayout,
         originalStake: request.stake,
-        entryCount: 1,
+        entryCount: this.#entryCount + 1,
       });
+      this.#entryCount += 1;
       return this.#record(request.idempotencyKey, 'open', 0n, false);
     });
   }
