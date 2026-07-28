@@ -8,4 +8,7 @@ export const ENGINE_LIMITS = Object.freeze({
   maxBigIntBits: 4096,
   maxTranscriptBytes: 8 * 1024 * 1024,
   maxSnapshotBytes: 16 * 1024 * 1024,
+  maxCompatibilityCorpusBytes: 16 * 1024 * 1024,
+  maxCompatibilityVectors: 256,
+  maxCompatibilityEconomicCases: 100_000,
 });

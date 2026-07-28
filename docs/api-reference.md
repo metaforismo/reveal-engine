@@ -12,6 +12,7 @@
 | `/conformance`               | adapter conformance runner/report                      |
 | `/integration`               | illustrative, non-durable RGS boundary                 |
 | `/reference`                 | bundled reference configurations                       |
+| `/compatibility`             | strict shadow corpus parser, digest, and comparison    |
 
 No `internal` subpath is exported. The root export list has an executable snapshot test.
 
@@ -36,3 +37,12 @@ No `internal` subpath is exported. The root export list has an executable snapsh
 - `COMMITMENT_MISMATCH`
 
 `verifyTranscript()` is the boolean compatibility wrapper.
+
+## Compatibility adoption
+
+- `parseCompatibilityCorpus(input)` strictly validates byte/count/key/type limits, canonical values, integrity, frozen host proof replay, sampling coverage, and aggregates; it returns a deeply frozen `compatibility-corpus-v1`.
+- `compareCompatibilityCorpus(game, input)` independently replays current target truth/evidence/commitment, projected host-evidence posteriors, pricing/settlement observations, and cap cases. It returns every non-exact finding in `compatibility-report-v1`.
+- `compatibilityCorpusDigest(input)` hashes recursively key-sorted JSON without the top-level integrity field; `compatibilityEvidenceDigest(events)` hashes canonical evidence.
+- `deriveMaxContinuations(roundRtp, rtpFloor)` derives the exact bounded continuation count. It is not a cross-round state machine.
+
+`report.ok` excludes unexplained deltas and target drift. `report.activationReady` additionally requires that every declared policy be exact. See [compatibility corpus](compatibility-corpus.md) for the exact wire and classification contract.

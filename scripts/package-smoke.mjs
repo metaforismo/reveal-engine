@@ -12,6 +12,7 @@ const serialization = await import('../dist/serialization/index.js');
 const conformance = await import('../dist/conformance/index.js');
 const integration = await import('../dist/integration/index.js');
 const reference = await import('../dist/reference/index.js');
+const compatibility = await import('../dist/compatibility/index.js');
 assert.equal(root.ENGINE_API_VERSION, 'reveal-engine/api-v1');
 assert.equal(api.COMMITMENT_VERSION, 'reveal-engine/commit-v2');
 assert.equal(typeof core.uniformBigInt, 'function');
@@ -21,6 +22,8 @@ assert.equal(typeof serialization.deserializeTranscript, 'function');
 assert.equal(typeof conformance.checkAdapterConformance, 'function');
 assert.equal(typeof integration.RgsExample, 'function');
 assert.equal(reference.blackSignalReference.outcomes.length, 4);
+assert.equal(reference.blackSignalReference.risk.continuation.maxRides, 2);
+assert.equal(typeof compatibility.compareCompatibilityCorpus, 'function');
 const directory = mkdtempSync(join(tmpdir(), 'reveal-engine-pack-'));
 const result = JSON.parse(
   execFileSync('npm', ['pack', '--dry-run', '--json', '--cache', join(directory, 'cache')], {
@@ -30,6 +33,7 @@ const result = JSON.parse(
 const files = result[0].files.map((entry) => entry.path);
 assert(files.includes('dist/index.js'));
 assert(files.includes('dist/cli/verify.js'));
+assert(files.includes('dist/cli/compatibility.js'));
 assert(!files.some((path) => path.startsWith('src/') || path.startsWith('tests/')));
 console.log(
   JSON.stringify({
@@ -43,6 +47,7 @@ console.log(
       './conformance',
       './integration',
       './reference',
+      './compatibility',
     ],
     packedFiles: files.length,
   }),

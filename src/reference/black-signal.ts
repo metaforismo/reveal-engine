@@ -3,6 +3,11 @@ import { rational } from '../core/rational.js';
 import type { EvidenceSchedule, GameDefinition } from '../core/contracts.js';
 import { ENGINE_API_VERSION } from '../core/contracts.js';
 import { defineGame } from '../core/adapter.js';
+import { deriveMaxContinuations } from '../core/continuation.js';
+const firstEntryRtp = rational(9550n, 10000n);
+const rtpFloor = rational(8500n, 10000n);
+const maxRides = deriveMaxContinuations(firstEntryRtp, rtpFloor);
+if (maxRides !== 2) throw new Error('BLACK SIGNAL reference continuation policy drifted');
 const schedule: EvidenceSchedule = {
   modelVersion: 'black-signal-evidence/v1',
   eventCount: 120,
@@ -37,15 +42,15 @@ const schedule: EvidenceSchedule = {
 /** Compatibility adapter only; it contains no BLACK SIGNAL UI, art, story, or copy. */
 export const blackSignalReference: GameDefinition = defineGame({
   apiVersion: ENGINE_API_VERSION,
-  adapterVersion: '1.0.0',
+  adapterVersion: '1.1.0',
   id: 'black-signal-reference-v1',
   outcomes: ['A', 'B', 'C', 'D'],
   priorWeights: [1n, 1n, 1n, 1n],
   evidence: schedule,
   pricing: {
-    firstEntryRtp: rational(9550n, 10000n),
+    firstEntryRtp,
     liquidationSpread: rational(0n),
     rounding: 'floor' as const,
   },
-  risk: { maxWinMultiple: 5000n, continuation: { maxRides: 1, rtpFloor: rational(8500n, 10000n) } },
+  risk: { maxWinMultiple: 5000n, continuation: { maxRides, rtpFloor } },
 });

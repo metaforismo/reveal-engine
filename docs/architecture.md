@@ -7,6 +7,7 @@
 | `src/protocol`      | frames, actions, receipts, cap/accounting, snapshots  | in-memory reference, not a production database |
 | `src/serialization` | bounded JSON wire formats and migration               | untrusted input boundary                       |
 | `src/conformance`   | mechanical adapter checks                             | evidence, not certification                    |
+| `src/compatibility` | frozen-host corpus validation and shadow comparison   | never mutates a live round or title wallet     |
 | `src/reference`     | three game configurations                             | no title UI/assets/content                     |
 | `src/integration`   | illustrative RGS boundary                             | not production persistence                     |
 | `src/cli`           | independent verifier/conformance tools                | revealed seeds only                            |

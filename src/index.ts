@@ -26,6 +26,7 @@ export {
   verifyTranscriptDetailed,
 } from './core/fairness.js';
 export { payable, payableWithinCap } from './core/payments.js';
+export { deriveMaxContinuations } from './core/continuation.js';
 export {
   RoundBook,
   type Receipt,
@@ -47,3 +48,14 @@ export {
   blackSignalReference,
   constellationReference,
 } from './reference/index.js';
+export {
+  COMPATIBILITY_CORPUS_VERSION,
+  COMPATIBILITY_REPORT_VERSION,
+  compatibilityCorpusDigest,
+  compatibilityEvidenceDigest,
+  compareCompatibilityCorpus,
+  parseCompatibilityCorpus,
+  type CompatibilityCorpusV1,
+  type CompatibilityFinding,
+  type CompatibilityReportV1,
+} from './compatibility/index.js';

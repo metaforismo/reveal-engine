@@ -1,6 +1,6 @@
 {
   "name": "@axiom-games/reveal-engine",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Proprietary progressive-reveal game technology for Axiom Games",
   "type": "module",
@@ -48,11 +48,16 @@
       "types": "./dist/reference/index.d.ts",
       "default": "./dist/reference/index.js"
     },
+    "./compatibility": {
+      "types": "./dist/compatibility/index.d.ts",
+      "default": "./dist/compatibility/index.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
     "reveal-verify": "./dist/cli/verify.js",
-    "reveal-conformance": "./dist/cli/conformance.js"
+    "reveal-conformance": "./dist/cli/conformance.js",
+    "reveal-compatibility": "./dist/cli/compatibility.js"
   },
   "scripts": {
     "format:check": "prettier --check .",
@@ -63,11 +68,13 @@
     "test:coverage": "vitest run --coverage",
     "test:security": "vitest run tests/security && npm audit --omit=dev --audit-level=high",
     "conformance": "node --import tsx src/cli/conformance.ts",
+    "compatibility": "node --import tsx src/cli/compatibility.ts tests/fixtures/black-signal-compatibility-v1.json",
+    "compatibility:capture": "node --import tsx scripts/capture-black-signal-compatibility.ts",
     "test:package": "npm run build && node scripts/package-smoke.mjs",
     "test:stress": "node --import tsx scripts/stress.ts --output artifacts/runtime/stress.json",
     "bench": "node --import tsx scripts/benchmark.ts --output artifacts/runtime/benchmark.json",
     "artifacts:update": "node --import tsx scripts/stress.ts --output artifacts/stress-v2.json && node --import tsx scripts/benchmark.ts --output artifacts/benchmark-v2.json",
-    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run conformance && npm run build && npm run test:package && npm run test:stress && npm run bench"
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run conformance && npm run compatibility && npm run build && npm run test:package && npm run test:stress && npm run bench"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
