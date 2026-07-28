@@ -64,10 +64,10 @@ function argumentsForCapture(): { readonly source: string; readonly output: stri
   const outputIndex = args.indexOf('--output');
   const source = sourceIndex >= 0 ? args[sourceIndex + 1] : undefined;
   const output =
-    outputIndex >= 0 ? args[outputIndex + 1] : 'tests/fixtures/black-signal-compatibility-v1.json';
+    outputIndex >= 0 ? args[outputIndex + 1] : 'compatibility-corpora/black-signal-v1.json';
   if (!source || !output) {
     process.stderr.write(
-      'Usage: npm run compatibility:capture -- --source <read-only-title-checkout> [--output <fixture>]\n',
+      'Usage: npm run compatibility:capture -- --source <read-only-title-checkout> [--output <corpus>]\n',
     );
     process.exit(1);
   }

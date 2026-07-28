@@ -1,6 +1,6 @@
 {
   "name": "@axiom-games/reveal-engine",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Proprietary progressive-reveal game technology for Axiom Games",
   "type": "module",
@@ -10,6 +10,7 @@
   },
   "files": [
     "dist",
+    "compatibility-corpora/black-signal-v1.json",
     "README.md",
     "LICENSE",
     "SECURITY.md",
@@ -52,6 +53,7 @@
       "types": "./dist/compatibility/index.d.ts",
       "default": "./dist/compatibility/index.js"
     },
+    "./compatibility/corpora/black-signal-v1.json": "./compatibility-corpora/black-signal-v1.json",
     "./package.json": "./package.json"
   },
   "bin": {
@@ -68,7 +70,7 @@
     "test:coverage": "vitest run --coverage",
     "test:security": "vitest run tests/security && npm audit --omit=dev --audit-level=high",
     "conformance": "node --import tsx src/cli/conformance.ts",
-    "compatibility": "node --import tsx src/cli/compatibility.ts tests/fixtures/black-signal-compatibility-v1.json",
+    "compatibility": "node --import tsx src/cli/compatibility.ts compatibility-corpora/black-signal-v1.json",
     "compatibility:capture": "node --import tsx scripts/capture-black-signal-compatibility.ts",
     "test:package": "npm run build && node scripts/package-smoke.mjs",
     "test:stress": "node --import tsx scripts/stress.ts --output artifacts/runtime/stress.json",
