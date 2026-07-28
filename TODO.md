@@ -1,4 +1,15 @@
-# Reveal Engine 0.2 hardening checklist
+# Reveal Engine 0.3 adoption-readiness checklist
+
+- [x] Record the bounded source/repository gap audit before implementation.
+- [x] Derive continuation limits exactly and cover the complete title RTP ladder.
+- [x] Add strict versioned compatibility corpus/report contracts and typed failures.
+- [x] Capture 64 read-only derivation vectors and all 4,096 bounded economic cases with pinned provenance.
+- [x] Classify legacy truth/evidence/proof, early rounding, and host-managed RIDE without normalizing unexplained deltas.
+- [x] Add corpus tamper, malformed, target-drift, money, cap, idempotency, replay, and isolation tests.
+- [ ] Establish a separately authorized immutable private dependency mechanism in the title (private registry/release or compiled tarball plus SHA/lockfile).
+- [ ] Resolve/version economics, browser verification, frame bridge, retained liabilities, and cross-round RIDE before activation.
+
+## Completed 0.2 foundation
 
 - [x] Record the pre-implementation gaps and risks in `docs/upgrade-gap-audit.md`.
 - [x] Freeze a versioned public API, adapter fingerprint, and typed failure taxonomy.

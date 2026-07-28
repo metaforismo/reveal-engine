@@ -58,3 +58,4 @@ export {
   assertPosterior,
   assertRational,
 } from './validation.js';
+export { deriveMaxContinuations } from './continuation.js';

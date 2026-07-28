@@ -3,6 +3,7 @@ import * as root from '../src/index.js';
 import * as api from '../src/api/index.js';
 import * as core from '../src/core/index.js';
 import * as conformance from '../src/conformance/index.js';
+import * as compatibility from '../src/compatibility/index.js';
 import * as integration from '../src/integration/index.js';
 import * as protocol from '../src/protocol/index.js';
 import * as reference from '../src/reference/index.js';
@@ -12,6 +13,8 @@ describe('stable public API snapshot', () => {
   it('exports the approved root surface and no internal canonical encoder', () => {
     expect(Object.keys(root).sort()).toEqual([
       'COMMITMENT_VERSION',
+      'COMPATIBILITY_CORPUS_VERSION',
+      'COMPATIBILITY_REPORT_VERSION',
       'ENGINE_API_VERSION',
       'ENGINE_LIMITS',
       'ERROR_CODES',
@@ -25,8 +28,12 @@ describe('stable public API snapshot', () => {
       'blackSignalReference',
       'checkAdapterConformance',
       'compare',
+      'compareCompatibilityCorpus',
+      'compatibilityCorpusDigest',
+      'compatibilityEvidenceDigest',
       'constellationReference',
       'defineGame',
+      'deriveMaxContinuations',
       'deriveTruth',
       'deserializeTranscript',
       'divide',
@@ -37,6 +44,7 @@ describe('stable public API snapshot', () => {
       'initialPosterior',
       'makeTranscript',
       'multiply',
+      'parseCompatibilityCorpus',
       'payable',
       'payableWithinCap',
       'posteriorFor',
@@ -77,6 +85,7 @@ describe('stable public API snapshot', () => {
       'assertRational',
       'compare',
       'defineGame',
+      'deriveMaxContinuations',
       'deriveTruth',
       'divide',
       'equal',
@@ -109,6 +118,14 @@ describe('stable public API snapshot', () => {
     expect(Object.keys(conformance).sort()).toEqual([
       'assertAdapterConforms',
       'checkAdapterConformance',
+    ]);
+    expect(Object.keys(compatibility).sort()).toEqual([
+      'COMPATIBILITY_CORPUS_VERSION',
+      'COMPATIBILITY_REPORT_VERSION',
+      'compareCompatibilityCorpus',
+      'compatibilityCorpusDigest',
+      'compatibilityEvidenceDigest',
+      'parseCompatibilityCorpus',
     ]);
     expect(Object.keys(integration)).toEqual(['RgsExample']);
     expect(Object.keys(reference).sort()).toEqual([

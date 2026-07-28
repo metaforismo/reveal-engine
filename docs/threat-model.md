@@ -16,21 +16,25 @@ The library assumes a cryptographically random 32-byte seed committed before act
 
 ## Attack Surface, Mitigations, and Attacker Stories
 
-| Attack story                                                         | Control / residual boundary                                                                                                          |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Delimiter or cross-field commitment collision                        | v2 length-prefixed typed fields; frozen collision vectors; v1 verification-only                                                      |
-| Seed spelling, wrong purpose, modulus, game, round, or version reuse | canonical seed bytes and domain-separated HMAC payloads containing every domain field                                                |
-| Operator substitutes truth, evidence, or economics after commitment  | deterministic prior-weighted truth, deterministic evidence, and adapter fingerprint bound into v2 proof                              |
-| Malicious/buggy adapter leaks truth through likelihood strength      | conformance compares schedule structure across every truth; adapter code remains trusted and must be reviewed/versioned              |
-| Oversized transcript/BigInt/event/key denial of service              | public byte/count/bit limits and validation before derivation/hashing where possible                                                 |
-| Stale or out-of-order price/callback                                 | monotonic frame fence and proof-bound settlement                                                                                     |
-| Duplicate, re-entrant, or cross-action retry                         | serialized action queue plus command-bound idempotency fingerprint                                                                   |
-| Sell/re-entry cap bypass                                             | first-entry cap basis persists; self-financing re-entry; already-liquid value reduces remaining credit cap                           |
-| Exception opens an FSM terminal hole                                 | validate and compute receipt before state mutation; atomicity regressions                                                            |
-| Reconnect state or receipt tampering                                 | snapshot checksum, adapter binding, evidence replay, receipt/accounting/cap validation; production still needs authenticated storage |
-| Tone/compliance logic changes math                                   | no presentation, content, jurisdiction, or compliance API exists in core                                                             |
+| Attack story                                                         | Control / residual boundary                                                                                                            |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Delimiter or cross-field commitment collision                        | v2 length-prefixed typed fields; frozen collision vectors; v1 verification-only                                                        |
+| Seed spelling, wrong purpose, modulus, game, round, or version reuse | canonical seed bytes and domain-separated HMAC payloads containing every domain field                                                  |
+| Operator substitutes truth, evidence, or economics after commitment  | deterministic prior-weighted truth, deterministic evidence, and adapter fingerprint bound into v2 proof                                |
+| Malicious/buggy adapter leaks truth through likelihood strength      | conformance compares schedule structure across every truth; adapter code remains trusted and must be reviewed/versioned                |
+| Oversized transcript/BigInt/event/key denial of service              | public byte/count/bit limits and validation before derivation/hashing where possible                                                   |
+| Stale or out-of-order price/callback                                 | monotonic frame fence and proof-bound settlement                                                                                       |
+| Duplicate, re-entrant, or cross-action retry                         | serialized action queue plus command-bound idempotency fingerprint                                                                     |
+| Sell/re-entry cap bypass                                             | first-entry cap basis persists; self-financing re-entry; already-liquid value reduces remaining credit cap                             |
+| Exception opens an FSM terminal hole                                 | validate and compute receipt before state mutation; atomicity regressions                                                              |
+| Reconnect state or receipt tampering                                 | snapshot checksum, adapter binding, evidence replay, receipt/accounting/cap validation; production still needs authenticated storage   |
+| Shadow corpus deletes or relabels an economic delta                  | strict keys/reason taxonomy, canonical digest, frozen target replay, per-case signed deltas, and separate `ok`/`activationReady` flags |
+| Recomputed corpus hash disguises changed engine targets              | current target truth/evidence/commitment/economics are independently replayed; mismatch is `target-drift`                              |
+| Corpus digest is mistaken for publisher authenticity                 | SHA-256 detects mutation only; provenance/release signing and trusted artifact distribution remain adopter responsibilities            |
+| Malicious CLI adapter module executes code                           | modules load only through explicit `--adapter-module`; corpus data cannot choose a path; local module is trusted executable code       |
+| Tone/compliance logic changes math                                   | no presentation, content, jurisdiction, or compliance API exists in core                                                               |
 
-Out of scope: player authentication/authorization, database isolation, seed vault/HSM, network TLS, operator insolvency, jurisdictional rules, front-end security, and formal certification. Those can dominate deployment risk even if this library is correct.
+Out of scope: player authentication/authorization, database isolation, seed vault/HSM, network TLS, operator insolvency, jurisdictional rules, front-end security, signed release/provenance infrastructure, and formal certification. Those can dominate deployment risk even if this library is correct.
 
 ## Severity Calibration (Critical, High, Medium, Low)
 

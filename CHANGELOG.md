@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 — 2026-07-28
+
+- Added strict `compatibility-corpus-v1` parsing, canonical integrity, typed failures, deterministic shadow comparison, `compatibility-report-v1`, and `reveal-compatibility` CLI/package export.
+- Added a provenance-locked BLACK SIGNAL fixture with 64 derivation vectors, 256 posterior checkpoints, 4,096 economic cases, explicit legacy/proof/rounding classifications, and cap vectors generated from the read-only title revision.
+- Corrected the BLACK SIGNAL reference to derive two continuations at 95.5% RTP/85% floor, bumped its adapter version to 1.1.0, and covered the full 97.0/96.5/95.5/94.5 ladder.
+- Added tamper, malformed-schema, target-drift, unexplained-money, deterministic replay, adapter-isolation, cap, and idempotency regressions.
+- The package remains private, UNLICENSED, and unpublished; no title adoption or certification is claimed.
+
 ## 0.2.0 — 2026-07-27
 
 - Added the stable `api-v1` adapter/public contract, deep runtime validation, typed errors, adapter fingerprints, and mechanical conformance.
