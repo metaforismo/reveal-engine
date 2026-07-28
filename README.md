@@ -18,6 +18,7 @@ Reveal Engine™ is technology, BLACK SIGNAL is a title, and Axiom Games is the 
 - frame-fenced, action-bound idempotent protocol operations with exact claims, original cap basis, replayable receipts, and reconnect snapshots;
 - mechanical adapter conformance plus three fixtures: four-outcome BLACK SIGNAL compatibility, a non-uniform three-outcome synthetic game, and a minimal binary fixture.
 - `compatibility-corpus-v1`: provenance-locked shadow replay, strict integrity/semantic validation, target-drift detection, explicit migration-delta reporting, and a bounded BLACK SIGNAL corpus.
+- package-owned BLACK SIGNAL corpus bytes at `@axiom-games/reveal-engine/compatibility/corpora/black-signal-v1.json`, so shadow consumers share one immutable source instead of copying a test fixture.
 
 Legacy `commit-v1` is verification-only. New rounds must use `commit-v2`.
 
@@ -61,6 +62,8 @@ npm run artifacts:update   # intentional baseline refresh only
 ```
 
 `reveal-verify` verifies a revealed transcript. `reveal-conformance` checks the bundled adapters. `reveal-compatibility` replays a frozen host corpus and refuses to hide unexpected economic deltas. Routine stress and benchmark runs write ignored files under `artifacts/runtime/`; tracked baselines change only through `artifacts:update`.
+
+The packaged BLACK SIGNAL corpus remains a shadow-only 0.3.0 target carried by package 0.3.1. Package smoke installs the produced tarball, resolves the public JSON export, verifies its byte digest, parses it, and replays the full comparison. This does not activate the engine in the title.
 
 ## Documentation path
 

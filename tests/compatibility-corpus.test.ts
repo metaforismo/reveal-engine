@@ -11,8 +11,8 @@ import { initialPosterior } from '../src/core/posterior.js';
 import { RoundBook } from '../src/protocol/round-book.js';
 import { blackSignalReference, constellationReference } from '../src/reference/index.js';
 
-const fixturePath = new URL('./fixtures/black-signal-compatibility-v1.json', import.meta.url);
-const fixture = readFileSync(fixturePath, 'utf8');
+const corpusPath = new URL('../compatibility-corpora/black-signal-v1.json', import.meta.url);
+const fixture = readFileSync(corpusPath, 'utf8');
 
 type MutableCorpus = Record<string, any>;
 

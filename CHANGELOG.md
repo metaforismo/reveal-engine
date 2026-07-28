@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 — 2026-07-28
+
+- Moved the single authoritative BLACK SIGNAL compatibility corpus to `compatibility-corpora/black-signal-v1.json` and exported its unchanged bytes as `@axiom-games/reveal-engine/compatibility/corpora/black-signal-v1.json`.
+- Strengthened package smoke to install the generated tarball, resolve every supported code subpath plus the corpus export, verify corpus SHA-256, and replay all 64 vectors / 4,096 economic cases with zero unexplained or target-drift findings.
+- The packaged corpus remains pinned to engine behavior 0.3.0 and reports `activationReady: false`; 0.3.1 does not claim title adoption, migration, or certification.
+
 ## 0.3.0 — 2026-07-28
 
 - Added strict `compatibility-corpus-v1` parsing, canonical integrity, typed failures, deterministic shadow comparison, `compatibility-report-v1`, and `reveal-compatibility` CLI/package export.

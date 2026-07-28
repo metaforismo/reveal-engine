@@ -24,6 +24,8 @@ reveal-compatibility corpus.json --adapter-module ./adapter.js --export game
 
 The first form resolves a bundled reference by the corpus's pinned adapter ID. A future title can explicitly load its own local ESM adapter with `--adapter-module`; that module is trusted executable code and is never selected from corpus data.
 
+The immutable BLACK SIGNAL corpus ships with the private package at the explicit JSON subpath `@axiom-games/reveal-engine/compatibility/corpora/black-signal-v1.json`. Consumers should resolve and read that export instead of copying the corpus into another repository. Its byte-level SHA-256 is `60c669a3e05ac6084e11d489c12f4344f0826f7deefe550a8ee457c266f5f5a1`.
+
 ## Exact schema shape
 
 ```text
@@ -67,7 +69,7 @@ All money and rational components are canonical decimal strings. Every economic 
 
 ## Pinned BLACK SIGNAL corpus
 
-`tests/fixtures/black-signal-compatibility-v1.json` was generated read-only from `metaforismo/blacksignal` branch `v8-signal-identity`, revision `7c63ebae28756df3b0ae96b917db37791cfcc588`. It records hashes for the relevant config, math, fairness, stream, positions, ride, invariance test, V7 loop specification, and SIGNAL identity specification. UI, art, story, names, and copy are absent.
+`compatibility-corpora/black-signal-v1.json` was generated read-only from `metaforismo/blacksignal` branch `v8-signal-identity`, revision `7c63ebae28756df3b0ae96b917db37791cfcc588`. It records hashes for the relevant config, math, fairness, stream, positions, ride, invariance test, V7 loop specification, and SIGNAL identity specification. UI, art, story, names, and copy are absent. The corpus targets the frozen 0.3.0 engine behavior; package 0.3.1 only makes those unchanged bytes available through an immutable package export.
 
 The deterministic sampling contract is 64 counter-derived 32-byte seeds, round IDs `audit-{index}`, posterior frames 0/17/52/120, entry frames 0/17/52, exit frames 17/52/120 where exit is not earlier than entry, four outcomes, and stakes 333¢/1,000¢: 4,096 economic cases. The capture script fails if the source revision, branch, approved dirty state, RTP ladder, or observed audit totals drift.
 
@@ -77,4 +79,4 @@ Regenerate only from that read-only checkout:
 npm run compatibility:capture -- --source /path/to/blacksignal
 ```
 
-The fixture proves a reproducible shadow comparison. It does not prove that BLACK SIGNAL consumes this package, has migrated proofs/economics, or is certified.
+The corpus proves a reproducible shadow comparison. It does not prove that BLACK SIGNAL consumes this package, has migrated proofs/economics, or is certified.

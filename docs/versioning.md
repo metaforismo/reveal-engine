@@ -4,7 +4,7 @@ The npm package remains private and unpublished. Semver still communicates repos
 
 | Identity       | Current                   | Change rule                                         |
 | -------------- | ------------------------- | --------------------------------------------------- |
-| Package        | `0.3.0`                   | semver                                              |
+| Package        | `0.3.1`                   | semver                                              |
 | Engine API     | `reveal-engine/api-v1`    | new value for breaking runtime/type contract        |
 | Adapter        | adapter-owned             | change for any replay-visible behavior              |
 | Evidence model | adapter-owned             | change for derivation behavior                      |
