@@ -8,6 +8,7 @@ import {
 } from '../src/conformance/module-conformance.js';
 import { findModule, listModules, requireModule } from '../src/modules/index.js';
 import { progressiveMarket } from '../src/modules/progressive-market/module.js';
+import { stakedSnapshotFor } from '../src/modules/progressive-market/checks.js';
 import {
   binaryBeaconReference,
   blackSignalReference,
@@ -17,6 +18,7 @@ import { sealCommitment } from '../src/core/commitment.js';
 import { ENGINE_LIMITS } from '../src/api/limits.js';
 import { rational, type Rational } from '../src/core/rational.js';
 import { snapshotHash } from '../src/core/snapshot.js';
+import { weightVector } from '../src/core/weights.js';
 import {
   orderingFixtureDefinition,
   orderingFixtureLargeDefinition,
@@ -71,7 +73,8 @@ describe('lifecycle module contract', () => {
       progressiveMarket.transcript.fromWire(progressiveMarket.transcript.toWire(transcript)),
     ).toEqual(transcript);
 
-    const belief = progressiveMarket.steps.belief(definition, steps);
+    // `outcomes` is the pricing space itself, so `belief()` is mandatory there.
+    const belief = progressiveMarket.steps.belief!(definition, steps);
     expect(belief.total).toBe(belief.weights.reduce((sum, weight) => sum + weight, 0n));
     expect(progressiveMarket.truth.encode(truth)).toEqual([truth]);
     expect(progressiveMarket.truth.equal(truth, truth)).toBe(true);
@@ -123,9 +126,41 @@ describe('lifecycle module contract', () => {
       expect(report.moduleId).toBe('progressive-market');
       expect(report.counters.transcripts).toBe(4);
       expect(report.counters.truthsSwept).toBe(4 * definition.outcomes.length);
-      expect(report.checks).toContain('TRUTH_SWEEP');
+      expect(report.checks).toEqual([
+        'NOT_DEEP_FROZEN',
+        'TRUTH_SWEEP',
+        'TRANSCRIPT_ROUND_TRIP',
+        'PROBABILITY_NOT_NORMALIZED',
+        'SNAPSHOT_NOT_REVALIDATED',
+      ]);
+      expect(report.counters.snapshotTampers).toBe(4 * 7);
     },
   );
+
+  /**
+   * The snapshot conformance check re-derives a staked mid-round snapshot by
+   * hand, because checks are synchronous and the book's command API is not.
+   * This pins that re-derivation against a snapshot taken from a real round, so
+   * a change to the book's shape fails loudly instead of silently reducing the
+   * tamper set to something restore would reject anyway.
+   */
+  it('builds the conformance snapshot exactly as a real staked round would', async () => {
+    const definition = constellationReference;
+    const seedHex = seed(13);
+    const roundId = 'conformance-13';
+    const transcript = progressiveMarket.transcript.build(seedHex, definition, roundId);
+    const book = progressiveMarket.book.create(definition);
+    await book.open({
+      idempotencyKey: 'open',
+      expectedFrameRevision: 0,
+      outcome: transcript.truth,
+      stake: 1_000n,
+    });
+    for (const event of transcript.evidence.slice(0, 3)) await book.advanceFrame(event);
+    expect(progressiveMarket.book.snapshot(book)).toEqual(
+      stakedSnapshotFor(definition, seedHex, roundId),
+    );
+  });
 
   it('reports a definition that violates the contract instead of throwing', () => {
     const report = checkModuleConformance(progressiveMarket, {} as never, 1);
@@ -152,6 +187,38 @@ describe('lifecycle module contract', () => {
       defineLifecycleModule({ ...orderingFixtureModule, ...mutation } as never),
     ).toThrow();
   });
+
+  /**
+   * `belief()` is the wall a combinatorial module hits first: `weightVector`
+   * admits 2..`maxOutcomes` entries, so a module whose per-item space is larger
+   * than 64 cannot produce one. That is exactly the module the `marginal` belief
+   * space exists for, so there the vector is optional and `price()` carries the
+   * money. Where the vector *is* the pricing space, it is mandatory.
+   */
+  it('makes belief() mandatory for an outcome space and optional for a marginal one', () => {
+    expect(() => weightVector([5n])).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WEIGHTS' }),
+    );
+    expect(() =>
+      weightVector(Array.from({ length: ENGINE_LIMITS.maxOutcomes + 1 }, () => 1n)),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_WEIGHTS' }));
+
+    expect(() =>
+      defineLifecycleModule({
+        ...progressiveMarket,
+        steps: { ...progressiveMarket.steps, belief: undefined },
+      } as never),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_MODULE' }));
+
+    // A marginal module with more items than a flat vector can hold still defines.
+    const beliefless = defineLifecycleModule({
+      ...orderingFixtureModule,
+      steps: { ...orderingFixtureModule.steps, belief: undefined },
+    } as never);
+    expect(beliefless.steps.beliefSpace).toBe('marginal');
+    expect(beliefless.steps.belief).toBeUndefined();
+    expect(typeof beliefless.steps.price).toBe('function');
+  });
 });
 
 describe('shape (a)/(c): permutation truth, zero elimination, combinatorial paytable', () => {
@@ -168,7 +235,7 @@ describe('shape (a)/(c): permutation truth, zero elimination, combinatorial payt
 
   it('eliminates revealed outcomes to exactly zero, never to an epsilon', () => {
     const transcript = orderingFixtureModule.transcript.build(seed(21), definition, 'r2');
-    const belief = orderingFixtureModule.steps.belief(definition, transcript.steps);
+    const belief = orderingFixtureModule.steps.belief!(definition, transcript.steps);
     expect(belief.total).toBe(1n);
     expect(belief.weights.filter((weight) => weight === 0n)).toHaveLength(3);
     expect(belief.weights[transcript.truth[0] as number]).toBe(1n);
