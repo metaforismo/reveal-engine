@@ -27,10 +27,15 @@ import {
 import {
   CommandLedger,
   commandFingerprint,
+  fromWireReceipt,
+  toWireReceipt,
   type Receipt as LedgerReceipt,
+  type StoredReceipt,
+  type WireReceipt,
 } from '../../src/core/ledger.js';
 import {
   assertClaimBudget,
+  assertLoggedChoices,
   defineLifecycleModule,
   samplerScopeOf,
   type ConformanceFailure,
@@ -41,7 +46,16 @@ import {
 } from '../../src/core/module.js';
 import { RandomTape, type TapeDraw } from '../../src/core/random.js';
 import { floor, multiply, rational, type Rational } from '../../src/core/rational.js';
-import { snapshotHash } from '../../src/core/snapshot.js';
+import {
+  assertSnapshotKeys,
+  assertSnapshotRecord,
+  assertSnapshotSize,
+  assertWireHex,
+  assertWireString,
+  parseSnapshotJson,
+  parseWireBigInt,
+  snapshotHash,
+} from '../../src/core/snapshot.js';
 import {
   classifyVerificationError,
   verificationFailure,
@@ -650,14 +664,216 @@ export class SurvivalBook {
         live: claim.live,
         banked: claim.banked,
       })),
+      receipts: this.#ledger.entries().map((stored) => ({
+        fingerprint: stored.fingerprint,
+        receipt: toWireReceipt(stored.receipt),
+      })),
     };
     return Object.freeze({ ...base, snapshotHash: snapshotHash(base) });
+  }
+
+  /**
+   * Re-validates a reconnect snapshot rather than trusting it.
+   *
+   * The decision log is part of the state that must survive: a round that loses
+   * its choices cannot be settled at all, because the settlement proof is a
+   * function of them. So the log is restored, re-checked against the resolved
+   * stage count, and reconciled with the receipt sequence — a `choose` receipt
+   * per logged decision, in order.
+   */
+  static restore(definition: SurvivalDefinition, input: string | object): SurvivalBook {
+    assertDefinition(definition);
+    const raw = parseSurvivalSnapshot(input);
+    if (raw.snapshotHash !== snapshotHash({ ...raw, snapshotHash: undefined }))
+      fail('INVALID_SNAPSHOT', 'Snapshot hash is invalid', '$.snapshotHash');
+    if (
+      raw.definition.id !== definition.id ||
+      raw.definition.fingerprint !== fingerprint(definition)
+    )
+      fail('DEFINITION_MISMATCH', 'Snapshot belongs to another definition', '$.definition');
+
+    const book = new SurvivalBook(definition);
+    book.#terminal = raw.terminal;
+    book.#stageRevision = raw.stageRevision;
+    if (raw.stageRevision > definition.stages || raw.choices.length < raw.stageRevision)
+      fail('INVALID_SNAPSHOT', 'Stage revision outruns the decision log', '$.stageRevision');
+    for (const choice of raw.choices) {
+      contractOf(definition, choice);
+      book.#choices.push(choice);
+    }
+    for (const claim of raw.claims) {
+      if (
+        !Number.isSafeInteger(claim.entity) ||
+        claim.entity < 0 ||
+        claim.entity >= definition.entities
+      )
+        fail('INVALID_SNAPSHOT', 'Unknown entity in snapshot', '$.claims');
+      book.#claims.set(
+        claim.entity,
+        Object.freeze({
+          entity: claim.entity,
+          stake: parseWireBigInt(claim.stake, '$.claims[].stake'),
+          value: rational(
+            parseWireBigInt(claim.value.numerator, '$.claims[].value.numerator', true),
+            parseWireBigInt(claim.value.denominator, '$.claims[].value.denominator'),
+          ),
+          live: claim.live,
+          banked: claim.banked,
+        }),
+      );
+    }
+    if (book.#claims.size !== raw.claims.length)
+      fail('INVALID_SNAPSHOT', 'Snapshot claim keys are not unique', '$.claims');
+
+    let staked = 0n;
+    let entries = 0;
+    let chooses = 0;
+    let credited = 0n;
+    let settled = false;
+    const stored: StoredReceipt<SurvivalAction>[] = raw.receipts.map((entry) => ({
+      fingerprint: entry.fingerprint,
+      receipt: fromWireReceipt<SurvivalAction>(entry.receipt, ACTIONS),
+    }));
+    book.#ledger.install(stored, book.#stageRevision, (receipt) => {
+      if (settled) fail('INVALID_SNAPSHOT', 'Receipts continue past settlement');
+      if (receipt.action === 'enter') {
+        if (chooses > 0 || receipt.debited <= 0n || receipt.credited !== 0n)
+          fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
+        // The receipt fingerprint pins the entity and the stake, so a rewritten
+        // claim list cannot survive its own receipt log.
+        const claim = raw.claims[entries];
+        if (
+          claim === undefined ||
+          receipt.commandFingerprint !==
+            commandFingerprint('enter', [claim.entity, parseWireBigInt(claim.stake, '$.claims')])
+        )
+          fail('INVALID_SNAPSHOT', 'Receipt does not match the restored claim', '$.claims');
+        staked += receipt.debited;
+        entries += 1;
+      } else if (receipt.action === 'choose') {
+        if (receipt.debited !== 0n || receipt.credited !== 0n)
+          fail('INVALID_SNAPSHOT', 'A logged decision must not move money');
+        // Same for decisions: the choice log is only as trustworthy as the
+        // receipts that recorded it, so re-derive the fingerprint and compare.
+        if (
+          receipt.commandFingerprint !==
+          commandFingerprint('choose', [chooses, book.#choices[chooses] as string])
+        )
+          fail('INVALID_SNAPSHOT', 'Receipt does not match the logged decision', '$.choices');
+        chooses += 1;
+      } else {
+        if (receipt.debited !== 0n)
+          fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
+        credited += receipt.credited;
+        settled = receipt.action === 'settle';
+      }
+    });
+    const capBasisStake =
+      raw.capBasisStake === null
+        ? undefined
+        : parseWireBigInt(raw.capBasisStake, '$.capBasisStake');
+    if (
+      entries !== book.#claims.size ||
+      chooses !== book.#choices.length ||
+      (entries === 0) !== (capBasisStake === undefined) ||
+      (capBasisStake !== undefined && capBasisStake !== staked)
+    )
+      fail('INVALID_SNAPSHOT', 'Snapshot state invariants failed');
+    if (credited !== parseWireBigInt(raw.liquidBalance, '$.liquidBalance', true))
+      fail('INVALID_SNAPSHOT', 'Snapshot accounting does not conserve liquid value');
+    book.#ledger.restoreBalances({
+      ledgerRevision: raw.ledgerRevision,
+      liquidBalance: credited,
+      capBasisStake,
+    });
+    return book;
   }
 
   /** Exact banked value of one claim, floored at the credit boundary only. */
   static bankableAmount(claim: SurvivalClaim): bigint {
     return floor(claim.value);
   }
+}
+
+interface SurvivalSnapshot {
+  readonly schema: typeof SNAPSHOT_SCHEMA;
+  readonly definition: { readonly id: string; readonly fingerprint: string };
+  readonly terminal: boolean;
+  readonly stageRevision: number;
+  readonly ledgerRevision: number;
+  readonly choices: readonly string[];
+  readonly liquidBalance: string;
+  readonly capBasisStake: string | null;
+  readonly claims: readonly {
+    readonly entity: number;
+    readonly stake: string;
+    readonly value: { readonly numerator: string; readonly denominator: string };
+    readonly live: boolean;
+    readonly banked: boolean;
+  }[];
+  readonly receipts: readonly { readonly fingerprint: string; readonly receipt: WireReceipt }[];
+  readonly snapshotHash: string;
+}
+
+function parseSurvivalSnapshot(input: string | object): SurvivalSnapshot {
+  const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
+  const candidate = assertSnapshotRecord(value, '$');
+  assertSnapshotKeys(
+    candidate,
+    [
+      'schema',
+      'definition',
+      'terminal',
+      'stageRevision',
+      'ledgerRevision',
+      'choices',
+      'liquidBalance',
+      'capBasisStake',
+      'claims',
+      'receipts',
+      'snapshotHash',
+    ],
+    '$',
+  );
+  if (
+    candidate.schema !== SNAPSHOT_SCHEMA ||
+    typeof candidate.terminal !== 'boolean' ||
+    !Number.isSafeInteger(candidate.stageRevision) ||
+    !Number.isSafeInteger(candidate.ledgerRevision) ||
+    !Array.isArray(candidate.claims) ||
+    !Array.isArray(candidate.receipts)
+  )
+    fail('INVALID_SNAPSHOT', 'Snapshot scalar fields are invalid', '$');
+  const definition = assertSnapshotRecord(candidate.definition, '$.definition');
+  assertSnapshotKeys(definition, ['id', 'fingerprint'], '$.definition');
+  assertWireString(definition.id, '$.definition.id');
+  assertWireHex(definition.fingerprint, '$.definition.fingerprint');
+  assertWireString(candidate.liquidBalance, '$.liquidBalance');
+  if (candidate.capBasisStake !== null)
+    assertWireString(candidate.capBasisStake, '$.capBasisStake');
+  assertLoggedChoices(candidate.choices as readonly unknown[], 'before-step', '$.choices');
+  (candidate.choices as readonly unknown[]).forEach((choice, index) =>
+    assertWireString(choice, `$.choices[${index}]`),
+  );
+  candidate.claims.forEach((item, index) => {
+    const claim = assertSnapshotRecord(item, `$.claims[${index}]`);
+    assertSnapshotKeys(claim, ['entity', 'stake', 'value', 'live', 'banked'], `$.claims[${index}]`);
+    assertWireString(claim.stake, `$.claims[${index}].stake`);
+    if (typeof claim.live !== 'boolean' || typeof claim.banked !== 'boolean')
+      fail('INVALID_SNAPSHOT', 'Claim flags must be booleans', `$.claims[${index}]`);
+    const value = assertSnapshotRecord(claim.value, `$.claims[${index}].value`);
+    assertSnapshotKeys(value, ['numerator', 'denominator'], `$.claims[${index}].value`);
+    assertWireString(value.numerator, `$.claims[${index}].value.numerator`);
+    assertWireString(value.denominator, `$.claims[${index}].value.denominator`);
+  });
+  candidate.receipts.forEach((item, index) => {
+    const entry = assertSnapshotRecord(item, `$.receipts[${index}]`);
+    assertSnapshotKeys(entry, ['fingerprint', 'receipt'], `$.receipts[${index}]`);
+    assertWireHex(entry.fingerprint, `$.receipts[${index}].fingerprint`);
+  });
+  assertWireHex(candidate.snapshotHash, '$.snapshotHash');
+  assertSnapshotSize(candidate);
+  return candidate as unknown as SurvivalSnapshot;
 }
 
 const tapeIsDeterministic: ModuleConformanceCheck<SurvivalShape> = {
@@ -838,7 +1054,7 @@ export const stagedSurvivalFixtureModule: LifecycleModule<SurvivalShape> =
       maxOpenClaims: 8,
       actions: ACTIONS,
       create: (definition) => new SurvivalBook(definition),
-      restore: () => fail('INVALID_SNAPSHOT', 'The survival fixture does not restore snapshots'),
+      restore: (definition, snapshot) => SurvivalBook.restore(definition, snapshot),
       snapshot: (book) => book.snapshot(),
     },
     conformance: {

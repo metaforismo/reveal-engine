@@ -16,6 +16,7 @@ import {
 import { sealCommitment } from '../src/core/commitment.js';
 import { ENGINE_LIMITS } from '../src/api/limits.js';
 import { rational, type Rational } from '../src/core/rational.js';
+import { snapshotHash } from '../src/core/snapshot.js';
 import {
   orderingFixtureDefinition,
   orderingFixtureLargeDefinition,
@@ -281,19 +282,29 @@ describe('shape (a)/(c): permutation truth, zero elimination, combinatorial payt
       [],
     );
     await book.settle('settle', transcript);
-    const snapshot = orderingFixtureModule.book.snapshot(book);
+    const snapshot = orderingFixtureModule.book.snapshot(book) as Record<string, unknown>;
     const restored = orderingFixtureModule.book.restore(definition, JSON.stringify(snapshot));
     expect(orderingFixtureModule.book.snapshot(restored)).toEqual(snapshot);
     expect(restored.claims).toHaveLength(2);
     expect(restored.capBasisStake).toBe(125n);
-    for (const tampered of [
-      { ...snapshot, liquidBalance: '999999' },
-      { ...snapshot, capBasisStake: '999999' },
-      { ...snapshot, terminal: false },
-    ])
+    // Re-sealed, so each mutation is rejected on its merits rather than by the
+    // snapshot hash: a tampered store would recompute the hash too.
+    for (const mutation of [
+      { liquidBalance: '999999' },
+      { capBasisStake: '999999' },
+      { terminal: false },
+      { claims: [] },
+      { ledgerRevision: 9 },
+    ]) {
+      const tampered = {
+        ...snapshot,
+        ...mutation,
+        snapshotHash: snapshotHash({ ...snapshot, ...mutation, snapshotHash: undefined }),
+      };
       expect(() =>
         orderingFixtureModule.book.restore(definition, JSON.stringify(tampered)),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+    }
   });
 
   it('refuses a stake on an outcome already eliminated to zero', async () => {

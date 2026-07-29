@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ENGINE_LIMITS } from '../src/api/limits.js';
 import { sealSeedCommitment } from '../src/core/commitment.js';
+import { snapshotHash } from '../src/core/snapshot.js';
 import { defineLifecycleModule } from '../src/core/module.js';
 import { COMMITMENT_VERSION } from '../src/core/versions.js';
 import { assertModuleConformance } from '../src/conformance/module-conformance.js';
@@ -21,6 +22,12 @@ const roundOf = (roundId: string): Parameters<typeof survival.steps.derive>[2] =
     roundId,
     proofVersion: COMMITMENT_VERSION,
   });
+
+/** Recomputes the checksum so a mutation is judged on its merits, not on the hash. */
+const reseal = (snapshot: Record<string, unknown>): Record<string, unknown> => ({
+  ...snapshot,
+  snapshotHash: snapshotHash({ ...snapshot, snapshotHash: undefined }),
+});
 
 /** Every stage resolved under one contract, for a round that plays to the end. */
 const allStages = (contract: string): string[] =>
@@ -197,6 +204,44 @@ describe('shape (b): a round whose transcript is a function of seed and choices'
     await expect(fresh.choose('choose-unknown', 'nope')).rejects.toMatchObject({
       code: 'INVALID_CHOICE',
     });
+  });
+
+  it('reconnects mid-round with the decision log intact, and rejects a tampered one', async () => {
+    const roundId = 'r9';
+    const truth = survival.truth.derive(seed(49), definition, roundId);
+    const book = survival.book.create(definition);
+    await book.enter('enter-0', 0, 60n);
+    await book.enter('enter-1', 1, 40n);
+    await book.choose('choose-0', 'steady');
+    const steps = survival.steps.derive(seed(49), definition, roundOf(roundId), truth, ['steady']);
+    await book.resolve(steps[0] as SurvivalStep);
+
+    const snapshot = survival.book.snapshot(book) as Record<string, unknown>;
+    const restored = survival.book.restore(definition, JSON.stringify(snapshot));
+    // A round that loses its decision log cannot be settled at all: the proof is
+    // a function of it. So the log is state, and it must survive the reconnect.
+    expect(restored.choices).toEqual(['steady']);
+    expect(restored.stageRevision).toBe(1);
+    expect(restored.capBasisStake).toBe(100n);
+    expect(survival.book.snapshot(restored)).toEqual(snapshot);
+
+    // Re-sealed, so each mutation is rejected on its merits rather than by the
+    // snapshot hash: a tampered store would recompute the hash too.
+    for (const mutation of [
+      { choices: ['bold'] },
+      { choices: [] },
+      { capBasisStake: '999999' },
+      { liquidBalance: '5' },
+      { stageRevision: 3 },
+      { claims: [] },
+    ]) {
+      const tampered = reseal({ ...snapshot, ...mutation });
+      expect(() => survival.book.restore(definition, JSON.stringify(tampered))).toThrowError(
+        expect.objectContaining({
+          code: expect.stringMatching(/INVALID_SNAPSHOT|INVALID_CHOICE/u),
+        }),
+      );
+    }
   });
 
   it('passes its own declared conformance checks', () => {

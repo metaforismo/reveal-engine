@@ -238,6 +238,14 @@ definition identity, run the receipt log through `install()` with the module's
 own state-machine rules, and reconcile the reconstructed balance against the
 snapshot before installing it with `restoreBalances()`.
 
+Anything a snapshot asserts about _what the player did_ must be re-derived from
+the receipt log, not read out of the snapshot. Recompute each receipt's
+`commandFingerprint` from the restored state and compare: that is what stops a
+rewritten claim list or a rewritten decision log from surviving a reconnect
+under a recomputed checksum. A choice-timed module has to do this — its
+settlement proof is a function of the decision log, so the log is money-bearing
+state.
+
 ### 6. Verifier
 
 `verify(seed, definition, input) -> VerificationResult`.
