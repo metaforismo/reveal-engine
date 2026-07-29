@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { fromWireReceipt, RECEIPT_SCHEMA, type WireReceipt } from '../src/core/ledger.js';
 import { RoundBook, ROUND_ACTIONS } from '../src/modules/progressive-market/round-book.js';
 import { verifyTranscriptDetailed } from '../src/modules/progressive-market/fairness.js';
@@ -23,10 +23,16 @@ const readFixture = (name: string): Record<string, unknown> =>
  * build until someone makes a version decision.
  */
 describe('frozen wire fixtures', () => {
+  // Built once for the whole file: assigning it inside the first `it` made every
+  // other case depend on that case having run, so `-t`, sharding, or a shuffled
+  // sequence would turn this file's guarantee into a TypeError instead of a
+  // failed comparison.
   let round: FrozenRound;
+  beforeAll(async () => {
+    round = await buildFrozenRound();
+  });
 
   it('rebuilds the frozen round deterministically', async () => {
-    round = await buildFrozenRound();
     const again = await buildFrozenRound();
     expect(JSON.stringify(again.snapshot)).toBe(JSON.stringify(round.snapshot));
   });

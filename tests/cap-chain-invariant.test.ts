@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RevealEngineError } from '../src/api/errors.js';
 import { CommandLedger } from '../src/core/ledger.js';
 import { rational } from '../src/core/rational.js';
+import type { EvidenceEvent } from '../src/modules/progressive-market/contracts.js';
 import { initialPosterior } from '../src/modules/progressive-market/posterior.js';
 import { makeTranscript } from '../src/modules/progressive-market/fairness.js';
 import { RoundBook } from '../src/modules/progressive-market/round-book.js';
@@ -16,9 +17,10 @@ import { seed } from './helpers.js';
  *
  * Mechanically that is `liquidBalance <= capBasisStake * maxWinMultiple`, held
  * at every point in a round, where the basis counts externally funded stakes
- * only. This file proves it by enumeration rather than by argument: every
- * command sequence up to length five over a representative alphabet, checked
- * after every single step.
+ * only. This file proves it by enumeration rather than by argument: all 7,380
+ * command sequences up to length four over a nine-symbol alphabet (9 + 9² + 9³
+ * + 9⁴), checked after every single step, plus seeded longer interleavings and
+ * one real progressive-market round.
  */
 const MAX_WIN_MULTIPLE = 10n;
 
@@ -178,7 +180,24 @@ describe('cap-chain invariant, by enumeration', () => {
       stake: 1000n,
     });
     check();
-    for (const event of transcript.evidence) {
+    await book.advanceFrame(transcript.evidence[0] as EvidenceEvent);
+    check();
+
+    // Liquidate, then put the whole proceeds back at risk: the recycled branch
+    // of `fundStake` is the one that must not move the basis.
+    const sold = await book.sell({ idempotencyKey: 'sell', expectedFrameRevision: 1 });
+    expect(sold.credited).toBeGreaterThan(0n);
+    check();
+    await book.open({
+      idempotencyKey: 'reopen',
+      expectedFrameRevision: 1,
+      outcome: transcript.truth,
+      stake: sold.credited,
+    });
+    expect(book.liquidBalance).toBe(0n);
+    check();
+
+    for (const event of transcript.evidence.slice(1)) {
       await book.advanceFrame(event);
       check();
     }
@@ -191,5 +210,6 @@ describe('cap-chain invariant, by enumeration', () => {
     check();
     // The basis is the externally funded stake only, never the re-staked wins.
     expect(book.capBasisStake).toBe(1000n);
+    expect(book.ledgerRevision).toBe(4);
   });
 });

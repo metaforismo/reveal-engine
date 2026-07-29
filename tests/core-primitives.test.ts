@@ -360,6 +360,30 @@ describe('exact counting over structured truth spaces', () => {
     expect(fallingFactorial(3, 8)).toBe(0n);
   });
 
+  /**
+   * `maxPermutationSize` (1,024) bounds shuffling; `maxBigIntBits` (4,096)
+   * bounds what a `Rational` can carry, and `536!` is 4,092 bits. The two limits
+   * meet in the counting primitives, which must report the disagreement in their
+   * own taxonomy rather than letting an `INVALID_RATIONAL` escape from
+   * elsewhere.
+   */
+  it('bounds an exact count by what a rational can carry, in its own taxonomy', () => {
+    expect(factorial(536).toString(2).length).toBe(4096 - 4);
+    expect(() => factorial(537)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WEIGHTS', path: '$.n' }),
+    );
+    expect(() => fallingFactorial(1000, 900)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WEIGHTS', path: '$.k' }),
+    );
+    expect(() => factorial(ENGINE_LIMITS.maxPermutationSize + 1)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CONTEXT' }),
+    );
+    expect(() => countingProbability(1n, 2n ** BigInt(ENGINE_LIMITS.maxBigIntBits))).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WEIGHTS', path: '$.support' }),
+    );
+    expect(countingProbability(1n, factorial(536))).toBeDefined();
+  });
+
   it('prices a combinatorial event the flat weight vector cannot hold', () => {
     // A trifecta over eight runners is one of 336 events; ENGINE_LIMITS.maxOutcomes is 64.
     expect(336n).toBeGreaterThan(BigInt(ENGINE_LIMITS.maxOutcomes));

@@ -16,7 +16,13 @@ export const ENGINE_LIMITS = Object.freeze({
   maxLoggedChoices: 10_000,
   /** Steps a lifecycle module may declare for one round. */
   maxSteps: 10_000,
-  /** Elements in one seeded permutation draw (deck shuffles, ordered truth models). */
+  /**
+   * Elements in one seeded permutation draw (deck shuffles, ordered truth models).
+   *
+   * This bounds shuffling, not counting: an exact count is separately bounded by
+   * `maxBigIntBits`, which `536!` already reaches. `core/combinatorics.ts`
+   * enforces that second bound with `INVALID_WEIGHTS`.
+   */
   maxPermutationSize: 1_024,
   /** Draws one recorded random tape may contain. */
   maxTapeDraws: 10_000,
