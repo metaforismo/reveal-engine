@@ -21,6 +21,7 @@ import {
   parseWireBigInt,
   snapshotHash,
 } from '../../core/snapshot.js';
+import { assertRational, isRecord } from '../../core/validation.js';
 import { survivalFingerprint } from './adapter.js';
 import { lanePartition } from './distribution.js';
 import {
@@ -700,8 +701,48 @@ export class SurvivalBook {
       book.#steps.push(step);
       field = step.survivors;
     });
+    // The trailing decision — logged, not yet resolved — is the one choice in
+    // the snapshot that no step is checked against, so nothing above has
+    // re-validated it. It has to run the admission test `choose()` runs, from
+    // the same call, or `restore()` admits a state the live path refuses.
+    //
+    // What that costs is availability on a round holding money, which is this
+    // module's recurring failure shape and the one §7.3 promises against: a
+    // pending decision naming an unknown contract, or one the menu does not
+    // offer at the field it faces, restores with its credit already standing and
+    // then has no legal move left — `resolve()` fails on the contract,
+    // `settle()` refuses because a decision is unresolved, and `bank()` refuses
+    // because one is pending. No value is created and the cap is untouched; the
+    // round simply cannot be finished.
+    //
+    // The field is derived the way `deriveSteps()` derives it: the survivors of
+    // the last resolved step, minus the subset this decision withdrew.
     const pending = raw.choices[raw.stageRevision];
-    if (pending !== undefined) book.#choices.push(pending);
+    if (pending !== undefined) {
+      const path = `$.choices[${raw.stageRevision}]`;
+      const running = new Set(field);
+      for (const entity of pending.banked) {
+        if (!running.has(entity))
+          fail(
+            'INVALID_SNAPSHOT',
+            'A pending decision banks an entity that was not running',
+            `${path}.banked`,
+          );
+        running.delete(entity);
+      }
+      try {
+        contractFor(definition, pending.contractId, running.size);
+      } catch (error) {
+        fail(
+          'INVALID_SNAPSHOT',
+          error instanceof RevealEngineError
+            ? error.message
+            : 'Pending decision does not name a contract of this definition',
+          `${path}.contractId`,
+        );
+      }
+      book.#choices.push(pending);
+    }
 
     const seen = new Set<number>();
     for (const entry of raw.entries) {
@@ -933,6 +974,8 @@ export class SurvivalBook {
 
   /** Exact banked value of one claim, floored at the credit boundary only. */
   static bankableAmount(claim: SurvivalClaim): bigint {
+    if (!isRecord(claim)) fail('CLAIM_REJECTED', 'Expected a claim', '$.claim');
+    assertRational(claim.value, '$.claim.value');
     return floor(claim.value);
   }
 }

@@ -153,7 +153,57 @@ export function parseWireStepList(value: unknown, path: string): readonly Surviv
   return Object.freeze(value.map((step, index) => parseStep(step, index, `${path}[${index}]`)));
 }
 
+/**
+ * The shape `transcriptToWire()` copies, checked before it copies it.
+ *
+ * The argument is nominally the module's own object, but `SurvivalBook.settle()`
+ * reaches this encoder with whatever transcript its caller passed — the wire
+ * form is what the verifier then re-parses — so a money-bearing command depends
+ * on it. Before this existed, `settle(key, seed, null)` and a transcript
+ * carrying a malformed step both left that command through a bare `TypeError`
+ * from a `.map` or a spread.
+ *
+ * This checks only what the copy below dereferences. Everything semantic — key
+ * sets, entity ranges, ordering, byte bounds — still belongs to
+ * `deserializeTranscript`, which runs on the result and is the real boundary.
+ */
+function assertTranscriptShape(value: unknown, path = '$'): asserts value is SurvivalTranscript {
+  if (!isRecord(value)) fail('INVALID_TRANSCRIPT', 'Expected a transcript', path);
+  if (!Array.isArray(value.choices))
+    fail('INVALID_TRANSCRIPT', 'Choice log is not an array', `${path}.choices`);
+  // Indexed rather than `forEach`: an iteration callback skips a hole, and the
+  // copy below is a `.map`, which preserves one.
+  for (let index = 0; index < value.choices.length; index += 1) {
+    const choice: unknown = value.choices[index];
+    if (!isRecord(choice) || !Array.isArray(choice.banked))
+      fail('INVALID_TRANSCRIPT', 'Expected a logged decision', `${path}.choices[${index}]`);
+  }
+  if (!Array.isArray(value.steps))
+    fail('INVALID_TRANSCRIPT', 'Step log is not an array', `${path}.steps`);
+  for (let index = 0; index < value.steps.length; index += 1) {
+    const step: unknown = value.steps[index];
+    if (
+      !isRecord(step) ||
+      !Array.isArray(step.banked) ||
+      !Array.isArray(step.survivors) ||
+      !Array.isArray(step.failed) ||
+      !Array.isArray(step.lanes)
+    )
+      fail('INVALID_TRANSCRIPT', 'Expected a resolved step', `${path}.steps[${index}]`);
+    for (let laneIndex = 0; laneIndex < step.lanes.length; laneIndex += 1) {
+      const lane: unknown = step.lanes[laneIndex];
+      if (!isRecord(lane) || !Array.isArray(lane.entities))
+        fail(
+          'INVALID_TRANSCRIPT',
+          'Expected a resolved lane',
+          `${path}.steps[${index}].lanes[${laneIndex}]`,
+        );
+    }
+  }
+}
+
 export function transcriptToWire(transcript: SurvivalTranscript): object {
+  assertTranscriptShape(transcript);
   return Object.freeze({
     schema: transcript.schema,
     definitionId: transcript.definitionId,

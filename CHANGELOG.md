@@ -48,6 +48,72 @@ The second lifecycle module: `staged-survival`.
 
 ### Fixed
 
+- **`restore()` runs the live path's admission test on the _pending_ decision.**
+  Every choice with a resolved step was re-validated through
+  `assertStepGeometry()` -> `contractFor()`. The trailing one — logged by
+  `choose()`, not yet resolved — had no step to be checked against, so it arrived
+  through nothing but the structural wire parse and its contract id was never
+  matched against the menu it faces. A re-sealed, fingerprint-consistent snapshot
+  whose pending decision named an unknown contract, or one the field is too small
+  to be offered, restored with its bank credit already standing and no legal move
+  left: `resolve()` fails on `contractFor`, `settle()` refuses an unresolved
+  decision, and `bank()` refuses a pending one. No value is created and the cap is
+  untouched; the loss is availability on a round holding money — the same shape as
+  `enter -> bank -> enter` and the lane-geometry drift, one field over, and the
+  third time this module has fixed it. `restore()` now calls `contractFor()` on
+  the field the decision faces and holds its banked subset to the entities that
+  were running. `tests/security/staged-survival-hostile-input.test.ts` carries the
+  metamorphic half: what `choose()` refuses, `restore()` refuses.
+- **`laneSizes()` bounds the field size, not only its sign.** The width is the
+  loop's decrement and was bounded; `liveCount` is the _length of the array the
+  loop builds_ and was checked only for being a non-negative safe integer.
+  Measured on the exported helper: `3e7` allocated thirty million elements and
+  returned, `1e9` spent five seconds and died with a bare `RangeError` — an
+  unbounded allocation and an untyped throw out of a public export.
+  `SURVIVAL_LIMITS.maxEntities` is 32, so no legitimate call is affected;
+  `lanePartition()`, `expectedSurvivors()` and `liveAfter()`'s entity count take
+  the same bound for the same reason.
+- **`liveAfter()`, `belief()` and `price()` no longer price a corrupt step
+  prefix.** The guard read `steps[steps.length - 1]` and returned early only on
+  `undefined`, which conflated "no steps yet" with "a hole where the last step
+  should be". Two failures fell out: a nullish element dereferenced null for a
+  bare `TypeError`, and — worse in kind — `price(definition, [undefined], claim)`
+  took the empty branch and returned a live entity's marginal for a round whose
+  prefix is corrupt. A silently wrong price is a worse outcome than a loud
+  refusal. The length now decides the branch, every element of the prefix is
+  checked, and a hole is a malformed prefix: `DERIVATION_FAILED`.
+- **Nothing on the exported surface throws an untyped error.** The claim was
+  unqualified and a systematic sweep found 47 places where it was false. The
+  probability helpers validated `contract.laneWidth` and then dereferenced
+  `profile.laneFailure.numerator`, so `{laneWidth: 2}` came back as a `TypeError`
+  from a pricing call; `resolveStage()` bounded what its draw sources returned but
+  never checked they were callable, and let whatever a throwing callback raised
+  propagate; `distributionTotal`, `expectedSurvivorsFromDistribution`,
+  `threshold`, `stepsEqual`, `choicesEqual`, `transcriptToWire`,
+  `serializeTranscript` and `SurvivalBook.bankableAmount` read `.length` or a
+  field off `null`. None was reachable from an untrusted path — `verify()`,
+  `deserializeTranscript()` and `restore()` were and are total — but the claim was
+  the thing under test, so the helpers moved rather than the claim. A shared
+  `assertLaneProfile()` holds a contract to the same ranges a declared one is held
+  to; `survivorDistribution()` additionally requires the contract to be one its
+  definition declares, since a foreign one's denominators need not divide
+  `drawModulus` and its law is one no round of that game could realise;
+  `resolveStage()` requires callable sources and wraps what they throw in
+  `DERIVATION_FAILED`, passing a typed failure from inside a source through
+  unchanged. Every new validator iterates **by index**, because `forEach`, `map`,
+  `every` and `reduce` all skip holes and a sparse array is exactly the shape that
+  would walk past them. The sweep is kept as a test over every exported entry
+  point, so a new export that forgets its guards fails it.
+  `docs/adr/0006-the-exported-surface-is-held-to-the-command-surface-standard.md`
+  records the decision and the two behaviour changes a consumer could notice.
+- **`npm run fixtures:update` is idempotent against the repo's own format gate.**
+  It wrote raw `JSON.stringify(…, 2)`, which disagrees with prettier over short
+  arrays, so regenerating an unchanged fixture left four files dirty with a
+  pure-whitespace diff and `npm run verify` then failed at `format:check` — while
+  `docs/modules/staged-survival.md` §7.4 points readers at that command as the
+  deliberate regeneration path. The script now formats its output with prettier
+  and the repo's own configuration, and regenerating an unchanged fixture leaves
+  the tree clean.
 - **`bank()` now carries the same full-funding guard as `choose()`.**
   `enter(0) -> bank([0])` was accepted by the live path and credited real money,
   after which `enter(1..4)` was still legal — and `restore()` refuses an `enter`

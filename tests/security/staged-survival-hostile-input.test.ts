@@ -1,24 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import { RevealEngineError } from '../../src/api/errors.js';
 import { ENGINE_LIMITS } from '../../src/api/limits.js';
+import { commandFingerprint } from '../../src/core/ledger.js';
 import { rational } from '../../src/core/rational.js';
 import { snapshotHash } from '../../src/core/snapshot.js';
 import {
+  SURVIVAL_LIMITS,
   SurvivalBook,
   belief,
+  choicesEqual,
   deriveSteps,
   deriveTruth,
   deserializeTranscript,
+  distributionTotal,
+  expectedSurvivors,
+  expectedSurvivorsFromDistribution,
   fiveRunnerReference,
   lanePartition,
   laneSizes,
+  laneSurvivorDistribution,
+  liveAfter,
   makeTranscript,
+  marginalSurvival,
   price,
   resolveStage,
   roundRefId,
   serializeTranscript,
   stagedSurvival,
+  stepsEqual,
   survivalFingerprint,
+  survivorDistribution,
+  threshold,
   transcriptToWire,
   type SurvivalStep,
 } from '../../src/modules/staged-survival/index.js';
@@ -546,6 +558,91 @@ describe('staged-survival: the snapshot boundary', () => {
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
+  it('refuses a pending decision the live path would refuse', async () => {
+    // Regression, and the third of this module's stranded-credit shapes after
+    // `enter -> bank -> enter` and the lane-geometry drift. Every choice that
+    // has a resolved step is re-validated through `assertStepGeometry` ->
+    // `contractFor`. The **trailing** one — logged by `choose()`, not yet
+    // resolved — had no step to be checked against, so it arrived through
+    // nothing but the structural wire parse and its contract id was never
+    // matched against the menu it would face.
+    //
+    // Restored, such a round holds real credit and has no legal move left:
+    // `resolve()` fails on `contractFor`, `settle()` refuses because a decision
+    // is unresolved, and `bank()` refuses because one is pending. No value is
+    // created and the cap is untouched; the loss is availability on a
+    // money-holding round, which is exactly what §7.3 promises against.
+    //
+    // Both forgeries below re-seal the checksum **and** repoint the `choose`
+    // receipt's command fingerprint, so the snapshot is internally consistent
+    // and is judged on the one thing left: whether this is a decision
+    // `choose()` would have taken.
+    /** A round banked down to two runners, where `wide` is off the menu. */
+    const twoRunners = async (): Promise<SurvivalBook> => {
+      const staked = await stakedBook();
+      while (staked.live.length > 2)
+        await staked.bank(`bank-down-${staked.live.length}`, [staked.live[0] as number]);
+      expect(staked.live).toEqual([3, 4]);
+      // Two runners left, so `wide` (minEntities 3) is off the menu — an id this
+      // definition declares and this field cannot be offered.
+      expect(staked.menu()).toEqual(['split', 'narrow']);
+      return staked;
+    };
+
+    const book = await twoRunners();
+    await book.choose('choose-1', 'split');
+    const snapshot = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
+    const pending = (snapshot.choices as { contractId: string; banked: number[] }[])[1];
+    expect(pending).toEqual({ contractId: 'split', banked: [0, 1, 2] });
+    // The honest pending decision still restores, credit and all.
+    expect(SurvivalBook.restore(definition, snapshot).liquidBalance).toBe(book.liquidBalance);
+    expect(book.liquidBalance).toBeGreaterThan(0n);
+
+    const repoint = (contractId: string, banked: number[]): Record<string, unknown> => {
+      const fingerprint = commandFingerprint('choose', [1, contractId, banked.length, ...banked]);
+      return reseal({
+        ...snapshot,
+        choices: [(snapshot.choices as unknown[])[0], { contractId, banked }],
+        receipts: (
+          snapshot.receipts as {
+            fingerprint: string;
+            receipt: { action: string; frameRevision: number; commandFingerprint: string };
+          }[]
+        ).map((entry) =>
+          entry.receipt.action === 'choose' && entry.receipt.frameRevision === 1
+            ? { fingerprint, receipt: { ...entry.receipt, commandFingerprint: fingerprint } }
+            : entry,
+        ),
+      });
+    };
+
+    for (const contractId of ['wide', 'not-a-contract']) {
+      let thrown: unknown;
+      try {
+        SurvivalBook.restore(definition, repoint(contractId, [0, 1, 2]));
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, contractId).toMatchObject({
+        code: 'INVALID_SNAPSHOT',
+        path: '$.choices[1].contractId',
+      });
+      // The metamorphic half: what `restore()` refuses is exactly what the live
+      // command refuses, from the same call on the same field.
+      const live = await twoRunners();
+      await expect(live.choose(`live-${contractId}`, contractId)).rejects.toMatchObject({
+        code: 'INVALID_CHOICE',
+      });
+    }
+
+    // The subset a pending decision claims to have withdrawn is held to the
+    // same field. Entity 7 is inside the wire parser's bound — that is the
+    // module maximum, not this definition's five — and was never running.
+    expect(() => SurvivalBook.restore(definition, repoint('split', [0, 1, 2, 7]))).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.choices[1].banked' }),
+    );
+  });
+
   it('rejects a structurally hostile snapshot with a typed error', async () => {
     const book = await stakedBook();
     const snapshot = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
@@ -623,6 +720,144 @@ describe('staged-survival: hostile arguments to the pricing surface', () => {
     expect([...laneSizes(sane, 5)]).toEqual([3, 2]);
   });
 
+  it('bounds the field size of the exported partition helpers, not only its sign', () => {
+    // The width is the loop's decrement; `liveCount` is the **length of the
+    // array the loop builds**, and only the negative end of it was closed.
+    // `laneSizes(narrow, 3e7)` allocated thirty million elements and returned,
+    // and `1e9` spent seconds before dying with a bare `RangeError` out of the
+    // allocator — an untyped throw out of a public export. No field can exceed
+    // `SURVIVAL_LIMITS.maxEntities`, so the bound refuses nothing legitimate.
+    const narrow = definition.contracts[2] as (typeof definition.contracts)[number];
+    expect(laneSizes(narrow, SURVIVAL_LIMITS.maxEntities)).toHaveLength(
+      SURVIVAL_LIMITS.maxEntities,
+    );
+    for (const liveCount of [SURVIVAL_LIMITS.maxEntities + 1, 3e7, 1e9, 2 ** 53]) {
+      const started = Date.now();
+      expect(() => laneSizes(narrow, liveCount)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_CHOICE', path: '$.liveCount' }),
+      );
+      // Refused *before* it allocates, which is the point of the bound.
+      expect(Date.now() - started).toBeLessThan(100);
+    }
+    // `lanePartition()` inherits the bound through `laneSizes()`, so a hostile
+    // field is refused before it is sliced.
+    expect(() =>
+      lanePartition(
+        narrow,
+        Array.from({ length: SURVIVAL_LIMITS.maxEntities + 1 }, (_value, index) => index),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_CHOICE' }));
+    expect(() => expectedSurvivors(narrow, 1e9)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CHOICE' }),
+    );
+    // `BigInt(1.5)` is a bare `RangeError`, so the same bound covers it.
+    expect(() => expectedSurvivors(narrow, 1.5)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CHOICE' }),
+    );
+  });
+
+  it('refuses a malformed step prefix rather than pricing a corrupt round', () => {
+    // `liveAfter()` read `steps[steps.length - 1]` and branched on `undefined`,
+    // which conflated "no steps yet" with "a hole where the last step should
+    // be". Two failures came out of that: a nullish element dereferenced null
+    // for a bare `TypeError`, and — worse in kind — a prefix of `[undefined]`
+    // took the empty branch, so `price()` returned a live entity's marginal for
+    // a round whose prefix is corrupt. A silently wrong price is worse than a
+    // loud refusal.
+    const claim = { entity: 0, contractId: 'wide' };
+    const full = Object.freeze([0, 1, 2, 3, 4]);
+    expect(liveAfter(definition, [])).toEqual(full);
+    expect(belief(definition, []).weights).toHaveLength(definition.entities + 1);
+    for (const prefix of [[null], [undefined], [0], [{}], [{ survivors: 'x' }], new Array(1)]) {
+      for (const call of [
+        () => liveAfter(definition, prefix as never),
+        () => belief(definition, prefix as never),
+        () => price(definition, prefix as never, claim),
+      ]) {
+        let thrown: unknown;
+        try {
+          call();
+        } catch (error) {
+          thrown = error;
+        }
+        expect(thrown, JSON.stringify(prefix)).toMatchObject({ code: 'DERIVATION_FAILED' });
+      }
+    }
+    // A hole anywhere in the prefix is a malformed prefix, not only a hole at
+    // the end: the last element alone decides the answer, so a caller holding a
+    // corrupt prefix must not get an answer that happens to look right.
+    const honest = deriveSteps(definition, deriveTruth(SEED, definition, ROUND_ID), [
+      { contractId: 'wide', banked: [] },
+    ]);
+    expect(() => price(definition, [null, ...honest] as never, claim)).toThrowError(
+      expect.objectContaining({ code: 'DERIVATION_FAILED' }),
+    );
+    // And the definition it is read against is checked too: the empty branch
+    // builds an array of `definition.entities` elements.
+    expect(() => liveAfter({ entities: 1e9 } as never, [])).toThrowError(
+      expect.objectContaining({ code: 'DERIVATION_FAILED' }),
+    );
+  });
+
+  it('refuses a contract the probability surface cannot price', () => {
+    // Every helper here dereferenced `profile.laneFailure.numerator` after
+    // validating `laneWidth` and nothing else, so `{laneWidth: 2}` came back as
+    // a `TypeError` from a pricing call.
+    const junk: readonly unknown[] = [
+      undefined,
+      null,
+      0,
+      'wide',
+      {},
+      { laneWidth: 2 },
+      { laneWidth: 2, profile: {} },
+      { laneWidth: 2, profile: { laneFailure: rational(1n, 2n) } },
+      // Out of range: a "probability" of 3/2 does not produce a wrong price, it
+      // produces a signed one and a law that sums to something other than 1.
+      {
+        laneWidth: 2,
+        profile: { laneFailure: rational(3n, 2n), entitySurvival: rational(1n, 2n) },
+      },
+      { laneWidth: 2, profile: { laneFailure: rational(0n), entitySurvival: rational(0n) } },
+    ];
+    for (const [index, contract] of junk.entries())
+      for (const [name, call] of [
+        ['marginalSurvival', () => marginalSurvival(contract as never)],
+        ['expectedSurvivors', () => expectedSurvivors(contract as never, 2)],
+        ['laneSurvivorDistribution', () => laneSurvivorDistribution(contract as never, 1)],
+        ['survivorDistribution', () => survivorDistribution(definition, contract as never, 2)],
+      ] as const) {
+        let thrown: unknown;
+        try {
+          call();
+        } catch (error) {
+          thrown = error;
+        }
+        const label = `${name}(junk[${index}])`;
+        expect(thrown, label).toBeInstanceOf(RevealEngineError);
+        expect(['INVALID_ADAPTER', 'INVALID_CHOICE', 'INVALID_RATIONAL'], label).toContain(
+          (thrown as RevealEngineError).code,
+        );
+      }
+    // A structurally valid contract this definition does not declare has a law,
+    // but not one any round of this game could realise: its denominator (7) does
+    // not divide the reference draw modulus, so no threshold here corresponds to
+    // the probabilities being convolved.
+    const foreign = {
+      ...(definition.contracts[0] as (typeof definition.contracts)[number]),
+      profile: { laneFailure: rational(1n, 7n), entitySurvival: rational(1n, 2n) },
+    };
+    expect(() => survivorDistribution(definition, foreign, 3)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CHOICE', path: '$.contract' }),
+    );
+    // A structural clone of a declared contract is still not that contract.
+    const clone = { ...(definition.contracts[0] as (typeof definition.contracts)[number]) };
+    expect(() => survivorDistribution(definition, clone, 3)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CHOICE' }),
+    );
+    expect(survivorDistribution(definition, definition.contracts[0] as never, 3)).toHaveLength(4);
+  });
+
   it('refuses a hostile stake or entity at the book boundary', async () => {
     const book = new SurvivalBook(definition);
     for (const [entity, stake] of [
@@ -695,6 +930,139 @@ describe('staged-survival: hostile arguments to the pricing surface', () => {
           () => entityDraw,
         ),
       ).toThrowError(expect.objectContaining({ code: 'DERIVATION_FAILED' }));
+  });
+
+  it('holds a draw source to being callable, and to this resolver’s taxonomy', () => {
+    // The resolver bounded what its sources *returned* and trusted that they
+    // were sources: a non-function gave `laneDraw is not a function` and a
+    // throwing callback propagated whatever it raised. Both are argument
+    // defects, and the documented standard is that this function validates its
+    // own arguments rather than trusting whichever caller reached it first.
+    for (const source of [undefined, null, 0, 'draw', {}])
+      for (const [laneDraw, entityDraw] of [
+        [source, () => 0n],
+        [() => 0n, source],
+      ] as const)
+        expect(() =>
+          resolveStage(definition, 'narrow', [0, 1], laneDraw as never, entityDraw as never),
+        ).toThrowError(expect.objectContaining({ code: 'DERIVATION_FAILED' }));
+    expect(() =>
+      resolveStage(
+        definition,
+        'narrow',
+        [0, 1],
+        () => {
+          throw new Error('boom');
+        },
+        () => 0n,
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'DERIVATION_FAILED', path: '$.laneDraw' }));
+    // A typed failure raised *inside* a source is more specific than anything
+    // this frame could say about it, so it passes through untouched. This is the
+    // shape `deriveSteps()` relies on: `tapeValue()` refuses a draw missing from
+    // its declared address, and that message is the one a caller needs.
+    let thrown: unknown;
+    try {
+      resolveStage(
+        definition,
+        'narrow',
+        [0, 1],
+        () => {
+          throw new RevealEngineError('STALE_FRAME', 'from inside the source', '$.inner');
+        },
+        () => 0n,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: 'STALE_FRAME', path: '$.inner' });
+    expect(() =>
+      deriveSteps(definition, { draws: [], digest: '' } as never, [
+        { contractId: 'narrow', banked: [] },
+      ]),
+    ).toThrowError(expect.objectContaining({ code: 'DERIVATION_FAILED', path: '$.truth.draws' }));
+  });
+});
+
+describe('staged-survival: every exported helper fails in the module’s taxonomy', () => {
+  // The module's taxonomy claim is unqualified — nothing throws an untyped
+  // error — and a systematic sweep found 47 places where it did. None was
+  // reachable from an untrusted path, but the claim was the thing under test,
+  // so the helpers moved rather than the claim. This is that sweep, kept.
+  const junk: readonly unknown[] = [
+    undefined,
+    null,
+    0,
+    'x',
+    [],
+    {},
+    [null],
+    [{}],
+    Object.create({}),
+  ];
+  const claim = { entity: 0, contractId: 'wide' };
+  const steps = deriveSteps(definition, deriveTruth(SEED, definition, ROUND_ID), []);
+
+  const calls: readonly [string, (value: unknown) => unknown][] = [
+    ['distributionTotal', (value) => distributionTotal(value as never)],
+    [
+      'expectedSurvivorsFromDistribution',
+      (value) => expectedSurvivorsFromDistribution(value as never),
+    ],
+    ['threshold', (value) => threshold(definition, value as never)],
+    ['thresholdDefinition', (value) => threshold(value as never, rational(1n, 2n))],
+    ['stepsEqual', (value) => stepsEqual(value as never, [])],
+    ['stepsEqualRight', (value) => stepsEqual([], value as never)],
+    ['choicesEqual', (value) => choicesEqual(value as never, [])],
+    ['choicesEqualRight', (value) => choicesEqual([], value as never)],
+    ['transcriptToWire', (value) => transcriptToWire(value as never)],
+    ['serializeTranscript', (value) => serializeTranscript(value as never)],
+    ['bankableAmount', (value) => SurvivalBook.bankableAmount(value as never)],
+    ['liveAfter', (value) => liveAfter(definition, value as never)],
+    ['belief', (value) => belief(definition, value as never)],
+    ['price', (value) => price(definition, value as never, claim)],
+    ['priceClaim', (value) => price(definition, [], value as never)],
+    ['laneSizes', (value) => laneSizes(value as never, 3)],
+    ['lanePartition', (value) => lanePartition(value as never, [0, 1])],
+    ['laneSurvivorDistribution', (value) => laneSurvivorDistribution(value as never, 1)],
+    ['survivorDistribution', (value) => survivorDistribution(definition, value as never, 2)],
+    ['marginalSurvival', (value) => marginalSurvival(value as never)],
+    ['expectedSurvivors', (value) => expectedSurvivors(value as never, 2)],
+    ['deriveSteps', (value) => deriveSteps(definition, value as never, [])],
+    [
+      'deriveStepsChoices',
+      (value) => deriveSteps(definition, { draws: [], digest: '' } as never, value as never),
+    ],
+    ['restore', (value) => SurvivalBook.restore(definition, value as never)],
+  ];
+
+  it('never lets an untyped error out of an exported entry point', () => {
+    expect(steps).toEqual([]);
+    for (const [label, call] of calls)
+      for (const value of junk) {
+        let thrown: unknown;
+        try {
+          call(value);
+        } catch (error) {
+          thrown = error;
+        }
+        if (thrown !== undefined)
+          expect(thrown, `${label}(${JSON.stringify(value) ?? typeof value})`).toBeInstanceOf(
+            RevealEngineError,
+          );
+      }
+  });
+
+  it('refuses a settlement proof that is not a transcript, from the command surface', async () => {
+    // `settle()` is a money-bearing command and it encodes the caller's object
+    // before it verifies it, so the encoder is on the command path: a `null`
+    // transcript left this call through a bare `TypeError` from a `.map`.
+    const book = await stakedBook();
+    const proofs: readonly unknown[] = [null, 'proof', {}, { ...goodWire, steps: [null] }];
+    for (const [index, transcript] of proofs.entries())
+      await expect(
+        book.settle(`settle-${index}`, SEED, transcript as never),
+      ).rejects.toBeInstanceOf(RevealEngineError);
   });
 });
 

@@ -1,8 +1,9 @@
 import { fail } from '../../api/errors.js';
 import { factorial, fallingFactorial } from '../../core/combinatorics.js';
 import { add, compare, multiply, rational, subtract, type Rational } from '../../core/rational.js';
-import type { StageContract, SurvivalDefinition } from './contracts.js';
-import { assertSurvivalDefinition, marginalSurvival } from './validation.js';
+import { assertRational } from '../../core/validation.js';
+import { SURVIVAL_LIMITS, type StageContract, type SurvivalDefinition } from './contracts.js';
+import { assertLaneProfile, assertSurvivalDefinition, marginalSurvival } from './validation.js';
 
 /**
  * Exact distributions over a stage's survivor count.
@@ -25,6 +26,41 @@ import { assertSurvivalDefinition, marginalSurvival } from './validation.js';
 const ONE = rational(1n);
 const ZERO = rational(0n);
 
+/**
+ * A live field size, held to the module's own entity bound.
+ *
+ * The bound is an **allocation** bound as much as a sanity one. `laneSizes()`
+ * pushes one element per lane, so `liveCount` is the length of the array the
+ * call is asked to build: unbounded, `laneSizes(narrowContract, 3e7)` allocated
+ * thirty million elements, and `1e9` spent five seconds before dying with a bare
+ * `RangeError` out of the array allocator — an untyped throw out of a public
+ * export, from an argument nothing had bounded. `SURVIVAL_LIMITS.maxEntities` is
+ * the largest field any definition can declare, so no legitimate call is refused
+ * and every hostile one is refused before it allocates.
+ */
+function assertFieldSize(liveCount: number, path: string): void {
+  if (!Number.isSafeInteger(liveCount) || liveCount < 0 || liveCount > SURVIVAL_LIMITS.maxEntities)
+    fail(
+      'INVALID_CHOICE',
+      `Live field size must be an integer in [0, ${SURVIVAL_LIMITS.maxEntities}]`,
+      path,
+    );
+}
+
+/** An exact distribution: an array of rationals, checked before it is summed. */
+function assertDistribution(
+  distribution: readonly Rational[],
+  path: string,
+): asserts distribution is readonly Rational[] {
+  if (!Array.isArray(distribution))
+    fail('INVALID_RATIONAL', 'A distribution is an array of exact rationals', path);
+  // Indexed rather than `forEach`: an iteration callback skips a hole, and so
+  // does the `reduce()` that sums this — a sparse array would total to zero
+  // rather than being refused.
+  for (let index = 0; index < distribution.length; index += 1)
+    assertRational(distribution[index], `${path}[${index}]`);
+}
+
 /** Exact `C(n, k)` from core's counting primitives. */
 export function binomial(n: number, k: number): bigint {
   if (!Number.isSafeInteger(n) || !Number.isSafeInteger(k) || n < 0 || k < 0)
@@ -41,10 +77,14 @@ export function binomial(n: number, k: number): bigint {
  * into the definition fingerprint for every reachable `liveCount`, because the
  * *sizes* — not the lane count — are what determine the survivor distribution:
  * two geometries with the same lane count and different sizes price differently.
+ *
+ * **Both** arguments are bounded here, because both are the loop's own control:
+ * the width is its decrement and the field size is the length of the array it
+ * builds. Neither bound is left to whichever caller happened to validate its
+ * definition first.
  */
 export function laneSizes(contract: StageContract, liveCount: number): readonly number[] {
-  if (!Number.isSafeInteger(liveCount) || liveCount < 0)
-    fail('INVALID_CHOICE', 'Live field size must be a non-negative safe integer', '$.liveCount');
+  assertFieldSize(liveCount, '$.liveCount');
   // The width is the loop's decrement, so a zero, negative or non-integer one
   // would not produce a wrong partition — it would not terminate. This is an
   // exported helper, so the bound is checked here rather than being left to
@@ -82,13 +122,16 @@ export function lanePartition(
  * primitives instead of refusing an out-of-range argument. `lanePartition()`
  * never produces a lane wider than the contract, so no internal caller can hit
  * this.
+ *
+ * The **profile** is checked for the same reason the size is: this reads
+ * `profile.laneFailure.numerator` two lines down, and a contract that carries a
+ * width and nothing else is an argument defect, not a `TypeError`.
  */
 export function laneSurvivorDistribution(
   contract: StageContract,
   size: number,
 ): readonly Rational[] {
-  if (!Number.isSafeInteger(contract?.laneWidth) || contract.laneWidth < 1)
-    fail('INVALID_ADAPTER', 'Lane width must be a positive safe integer', '$.contract.laneWidth');
+  assertLaneProfile(contract);
   if (!Number.isSafeInteger(size) || size < 0 || size > contract.laneWidth)
     fail('INVALID_CHOICE', 'Lane size must be in [0, laneWidth]', '$.size');
   const q = rational(
@@ -121,6 +164,15 @@ export function laneSurvivorDistribution(
  * the per-lane laws. The result sums to exactly `1`; `distributionTotal()` is
  * the assertion, and conformance runs it over every contract and every
  * reachable field size.
+ *
+ * **The contract must be one this definition declares**, by identity. A foreign
+ * contract has a law, but not a law any round of this game could realise: its
+ * denominators need not divide `drawModulus`, so no threshold this definition
+ * can build corresponds to the probabilities being convolved here — and the
+ * function took a definition precisely to price *its* rounds. Every accessor a
+ * host reaches a contract through hands back the declared object
+ * (`definition.contracts`, `contractMenu()`, `contractFor()`), so identity is
+ * what a caller holding a legitimate contract already has.
  */
 export function survivorDistribution(
   definition: SurvivalDefinition,
@@ -128,6 +180,8 @@ export function survivorDistribution(
   liveCount: number,
 ): readonly Rational[] {
   assertSurvivalDefinition(definition);
+  if (!definition.contracts.includes(contract))
+    fail('INVALID_CHOICE', 'Contract is not one this definition declares', '$.contract');
   if (!Number.isSafeInteger(liveCount) || liveCount < 0 || liveCount > definition.entities)
     fail('INVALID_CHOICE', 'Live field size is outside the definition', '$.liveCount');
   let distribution: Rational[] = [ONE];
@@ -146,19 +200,27 @@ export function survivorDistribution(
 }
 
 export function distributionTotal(distribution: readonly Rational[]): Rational {
+  assertDistribution(distribution, '$.distribution');
   return distribution.reduce((total, share) => add(total, share), ZERO);
 }
 
 /** Exact `E[survivors]` from the distribution, by summing `k * P(k)`. */
 export function expectedSurvivorsFromDistribution(distribution: readonly Rational[]): Rational {
+  assertDistribution(distribution, '$.distribution');
   return distribution.reduce(
     (total, share, survivors) => add(total, multiply(rational(BigInt(survivors)), share)),
     ZERO,
   );
 }
 
-/** Exact `E[survivors]` in closed form: `liveCount * (1 - q) * c`, by linearity. */
+/**
+ * Exact `E[survivors]` in closed form: `liveCount * (1 - q) * c`, by linearity.
+ *
+ * The field size is bounded before it is converted: `BigInt(1.5)` is a bare
+ * `RangeError`, and a field of `1e9` is not a field this module can ever run.
+ */
 export function expectedSurvivors(contract: StageContract, liveCount: number): Rational {
+  assertFieldSize(liveCount, '$.liveCount');
   return multiply(rational(BigInt(liveCount)), marginalSurvival(contract));
 }
 

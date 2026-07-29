@@ -1,8 +1,9 @@
-import { fail } from '../../api/errors.js';
+import { RevealEngineError, fail } from '../../api/errors.js';
 import { constantTimeHexEqual, sealCommitment, sealSeedCommitment } from '../../core/commitment.js';
 import { samplerScopeOf, type RoundIdentity } from '../../core/module.js';
 import { RandomTape } from '../../core/random.js';
 import { rational, type Rational } from '../../core/rational.js';
+import { assertRational, isRecord } from '../../core/validation.js';
 import {
   classifyVerificationError,
   verificationFailure,
@@ -15,6 +16,7 @@ import { encodeFields, type CanonicalField } from '../../internal/canonical.js';
 import { definitionFields, survivalFingerprint } from './adapter.js';
 import {
   STAGED_SURVIVAL_MODULE_ID,
+  SURVIVAL_LIMITS,
   TRANSCRIPT_SCHEMA,
   type SurvivalChoice,
   type SurvivalClaimRef,
@@ -153,6 +155,12 @@ function tapeValue(
 
 /** `draw < numerator * (modulus / denominator)` has probability exactly `numerator/denominator`. */
 export function threshold(definition: SurvivalDefinition, value: Rational): bigint {
+  // Exported, and reached with whatever probability a caller holds. The modulus
+  // is the divisor two lines down and the value is dereferenced immediately, so
+  // both are checked rather than assumed.
+  if (typeof definition?.drawModulus !== 'bigint' || definition.drawModulus <= 0n)
+    fail('DERIVATION_FAILED', 'The draw modulus must be a positive BigInt', '$.drawModulus');
+  assertRational(value, '$.value');
   const reduced = rational(value.numerator, value.denominator);
   if (definition.drawModulus % reduced.denominator !== 0n)
     fail(
@@ -218,6 +226,14 @@ function assertLiveField(
  * is a comparison against a threshold that means nothing — a negative lane draw
  * would collapse every lane and a draw at or above the modulus would collapse
  * none, whatever the declared probability said.
+ *
+ * A draw source is held to being **callable, and to failing in the resolver's
+ * own taxonomy**, for the same reason its return value is: `laneDraw is not a
+ * function` and whatever a throwing callback happened to raise are argument
+ * defects the stated standard has to catch, not exceptions to it. A typed
+ * failure raised *inside* a source — `tapeValue()` refusing a draw that is
+ * missing from its declared address — is more specific than anything this frame
+ * could say about it, so it passes through untouched.
  */
 export function resolveStage(
   definition: SurvivalDefinition,
@@ -228,10 +244,21 @@ export function resolveStage(
 ): StageResolution {
   assertSurvivalDefinition(definition);
   assertLiveField(definition, live, '$.live');
+  if (typeof laneDraw !== 'function')
+    fail('DERIVATION_FAILED', 'The lane draw source must be a function', '$.laneDraw');
+  if (typeof entityDraw !== 'function')
+    fail('DERIVATION_FAILED', 'The entity draw source must be a function', '$.entityDraw');
   const contract = contractFor(definition, contractId, live.length);
   const laneThreshold = threshold(definition, contract.profile.laneFailure);
   const entityThreshold = threshold(definition, contract.profile.entitySurvival);
-  const bounded = (value: unknown, path: string): bigint => {
+  const bounded = (source: (index: number) => bigint, index: number, path: string): bigint => {
+    let value: unknown;
+    try {
+      value = source(index);
+    } catch (error) {
+      if (error instanceof RevealEngineError) throw error;
+      fail('DERIVATION_FAILED', 'Draw source failed to produce a draw', path);
+    }
     if (typeof value !== 'bigint' || value < 0n || value >= definition.drawModulus)
       fail('DERIVATION_FAILED', 'Draw is outside the declared modulus', path);
     return value;
@@ -240,10 +267,10 @@ export function resolveStage(
   const survivors: number[] = [];
   const failed: number[] = [];
   lanePartition(contract, live).forEach((entities, laneIndex) => {
-    const collapsed = bounded(laneDraw(laneIndex), '$.laneDraw') < laneThreshold;
+    const collapsed = bounded(laneDraw, laneIndex, '$.laneDraw') < laneThreshold;
     lanes.push(Object.freeze({ entities: Object.freeze([...entities]), collapsed }));
     for (const entity of entities)
-      (!collapsed && bounded(entityDraw(entity), '$.entityDraw') < entityThreshold
+      (!collapsed && bounded(entityDraw, entity, '$.entityDraw') < entityThreshold
         ? survivors
         : failed
       ).push(entity);
@@ -315,22 +342,48 @@ export function deriveSteps(
   return Object.freeze(steps);
 }
 
-/** Entities still running after a step prefix; the full field when there is none. */
+/**
+ * Entities still running after a step prefix; the full field when there is none.
+ *
+ * `belief()` and `price()` are host-facing and reachable with whatever step
+ * prefix a caller holds, so the shape is checked rather than assumed: an untyped
+ * `TypeError` out of a pricing call is the failure mode this module's taxonomy
+ * exists to prevent.
+ *
+ * **"No steps yet" is an empty array, not a missing last element.** Reading
+ * `steps[steps.length - 1]` and branching on `undefined` conflated the two: a
+ * one-element prefix holding a hole took the empty branch and returned the whole
+ * entity field, so `price(definition, [undefined], claim)` answered with a live
+ * entity's marginal for a round whose prefix is corrupt. A silently wrong price
+ * is a worse outcome than a loud refusal, so the length decides the branch and
+ * every element of the prefix is checked — a hole is a malformed prefix.
+ */
 export function liveAfter(
   definition: SurvivalDefinition,
   steps: readonly SurvivalStep[],
 ): readonly number[] {
+  // The entity count is the length of the array the empty branch builds, so it
+  // is held to the module's own bound here as well as at the definition assert
+  // `belief()` and `price()` run before they call this.
+  if (
+    !isRecord(definition) ||
+    !Number.isSafeInteger(definition.entities) ||
+    definition.entities < 1 ||
+    definition.entities > SURVIVAL_LIMITS.maxEntities
+  )
+    fail('DERIVATION_FAILED', 'A step prefix is read against a definition', '$.definition');
   if (!Array.isArray(steps)) fail('DERIVATION_FAILED', 'Step prefix must be an array', '$.steps');
-  const last = steps[steps.length - 1];
-  if (last === undefined)
+  // Indexed, not `forEach`: iteration callbacks **skip holes**, so a sparse
+  // prefix would walk straight past the check it exists for and dereference the
+  // hole one line down.
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
+    if (!isRecord(step) || !Array.isArray(step.survivors))
+      fail('DERIVATION_FAILED', 'Step is missing its survivor list', `$.steps[${index}]`);
+  }
+  if (steps.length === 0)
     return Object.freeze(Array.from({ length: definition.entities }, (_entity, index) => index));
-  // `belief()` and `price()` are host-facing and reachable with whatever step
-  // prefix a caller holds, so the shape is checked rather than assumed: an
-  // untyped `TypeError` out of a pricing call is the failure mode this module's
-  // taxonomy exists to prevent.
-  if (!Array.isArray(last.survivors))
-    fail('DERIVATION_FAILED', 'Step is missing its survivor list', '$.steps');
-  return last.survivors;
+  return (steps[steps.length - 1] as SurvivalStep).survivors;
 }
 
 /**
@@ -502,7 +555,50 @@ export function makeTranscript(
 const sameList = (left: readonly number[], right: readonly number[]): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 
+/**
+ * The shape both comparators read, checked on both sides before either is read.
+ *
+ * `stepsEqual()` and `choicesEqual()` decide whether a settlement proof is the
+ * proof of *this* book's round, so "these two malformed things are not equal" is
+ * the wrong answer to give quietly — a comparison that cannot be performed is a
+ * refusal, and it carries the module's own codes rather than a `TypeError` from
+ * a `.length` on `null`. Every internal caller reaches them with parsed logs, so
+ * nothing the live paths do can trip these.
+ */
+function assertStepLog(value: unknown, path: string): asserts value is readonly SurvivalStep[] {
+  if (!Array.isArray(value)) fail('DERIVATION_FAILED', 'A step log is an array of steps', path);
+  // Indexed, not `forEach`: an iteration callback skips holes, and `every()`
+  // below skips them too — so a sparse log would validate *and* compare equal.
+  for (let index = 0; index < value.length; index += 1) {
+    const step: unknown = value[index];
+    if (
+      !isRecord(step) ||
+      !Array.isArray(step.banked) ||
+      !Array.isArray(step.survivors) ||
+      !Array.isArray(step.failed) ||
+      !Array.isArray(step.lanes)
+    )
+      fail('DERIVATION_FAILED', 'Step is not a resolved stage', `${path}[${index}]`);
+    for (let laneIndex = 0; laneIndex < step.lanes.length; laneIndex += 1) {
+      const lane: unknown = step.lanes[laneIndex];
+      if (!isRecord(lane) || !Array.isArray(lane.entities))
+        fail('DERIVATION_FAILED', 'Lane is not a resolved lane', `${path}[${index}].lanes`);
+    }
+  }
+}
+
+function assertChoiceLog(value: unknown, path: string): asserts value is readonly SurvivalChoice[] {
+  if (!Array.isArray(value)) fail('INVALID_CHOICE', 'A decision log is an array of choices', path);
+  for (let index = 0; index < value.length; index += 1) {
+    const choice: unknown = value[index];
+    if (!isRecord(choice) || !Array.isArray(choice.banked))
+      fail('INVALID_CHOICE', 'Choice is not a logged decision', `${path}[${index}]`);
+  }
+}
+
 export function stepsEqual(left: readonly SurvivalStep[], right: readonly SurvivalStep[]): boolean {
+  assertStepLog(left, '$.left');
+  assertStepLog(right, '$.right');
   return (
     left.length === right.length &&
     left.every((step, index) => {
@@ -532,6 +628,8 @@ export function choicesEqual(
   left: readonly SurvivalChoice[],
   right: readonly SurvivalChoice[],
 ): boolean {
+  assertChoiceLog(left, '$.left');
+  assertChoiceLog(right, '$.right');
   return (
     left.length === right.length &&
     left.every((choice, index) => {

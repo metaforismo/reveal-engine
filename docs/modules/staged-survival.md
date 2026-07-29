@@ -298,10 +298,51 @@ still derives a law summing to exactly `1`. Both shipped references clear the
 bounds by more than an order of magnitude: the widest of the five contracts is
 `wide`, at 110 of 4096 bits for the survivor law and 128 for the pricing chain.
 
-The same reasoning bounds one exported helper: `laneSurvivorDistribution()` takes
-a lane size, and `c^j` under it is a power, so it refuses a size outside
-`[0, laneWidth]` with `INVALID_CHOICE`. `lanePartition()` never produces a wider
-lane, so no internal caller is affected.
+**4.9 The exported derivation surface validates its own arguments.** Everything
+in §4.8 is a define-time refusal, and it protects the round. It does not protect
+a helper a host calls directly, and this module exports several: the lane
+geometry, the per-lane and field survivor laws, the closed-form mean, the stage
+resolver, the pricing prefix. Each is reachable with whatever a caller holds, so
+each is held to the module's own limits rather than to the assumption that some
+earlier call validated a definition. Three distinct reasons, and all three are
+checked:
+
+- **Arithmetic width.** `laneSurvivorDistribution()` takes a lane size and `c^j`
+  under it is a power, so a size outside `[0, laneWidth]` is refused with
+  `INVALID_CHOICE`; a validated contract with a wide denominator would otherwise
+  overflow the engine limit and surface as `INVALID_RATIONAL` from the rational
+  primitives rather than as a rejected argument.
+- **Allocation.** `laneSizes()` builds one element per lane, so its `liveCount`
+  is the length of the array it is asked to build, and its `laneWidth` is the
+  loop's decrement. Only the width was bounded, so `laneSizes(narrow, 3e7)`
+  allocated thirty million elements and `1e9` spent seconds before dying with a
+  bare `RangeError` — an unbounded allocation and an untyped throw out of a
+  public export. Both ends are now bounded by `SURVIVAL_LIMITS.maxEntities`,
+  which no legitimate field can exceed. `lanePartition()` and
+  `expectedSurvivors()` inherit the same bound; `liveAfter()` bounds the entity
+  count for the same reason, since the "no steps yet" branch builds a field.
+- **Meaning.** `survivorDistribution()` takes a definition _and_ a contract, and
+  it now requires the contract to be one that definition declares. A foreign
+  contract has a law, but not a law any round of this game could realise — its
+  denominators need not divide `drawModulus`, so no threshold this definition can
+  build corresponds to the probabilities being convolved. Identity is the test
+  because every accessor a host reaches a contract through hands back the
+  declared object.
+
+**Nothing on the exported surface throws an untyped error.** That claim was
+unqualified and checkably false: a systematic sweep found 47 places where a
+malformed argument escaped as a `TypeError` or a `RangeError` — the probability
+helpers dereferencing `profile.laneFailure` after validating only `laneWidth`,
+`resolveStage()` calling a draw source it never checked was callable, the log
+comparators and the wire encoder reading `.length` off `null`. None was reachable
+from an untrusted path — `verify()`, `deserializeTranscript()` and `restore()`
+were and are total — but the claim was the thing under test, so the helpers moved
+rather than the claim. The sweep is kept as a test, over every exported entry
+point and a matrix of junk arguments, and it asserts the taxonomy rather than any
+particular code. One subtlety it pins: every one of these validators iterates by
+index, because `forEach`, `map`, `every` and `reduce` all **skip holes**, and a
+sparse array is exactly the shape that would otherwise walk past the check that
+exists for it.
 
 ---
 
@@ -509,7 +550,18 @@ read out of the snapshot**:
   both commands refuse until the field is complete;
 - each step is checked against the field it must have run, the lane partition
   that field produces under the chosen contract, and the rule that a collapsed
-  lane takes every entity in it.
+  lane takes every entity in it;
+- the **trailing** decision — logged by `choose()` and not yet resolved — runs
+  the admission test `choose()` runs, from the same call: its banked subset must
+  be entities that were running, and `contractFor()` must offer its contract to
+  the field that is left. Every other decision is re-validated as a side effect
+  of the step it resolves; this one has no step, so it arrived through nothing
+  but the structural wire parse. A snapshot naming an unknown contract there, or
+  one the menu does not offer at that field, restored with its credit already
+  standing and no legal move left — `resolve()` fails on the contract, `settle()`
+  refuses an unresolved decision, `bank()` refuses a pending one. No value is
+  created and the cap is untouched; the loss is availability on a round holding
+  money, which is the same shape as the two entries above it.
 
 The last three are there because `restore()` is advertised as re-validating
 rather than trusting, and a state the live path cannot produce is exactly the
@@ -557,6 +609,14 @@ transcript must match the book's own log.
 `staged-survival-book-v1.json` are committed files compared field for field, not
 round trips generated at run time. Regenerate with `npm run fixtures:update`,
 deliberately.
+
+That command formats its output with **prettier**, using the repo's own
+configuration, and is idempotent against the repo's own gate: regenerating an
+unchanged fixture leaves the tree clean. It wrote raw `JSON.stringify(…, 2)`
+before, which disagrees with prettier over short arrays, so following the
+documented path left every fixture dirty with a pure-whitespace diff and
+`npm run verify` then failed at `format:check`. A regeneration path that breaks
+the build is not a path.
 
 **The fingerprint enumerates lane sizes, not only the width that generates
 them.** The width names the geometry; the sizes are what determine the survivor

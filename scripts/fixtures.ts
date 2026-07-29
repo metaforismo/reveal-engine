@@ -6,8 +6,16 @@
  * run: a fixture that regenerates itself proves nothing. Changing one of these
  * files is a wire-format decision and needs a version bump, a migration note,
  * and a changelog entry — see `docs/versioning.md`.
+ *
+ * The output goes through **prettier**, with the repo's own configuration,
+ * rather than through `JSON.stringify(..., 2)`. The two disagree — prettier
+ * folds a short array onto one line where `JSON.stringify` explodes it — so the
+ * raw form left every regenerated fixture dirty with a pure-whitespace diff and
+ * `npm run verify` then failed at `format:check`. The documented regeneration
+ * path has to leave the tree in the state the gate accepts, or it is not a path.
  */
 import { writeFileSync } from 'node:fs';
+import { format, resolveConfig } from 'prettier';
 import { buildFrozenRound, FROZEN_ROUND_ID, FROZEN_SEED } from '../tests/support/frozen-round.js';
 import {
   buildFrozenSurvivalRound,
@@ -62,6 +70,12 @@ const files: readonly [string, unknown][] = [
 ];
 
 for (const [path, value] of files) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  const options = await resolveConfig(path);
+  // Indented input, then formatted: prettier keeps an object expanded when the
+  // source had a newline after its brace, so feeding it the indented form is
+  // what makes the committed one-record-per-line layout the fixed point. A
+  // single-line input would be equally prettier-clean and would rewrite every
+  // fixture into a denser shape nobody asked for.
+  writeFileSync(path, await format(JSON.stringify(value, null, 2), { ...options, filepath: path }));
   console.log(`wrote ${path}`);
 }

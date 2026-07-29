@@ -71,12 +71,50 @@ function assertInUnitRange(
 }
 
 /**
+ * The part of a contract the exported probability surface actually reads.
+ *
+ * `assertContract()` below is the **definition-level** check: it needs the
+ * definition to bound the width by the entity count, to require every
+ * denominator divides the draw modulus, and to test the fairness identity. The
+ * exported helpers — `marginalSurvival()`, `laneSurvivorDistribution()`,
+ * `expectedSurvivors()`, `survivorDistribution()` — are reachable with a
+ * contract and no definition at all, and they dereference
+ * `profile.laneFailure.numerator` the moment they are called. Validating
+ * `laneWidth` and then trusting the rest is what let `{laneWidth: 2}` out of a
+ * pricing helper as a bare `TypeError`, which is precisely the failure mode this
+ * module's taxonomy exists to prevent.
+ *
+ * So this is the structural subset those helpers need, held to the **same**
+ * ranges a declared contract is held to: `q` in `[0, 1)`, `c` in `(0, 1]`. A
+ * profile outside them does not produce a wrong price, it produces a signed
+ * "probability" and a law that sums to something other than one.
+ */
+export function assertLaneProfile(
+  value: unknown,
+  path = '$.contract',
+): asserts value is StageContract {
+  if (!isRecord(value)) fail('INVALID_ADAPTER', 'Expected a stage contract', path);
+  if (!Number.isSafeInteger(value.laneWidth) || (value.laneWidth as number) < 1)
+    fail('INVALID_ADAPTER', 'Lane width must be a positive safe integer', `${path}.laneWidth`);
+  if (!isRecord(value.profile))
+    fail('INVALID_ADAPTER', 'Expected a lane profile', `${path}.profile`);
+  const laneFailure = normalizedRational(value.profile.laneFailure, `${path}.profile.laneFailure`);
+  const entitySurvival = normalizedRational(
+    value.profile.entitySurvival,
+    `${path}.profile.entitySurvival`,
+  );
+  assertInUnitRange(laneFailure, `${path}.profile.laneFailure`, true, false);
+  assertInUnitRange(entitySurvival, `${path}.profile.entitySurvival`, false, true);
+}
+
+/**
  * The exact marginal survival of one entity under a contract.
  *
  * `(1 - q) * c`. Identical for every entity of the contract whatever the lane
  * geometry is: the geometry moves the *joint* distribution, never the marginal.
  */
 export function marginalSurvival(contract: StageContract): Rational {
+  assertLaneProfile(contract);
   return multiply(
     subtract(
       ONE,
