@@ -93,6 +93,13 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     ['evidence favour', ['evidence', 0, 'favour'], bump],
     ['evidence other', ['evidence', 0, 'other'], bump],
     ['position stake', ['position', 'stake'], bump],
+    [
+      'position outcome',
+      ['position', 'outcome'],
+      (v) => ((v as number) + 1) % game.outcomes.length,
+    ],
+    ['position payout numerator', ['position', 'contingentPayout', 'numerator'], bump],
+    ['position payout denominator', ['position', 'contingentPayout', 'denominator'], bump],
     ['position cap basis', ['position', 'capBasisStake'], bump],
     ['position entry count', ['position', 'entryCount'], bump],
     ['position opened-at revision', ['position', 'openedAtFrameRevision'], () => 99],
@@ -132,6 +139,73 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     expect(() =>
       RoundBook.restore(game, reseal({ ...valid, receipts: receipts.slice(0, 2) })),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  /**
+   * `position.outcome` and `position.contingentPayout` are the two money-bearing
+   * position fields that no other snapshot field implies. Both are re-derived in
+   * `restore()` — the outcome from the open receipt's `commandFingerprint`, the
+   * payout from the price replayed at the frame the position was opened at — so
+   * these two cases pin the settlement each attack was reaching for, not just
+   * the fact that restore throws.
+   */
+  it('refuses a re-sealed snapshot whose position was moved onto the winning outcome', async () => {
+    const seedHex = seed(0x1f);
+    const transcript = makeTranscript(seedHex, game, 'outcome-rewrite');
+    const losing = (transcript.truth + 1) % game.outcomes.length;
+    const book = new RoundBook(game, initialPosterior(game));
+    await book.open({
+      idempotencyKey: 'open',
+      expectedFrameRevision: 0,
+      outcome: losing,
+      stake: 1000n,
+    });
+    for (const event of transcript.evidence) await book.advanceFrame(event);
+    const honest = JSON.parse(book.serialize()) as Json;
+
+    // What the honest book is worth: a losing position settles for nothing.
+    const settled = await RoundBook.restore(game, reseal(honest)).settle({
+      idempotencyKey: 'settle',
+      expectedFrameRevision: transcript.evidence.length,
+      revealedSeed: seedHex,
+      transcript,
+    });
+    expect(settled.credited).toBe(0n);
+
+    const moved = writeAt(honest, ['position', 'outcome'], transcript.truth);
+    expect(() => RoundBook.restore(game, reseal(moved))).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.position.outcome' }),
+    );
+  });
+
+  it('refuses a re-sealed snapshot whose contingent payout was inflated', async () => {
+    const seedHex = seed(0x1f);
+    const transcript = makeTranscript(seedHex, game, 'payout-inflation');
+    const book = new RoundBook(game, initialPosterior(game));
+    await book.open({
+      idempotencyKey: 'open',
+      expectedFrameRevision: 0,
+      outcome: transcript.truth,
+      stake: 1000n,
+    });
+    for (const event of transcript.evidence) await book.advanceFrame(event);
+    const honest = JSON.parse(book.serialize()) as Json;
+
+    const settled = await RoundBook.restore(game, reseal(honest)).settle({
+      idempotencyKey: 'settle',
+      expectedFrameRevision: transcript.evidence.length,
+      revealedSeed: seedHex,
+      transcript,
+    });
+    // The honest claim is worth a fraction of the ceiling the inflation reaches for.
+    expect(settled.credited).toBeGreaterThan(0n);
+    expect(settled.credited).toBeLessThan(1000n * game.risk.maxWinMultiple);
+
+    const path = ['position', 'contingentPayout', 'numerator'] as const;
+    const inflated = writeAt(honest, path, String(BigInt(readAt(honest, path) as string) * 1000n));
+    expect(() => RoundBook.restore(game, reseal(inflated))).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.position.contingentPayout' }),
+    );
   });
 
   it('still rejects a mutation that was not re-sealed', () => {

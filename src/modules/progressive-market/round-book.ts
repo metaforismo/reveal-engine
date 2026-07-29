@@ -12,7 +12,7 @@ import {
 } from '../../core/ledger.js';
 import type { Payable } from '../../core/payments.js';
 import { normalizeSeed } from '../../core/random.js';
-import { multiply, rational, type Rational } from '../../core/rational.js';
+import { equal, multiply, rational, type Rational } from '../../core/rational.js';
 import {
   assertSnapshotKeys,
   assertSnapshotRecord,
@@ -410,8 +410,11 @@ export class RoundBook {
           contingentPayout: fromWireRational(raw.position.contingentPayout),
           stake: parseWireBigInt(raw.position.stake, '$.position.stake'),
           capBasisStake: parseWireBigInt(raw.position.capBasisStake, '$.position.capBasisStake'),
-          entryCount: raw.position.entryCount,
-          openedAtFrameRevision: raw.position.openedAtFrameRevision,
+          entryCount: assertSnapshotRevision(raw.position.entryCount, '$.position.entryCount'),
+          openedAtFrameRevision: assertSnapshotRevision(
+            raw.position.openedAtFrameRevision,
+            '$.position.openedAtFrameRevision',
+          ),
         })
       : undefined;
     let reconstructedLiquid = 0n;
@@ -420,6 +423,7 @@ export class RoundBook {
     let settled = false;
     let firstStake: bigint | undefined;
     let lastOpenStake: bigint | undefined;
+    let lastOpenFingerprint: string | undefined;
     const stored: StoredReceipt<RoundAction>[] = raw.receipts.map((entry) => ({
       fingerprint: entry.fingerprint,
       receipt: fromWireReceipt<RoundAction>(entry.receipt, ROUND_ACTIONS),
@@ -435,6 +439,7 @@ export class RoundBook {
         }
         firstStake ??= receipt.debited;
         lastOpenStake = receipt.debited;
+        lastOpenFingerprint = receipt.commandFingerprint;
         openCount += 1;
         activePosition = true;
       } else if (receipt.action === 'sell') {
@@ -461,16 +466,57 @@ export class RoundBook {
     if (reconstructedLiquid !== liquidBalance)
       fail('INVALID_SNAPSHOT', 'Snapshot accounting does not conserve liquid value');
     book.#ledger.restoreBalances({ ledgerRevision, liquidBalance, capBasisStake });
-    if (
-      book.#position &&
-      (book.#position.outcome < 0 ||
-        book.#position.outcome >= game.outcomes.length ||
-        book.#position.capBasisStake !== capBasisStake ||
-        book.#position.entryCount !== openCount ||
-        book.#position.stake !== lastOpenStake ||
-        book.#position.openedAtFrameRevision > book.#frameRevision)
-    )
-      fail('INVALID_SNAPSHOT', 'Snapshot position is inconsistent');
+    const position = book.#position;
+    if (position) {
+      if (
+        position.outcome < 0 ||
+        position.outcome >= game.outcomes.length ||
+        position.capBasisStake !== capBasisStake ||
+        position.entryCount !== openCount ||
+        position.stake !== lastOpenStake ||
+        position.openedAtFrameRevision > book.#frameRevision
+      )
+        fail('INVALID_SNAPSHOT', 'Snapshot position is inconsistent');
+      // What the player bet is re-derived from the receipt log, never read out
+      // of the snapshot: the open receipt's fingerprint is
+      // `commandFingerprint('open', [frame, outcome, stake])`, so a rewritten
+      // outcome cannot survive its own receipt under a recomputed checksum.
+      if (
+        lastOpenFingerprint !==
+        commandFingerprint('open', [
+          position.openedAtFrameRevision,
+          position.outcome,
+          position.stake,
+        ])
+      )
+        fail(
+          'INVALID_SNAPSHOT',
+          'Position does not match the open receipt that created it',
+          '$.position.outcome',
+        );
+      // The claim is a pure function of the price at the frame the position was
+      // opened at, and that price replays from the already-verified evidence
+      // chain — so the payout is recomputed rather than trusted.
+      const atOpen = book.#evidence
+        .slice(0, position.openedAtFrameRevision)
+        .reduce(updatePosterior, initialPosterior(game));
+      const expectedPayout = multiply(
+        rational(position.stake),
+        quote(
+          game,
+          atOpen,
+          position.outcome,
+          position.entryCount === 1,
+          position.openedAtFrameRevision,
+        ).multiplier,
+      );
+      if (!equal(expectedPayout, position.contingentPayout))
+        fail(
+          'INVALID_SNAPSHOT',
+          'Position payout does not re-derive from the replayed price',
+          '$.position.contingentPayout',
+        );
+    }
     return book;
   }
 
