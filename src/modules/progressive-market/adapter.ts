@@ -1,14 +1,20 @@
 import { createHash } from 'node:crypto';
-import { encodeFields } from '../internal/canonical.js';
-import { assertGameDefinition } from './validation.js';
-import type { GameDefinition, Posterior } from './contracts.js';
-import { fail } from '../api/errors.js';
-import { assertPosterior } from './validation.js';
+import { fail } from '../../api/errors.js';
+import { encodeFields, type CanonicalField } from '../../internal/canonical.js';
+import type { DefinitionIdentity } from '../../core/module.js';
+import {
+  PROGRESSIVE_MARKET_MODULE_ID,
+  PROGRESSIVE_MARKET_MODULE_VERSION,
+  type GameDefinition,
+  type Posterior,
+} from './contracts.js';
+import { assertGameDefinition, assertPosterior } from './validation.js';
 
+/** 32-byte hex over every replay-visible declarative field of an adapter. */
 export function adapterFingerprint(game: GameDefinition): string {
   assertGameDefinition(game);
   const continuation = game.risk.continuation;
-  const fields: Array<string | bigint | number> = [
+  const fields: CanonicalField[] = [
     game.apiVersion,
     game.id,
     game.adapterVersion,
@@ -35,6 +41,16 @@ export function adapterFingerprint(game: GameDefinition): string {
       continuation.rtpFloor.denominator,
     );
   return createHash('sha256').update(encodeFields(fields)).digest('hex');
+}
+
+export function adapterIdentity(game: GameDefinition): DefinitionIdentity {
+  return Object.freeze({
+    moduleId: PROGRESSIVE_MARKET_MODULE_ID,
+    moduleVersion: PROGRESSIVE_MARKET_MODULE_VERSION,
+    definitionId: game.id,
+    definitionVersion: game.adapterVersion,
+    fingerprint: adapterFingerprint(game),
+  });
 }
 
 /** The only supported adapter construction path; clones and deep-freezes declarative state. */

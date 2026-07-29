@@ -10,6 +10,15 @@ export {
   subtract,
   type Rational,
 } from './core/rational.js';
+export { payable, payableWithinCap } from './core/payments.js';
+export { deriveMaxContinuations } from './core/continuation.js';
+export { defineLifecycleModule } from './core/module.js';
+export { findModule, listModules, requireModule } from './modules/index.js';
+export {
+  assertModuleConformance,
+  checkModuleConformance,
+  type ModuleConformanceReport,
+} from './conformance/module-conformance.js';
 export {
   fairValue,
   fairValueClaim,
@@ -18,32 +27,33 @@ export {
   probability,
   quote,
   updatePosterior,
-} from './core/posterior.js';
+} from './modules/progressive-market/posterior.js';
 export {
   deriveTruth,
   makeTranscript,
   verifyTranscript,
   verifyTranscriptDetailed,
-} from './core/fairness.js';
-export { payable, payableWithinCap } from './core/payments.js';
+} from './modules/progressive-market/fairness.js';
+export { adapterFingerprint, defineGame } from './modules/progressive-market/adapter.js';
 export {
   RoundBook,
-  type Receipt,
   type OpenRequest,
+  type Receipt,
   type SellRequest,
   type SettleRequest,
-} from './protocol/round-book.js';
+} from './modules/progressive-market/round-book.js';
 export {
-  serializeTranscript,
   deserializeTranscript,
+  serializeTranscript,
   transcriptToWire,
-} from './serialization/transcript.js';
+} from './modules/progressive-market/transcript.js';
 export {
   assertAdapterConforms,
   checkAdapterConformance,
-} from './conformance/adapter-conformance.js';
+} from './modules/progressive-market/conformance.js';
+export { progressiveMarket } from './modules/progressive-market/module.js';
 export {
   binaryBeaconReference,
   blackSignalReference,
   constellationReference,
-} from './reference/index.js';
+} from './modules/progressive-market/references/index.js';

@@ -1,5 +1,7 @@
-import { fail } from '../api/errors.js';
-import { divide, multiply, rational, type Rational } from './rational.js';
+import { fail } from '../../api/errors.js';
+import { divide, multiply, rational, type Rational } from '../../core/rational.js';
+import { reduceWeights, weightVector, type WeightVector } from '../../core/weights.js';
+import { adapterFingerprint, assertPosteriorForGame } from './adapter.js';
 import type { EvidenceEvent, GameDefinition, Posterior, PriceQuote } from './contracts.js';
 import {
   assertEvidenceEvent,
@@ -7,20 +9,12 @@ import {
   assertPosterior,
   assertRational,
 } from './validation.js';
-import { adapterFingerprint, assertPosteriorForGame } from './adapter.js';
 
 function validateIndex(index: number, length: number): void {
   if (!Number.isSafeInteger(index) || index < 0 || index >= length)
     fail('UNKNOWN_OUTCOME', 'Unknown outcome index', '$.outcome');
 }
-function reduce(weights: bigint[]): bigint[] {
-  let a = weights[0] ?? 0n;
-  for (let i = 1; i < weights.length; i += 1) {
-    let b = weights[i] ?? 0n;
-    while (b !== 0n) [a, b] = [b, a % b];
-  }
-  return a > 1n ? weights.map((w) => w / a) : weights;
-}
+
 export function initialPosterior(game: GameDefinition): Posterior {
   assertGameDefinition(game);
   const weights = Object.freeze([...game.priorWeights]);
@@ -32,11 +26,13 @@ export function initialPosterior(game: GameDefinition): Posterior {
     total: weights.reduce((a, b) => a + b, 0n),
   });
 }
+
+/** Exact Bayesian update: multiply, then divide out the common factor. No floats. */
 export function updatePosterior(previous: Posterior, event: EvidenceEvent): Posterior {
   assertPosterior(previous);
   validateIndex(event.target, previous.weights.length);
   assertEvidenceEvent(event, previous.weights.length);
-  const weights = reduce(
+  const weights = reduceWeights(
     previous.weights.map((w, i) => w * (i === event.target ? event.favour : event.other)),
   );
   return Object.freeze({
@@ -47,6 +43,7 @@ export function updatePosterior(previous: Posterior, event: EvidenceEvent): Post
     total: weights.reduce((a, b) => a + b, 0n),
   });
 }
+
 export function posteriorFor(game: GameDefinition, events: readonly EvidenceEvent[]): Posterior {
   assertGameDefinition(game);
   if (events.length > game.evidence.eventCount)
@@ -56,11 +53,19 @@ export function posteriorFor(game: GameDefinition, events: readonly EvidenceEven
     return updatePosterior(posterior, event);
   }, initialPosterior(game));
 }
+
+/** Adapter-bound posterior as a core weight vector, for module-agnostic consumers. */
+export function posteriorWeights(posterior: Posterior): WeightVector {
+  assertPosterior(posterior);
+  return weightVector(posterior.weights);
+}
+
 export function probability(posterior: Posterior, outcome: number): Rational {
   assertPosterior(posterior);
   validateIndex(outcome, posterior.weights.length);
   return rational(posterior.weights[outcome] ?? 0n, posterior.total);
 }
+
 export function quote(
   game: GameDefinition,
   posterior: Posterior,
@@ -80,6 +85,7 @@ export function quote(
   const multiplier = firstEntry ? divide(game.pricing.firstEntryRtp, p) : divide(rational(1n), p);
   return Object.freeze({ frameRevision, outcome, firstEntry, multiplier });
 }
+
 export function fairValue(
   contingentPayout: bigint,
   posterior: Posterior,
@@ -115,6 +121,7 @@ export function fairValueClaim(
     rational(spread.denominator - spread.numerator, spread.denominator),
   );
 }
+
 export function validateGame(game: GameDefinition): void {
   assertGameDefinition(game);
 }

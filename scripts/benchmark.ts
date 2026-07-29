@@ -1,14 +1,17 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { makeTranscript, verifyTranscriptDetailed } from '../src/core/fairness.js';
-import { posteriorFor } from '../src/core/posterior.js';
+import {
+  makeTranscript,
+  verifyTranscriptDetailed,
+} from '../src/modules/progressive-market/fairness.js';
+import { posteriorFor } from '../src/modules/progressive-market/posterior.js';
 import {
   binaryBeaconReference,
   blackSignalReference,
   constellationReference,
-} from '../src/reference/index.js';
-import { serializeTranscript } from '../src/serialization/transcript.js';
+} from '../src/modules/progressive-market/references/index.js';
+import { serializeTranscript } from '../src/modules/progressive-market/transcript.js';
 import {
   assertBenchmarkArtifact,
   latencySummary,

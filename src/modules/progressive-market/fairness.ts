@@ -1,31 +1,82 @@
-import { createHash, createHmac } from 'node:crypto';
-import { ENGINE_LIMITS } from '../api/limits.js';
-import { RevealEngineError, asRevealEngineError, fail } from '../api/errors.js';
-import { constantTimeHexEqual, encodeFields } from '../internal/canonical.js';
+import { asRevealEngineError, fail } from '../../api/errors.js';
+import { sealCommitment, sealLegacyCommitment } from '../../core/commitment.js';
+import {
+  constantTimeHexEqual,
+  encodeFields,
+  type CanonicalField,
+} from '../../internal/canonical.js';
+import type { RoundIdentity } from '../../core/module.js';
+import {
+  normalizeSeed,
+  sha256Hex,
+  uniform as scopedUniform,
+  uniformBigInt as scopedUniformBigInt,
+  type SamplerScope,
+} from '../../core/random.js';
+import {
+  classifyVerificationError,
+  verificationFailure,
+  verificationSuccess,
+  type VerificationFailure,
+  type VerificationResult,
+} from '../../core/verification.js';
+import { COMMITMENT_VERSION, LEGACY_COMMITMENT_VERSION } from '../../core/versions.js';
 import { adapterFingerprint } from './adapter.js';
 import {
-  COMMITMENT_VERSION,
-  LEGACY_COMMITMENT_VERSION,
+  PROGRESSIVE_MARKET_MODULE_ID,
+  TRANSCRIPT_SCHEMA,
   type EvidenceEvent,
   type GameDefinition,
   type RoundContext,
   type Transcript,
-  type VerificationFailure,
-  type VerificationResult,
 } from './contracts.js';
+import { deserializeTranscript } from './transcript.js';
 import { assertContext, assertDerivedEvidence, assertGameDefinition } from './validation.js';
-import { deserializeTranscript } from '../serialization/transcript.js';
 
-const UINT64 = 1n << 64n;
+export { normalizeSeed, sha256Hex };
 
-export function normalizeSeed(seedHex: string): string {
-  if (typeof seedHex !== 'string' || !/^[0-9a-f]{64}$/iu.test(seedHex))
-    fail('INVALID_SEED', 'Seed must be exactly 32 bytes of hexadecimal', '$.seed');
-  return seedHex.toLowerCase();
+/** Sampler scope for a round: the adapter id is the domain, so games never collide. */
+export function scopeOf(context: RoundContext): SamplerScope {
+  return { domain: context.gameId, roundId: context.roundId, proofVersion: context.proofVersion };
 }
 
-export function sha256Hex(input: string | Uint8Array): string {
-  return createHash('sha256').update(input).digest('hex');
+/**
+ * Round-scoped rejection sampler for adapter authors.
+ *
+ * An evidence schedule receives a `RoundContext`; these wrappers map it onto the
+ * core sampler so an adapter can never accidentally draw outside its own round.
+ */
+export function uniformBigInt(
+  seedHex: string,
+  context: RoundContext,
+  label: string,
+  counter: number,
+  modulus: bigint,
+): bigint {
+  return scopedUniformBigInt(seedHex, scopeOf(context), label, counter, modulus);
+}
+
+export function uniform(
+  seedHex: string,
+  context: RoundContext,
+  label: string,
+  counter: number,
+  modulus: number,
+): number {
+  return scopedUniform(seedHex, scopeOf(context), label, counter, modulus);
+}
+
+export function roundIdentityOf(context: RoundContext): RoundIdentity {
+  return Object.freeze({
+    moduleId: PROGRESSIVE_MARKET_MODULE_ID,
+    definitionId: context.gameId,
+    roundId: context.roundId,
+    proofVersion: context.proofVersion,
+  });
+}
+
+export function roundContext(gameId: string, roundId: string): RoundContext {
+  return Object.freeze({ gameId, roundId, proofVersion: COMMITMENT_VERSION });
 }
 
 function legacyEvent(event: EvidenceEvent): string {
@@ -52,17 +103,22 @@ export function legacyCommitment(
   truth: number,
   events: readonly EvidenceEvent[],
 ): string {
-  normalizeSeed(seedHex);
-  return sha256Hex(`${seedHex}|${legacyPayload(context, truth, events)}`);
+  return sealLegacyCommitment(seedHex, legacyPayload(context, truth, events));
 }
 
+/**
+ * Canonical commitment body for one progressive-market round.
+ *
+ * Binding the adapter fingerprint means an operator cannot publish a commitment
+ * under one set of economics and settle under another.
+ */
 export function canonicalTranscriptBytes(
   game: GameDefinition,
   context: RoundContext,
   truth: number,
   events: readonly EvidenceEvent[],
 ): Buffer {
-  const fields: Array<string | bigint | number> = [
+  const fields: CanonicalField[] = [
     'Axiom Games Reveal Engine commitment',
     COMMITMENT_VERSION,
     game.id,
@@ -87,101 +143,17 @@ export function commitment(
 ): string {
   assertGameDefinition(game);
   assertContext(context);
-  const normalizedSeed = normalizeSeed(seedHex);
+  normalizeSeed(seedHex);
   if (context.gameId !== game.id) fail('ADAPTER_MISMATCH', 'Context game does not match adapter');
   if (context.proofVersion === LEGACY_COMMITMENT_VERSION)
     return legacyCommitment(seedHex, context, truth, events);
-  return sha256Hex(
-    encodeFields([
-      'commitment',
-      COMMITMENT_VERSION,
-      Buffer.from(normalizedSeed, 'hex'),
-      canonicalTranscriptBytes(game, context, truth, events),
-    ]),
-  );
+  return sealCommitment(seedHex, canonicalTranscriptBytes(game, context, truth, events));
 }
 
-function legacyUniform(
-  seedHex: string,
-  context: RoundContext,
-  label: string,
-  counter: number,
-  modulus: bigint,
-): bigint {
-  if (modulus > UINT64) fail('INVALID_CONTEXT', 'Legacy sampler modulus exceeds uint64');
-  const limit = UINT64 - (UINT64 % modulus);
-  for (let nonce = 0n; ; nonce += 1n) {
-    const digest = createHmac('sha256', Buffer.from(seedHex, 'hex'))
-      .update(
-        `${LEGACY_COMMITMENT_VERSION}|${context.gameId}|${context.roundId}|${label}|${counter}|${nonce}`,
-      )
-      .digest();
-    const value = digest.readBigUInt64BE(0);
-    if (value < limit) return value % modulus;
-  }
-}
-
-/** Exact rejection sampling for a positive modulus up to 256 bits. */
-export function uniformBigInt(
-  seedHex: string,
-  context: RoundContext,
-  label: string,
-  counter: number,
-  modulus: bigint,
-): bigint {
-  const seed = normalizeSeed(seedHex);
-  assertContext(context);
-  if (
-    typeof label !== 'string' ||
-    label.length === 0 ||
-    Buffer.byteLength(label, 'utf8') > ENGINE_LIMITS.maxLabelBytes
-  )
-    fail('INVALID_CONTEXT', 'Sampler label is invalid', '$.label');
-  if (!Number.isSafeInteger(counter) || counter < 0)
-    fail('INVALID_CONTEXT', 'Sampler counter is invalid', '$.counter');
-  if (modulus <= 0n || modulus >= 1n << 256n)
-    fail('INVALID_CONTEXT', 'Sampler modulus must be in [1, 2^256)', '$.modulus');
-  if (context.proofVersion === LEGACY_COMMITMENT_VERSION)
-    return legacyUniform(seed, context, label, counter, modulus);
-  const range = 1n << 256n;
-  const limit = range - (range % modulus);
-  for (let nonce = 0n; ; nonce += 1n) {
-    const payload = encodeFields([
-      'sampler',
-      COMMITMENT_VERSION,
-      context.gameId,
-      context.roundId,
-      label,
-      counter,
-      nonce,
-      modulus,
-    ]);
-    const value = BigInt(
-      `0x${createHmac('sha256', Buffer.from(seed, 'hex')).update(payload).digest('hex')}`,
-    );
-    if (value < limit) return value % modulus;
-  }
-}
-
-export function uniform(
-  seedHex: string,
-  context: RoundContext,
-  label: string,
-  counter: number,
-  modulus: number,
-): number {
-  if (!Number.isSafeInteger(modulus) || modulus <= 0)
-    fail('INVALID_CONTEXT', 'Modulus must be a positive safe integer', '$.modulus');
-  return Number(uniformBigInt(seedHex, context, label, counter, BigInt(modulus)));
-}
-
+/** Deterministic prior-weighted truth. One seed and one adapter mean exactly one truth. */
 export function deriveTruth(seedHex: string, game: GameDefinition, roundId: string): number {
   assertGameDefinition(game);
-  const context: RoundContext = Object.freeze({
-    gameId: game.id,
-    roundId,
-    proofVersion: COMMITMENT_VERSION,
-  });
+  const context = roundContext(game.id, roundId);
   const total = game.priorWeights.reduce((sum, weight) => sum + weight, 0n);
   if (total >= 1n << 256n)
     fail('INVALID_ADAPTER', 'Prior total exceeds deterministic sampler range', '$.priorWeights');
@@ -194,7 +166,7 @@ export function deriveTruth(seedHex: string, game: GameDefinition, roundId: stri
   fail('DERIVATION_FAILED', 'Truth derivation escaped the prior partition');
 }
 
-function deriveEvidence(
+export function deriveEvidence(
   seedHex: string,
   game: GameDefinition,
   context: RoundContext,
@@ -216,16 +188,12 @@ function deriveEvidence(
 export function makeTranscript(seedHex: string, game: GameDefinition, roundId: string): Transcript {
   assertGameDefinition(game);
   const seed = normalizeSeed(seedHex);
-  const context: RoundContext = Object.freeze({
-    gameId: game.id,
-    roundId,
-    proofVersion: COMMITMENT_VERSION,
-  });
+  const context = roundContext(game.id, roundId);
   assertContext(context);
   const truth = deriveTruth(seed, game, roundId);
   const evidence = deriveEvidence(seed, game, context, truth);
   return Object.freeze({
-    schema: 'reveal-engine/transcript-v2',
+    schema: TRANSCRIPT_SCHEMA,
     adapterVersion: game.adapterVersion,
     context,
     truth,
@@ -234,6 +202,14 @@ export function makeTranscript(seedHex: string, game: GameDefinition, roundId: s
   });
 }
 
+/**
+ * Pure re-derivation verifier.
+ *
+ * Phase order is fixed by the lifecycle-module contract: decode, identity,
+ * truth, steps, commitment. Legacy `commit-v1` transcripts skip the truth
+ * re-derivation phase because that scheme did not bind a deterministic truth;
+ * they remain verification-only.
+ */
 export function verifyTranscriptDetailed(
   seedHex: string,
   game: GameDefinition,
@@ -275,25 +251,9 @@ export function verifyTranscriptDetailed(
         'Commitment does not match revealed seed',
         '$.commitment',
       );
-    return Object.freeze({
-      ok: true,
-      proofVersion: transcript.context.proofVersion,
-      commitment: expectedCommitment,
-    });
+    return verificationSuccess(transcript.context.proofVersion, expectedCommitment);
   } catch (error) {
-    const failureError =
-      error instanceof RevealEngineError
-        ? error
-        : asRevealEngineError(error, 'INVALID_TRANSCRIPT', 'Transcript verification failed');
-    const code: VerificationFailure['code'] =
-      failureError.code === 'UNSUPPORTED_VERSION'
-        ? 'UNSUPPORTED_VERSION'
-        : failureError.code === 'ADAPTER_MISMATCH'
-          ? 'ADAPTER_MISMATCH'
-          : failureError.code === 'DERIVATION_FAILED' || failureError.code === 'INVALID_ADAPTER'
-            ? 'DERIVATION_FAILED'
-            : 'INVALID_TRANSCRIPT';
-    return failure(code, failureError.message, failureError.path);
+    return classifyVerificationError(error);
   }
 }
 
@@ -306,7 +266,7 @@ function failure(
   message: string,
   path: string,
 ): VerificationFailure {
-  return Object.freeze({ ok: false, code, message, path });
+  return verificationFailure(code, message, path);
 }
 
 export function evidenceEqual(

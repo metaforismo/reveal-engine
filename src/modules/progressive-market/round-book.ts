@@ -1,19 +1,47 @@
-import { createHash } from 'node:crypto';
-import { fail } from '../api/errors.js';
-import { ENGINE_LIMITS } from '../api/limits.js';
-import { adapterFingerprint, assertPosteriorForGame } from '../core/adapter.js';
-import type { EvidenceEvent, GameDefinition, Posterior, Transcript } from '../core/contracts.js';
-import { evidenceEqual, normalizeSeed, verifyTranscriptDetailed } from '../core/fairness.js';
-import { payableWithinCap } from '../core/payments.js';
-import { fairValueClaim, initialPosterior, quote, updatePosterior } from '../core/posterior.js';
-import { multiply, rational, type Rational } from '../core/rational.js';
+import { fail } from '../../api/errors.js';
+import { ENGINE_LIMITS } from '../../api/limits.js';
 import {
-  assertBoundedBigInt,
-  assertEvidenceEvent,
-  assertGameDefinition,
-} from '../core/validation.js';
-import { encodeFields } from '../internal/canonical.js';
-import { deserializeTranscript, serializeTranscript } from '../serialization/transcript.js';
+  CommandLedger,
+  RECEIPT_WIRE_KEYS,
+  commandFingerprint,
+  fromWireReceipt,
+  toWireReceipt,
+  type Receipt as LedgerReceipt,
+  type StoredReceipt,
+  type WireReceipt,
+} from '../../core/ledger.js';
+import { normalizeSeed } from '../../core/random.js';
+import { multiply, rational, type Rational } from '../../core/rational.js';
+import {
+  assertSnapshotKeys,
+  assertSnapshotRecord,
+  assertSnapshotRevision,
+  assertSnapshotSize,
+  assertWireHex,
+  assertWireString,
+  fromWireRational,
+  parseSnapshotJson,
+  parseWireBigInt,
+  snapshotHash,
+  toWireRational,
+  type WireRational,
+} from '../../core/snapshot.js';
+import { adapterFingerprint, assertPosteriorForGame } from './adapter.js';
+import {
+  ROUND_BOOK_SCHEMA,
+  type EvidenceEvent,
+  type GameDefinition,
+  type Posterior,
+} from './contracts.js';
+import { evidenceEqual, verifyTranscriptDetailed } from './fairness.js';
+import { fairValueClaim, initialPosterior, quote, updatePosterior } from './posterior.js';
+import { deserializeTranscript, serializeTranscript } from './transcript.js';
+import { assertBoundedBigInt, assertEvidenceEvent, assertGameDefinition } from './validation.js';
+
+/** Receipt actions this module mints. */
+export const ROUND_ACTIONS = Object.freeze(['open', 'sell', 'settle'] as const);
+export type RoundAction = (typeof ROUND_ACTIONS)[number];
+export type Receipt = LedgerReceipt<RoundAction>;
 
 export interface Position {
   readonly outcome: number;
@@ -22,18 +50,6 @@ export interface Position {
   readonly capBasisStake: bigint;
   readonly entryCount: number;
   readonly openedAtFrameRevision: number;
-}
-export interface Receipt {
-  readonly schema: 'reveal-engine/receipt-v1';
-  readonly idempotencyKey: string;
-  readonly commandFingerprint: string;
-  readonly action: 'open' | 'sell' | 'settle';
-  readonly ledgerRevision: number;
-  readonly frameRevision: number;
-  readonly debited: bigint;
-  readonly credited: bigint;
-  readonly balanceDelta: bigint;
-  readonly capped: boolean;
 }
 export interface OpenRequest {
   readonly idempotencyKey: string;
@@ -56,21 +72,8 @@ export interface FrameState {
   readonly posterior: Posterior;
 }
 
-interface StoredReceipt {
-  readonly fingerprint: string;
-  readonly receipt: Receipt;
-}
-interface WireRational {
-  readonly numerator: string;
-  readonly denominator: string;
-}
-interface WireReceipt extends Omit<Receipt, 'debited' | 'credited' | 'balanceDelta'> {
-  readonly debited: string;
-  readonly credited: string;
-  readonly balanceDelta: string;
-}
 export interface RoundBookSnapshot {
-  readonly schema: 'reveal-engine/round-book-v1';
+  readonly schema: typeof ROUND_BOOK_SCHEMA;
   readonly adapter: { readonly id: string; readonly version: string; readonly fingerprint: string };
   readonly frameRevision: number;
   readonly ledgerRevision: number;
@@ -98,18 +101,22 @@ export interface RoundBookSnapshot {
   readonly snapshotHash: string;
 }
 
+/**
+ * Single-position progressive-market round book.
+ *
+ * The book owns the game-shaped state machine — posterior, applied evidence, and
+ * the one open position. Everything money-shaped (command serialization,
+ * idempotency, receipts, cap-chain accounting) lives in the shared
+ * `CommandLedger`, so a multi-position or paytable module reuses it unchanged.
+ */
 export class RoundBook {
   #posterior: Posterior;
   #position: Position | undefined;
   #evidence: EvidenceEvent[] = [];
   #entryCount = 0;
   #frameRevision = 0;
-  #ledgerRevision = 0;
   #terminal = false;
-  #capBasisStake: bigint | undefined;
-  #liquidBalance = 0n;
-  #receipts = new Map<string, StoredReceipt>();
-  #tail: Promise<void> = Promise.resolve();
+  readonly #ledger: CommandLedger;
 
   constructor(
     readonly game: GameDefinition,
@@ -118,12 +125,13 @@ export class RoundBook {
     assertGameDefinition(game);
     assertPosteriorForGame(posterior, game);
     this.#posterior = freezePosterior(posterior);
+    this.#ledger = new CommandLedger({ maxWinMultiple: game.risk.maxWinMultiple });
   }
   get frame(): FrameState {
     return Object.freeze({ revision: this.#frameRevision, posterior: this.#posterior });
   }
   get ledgerRevision(): number {
-    return this.#ledgerRevision;
+    return this.#ledger.ledgerRevision;
   }
   get terminal(): boolean {
     return this.#terminal;
@@ -132,11 +140,14 @@ export class RoundBook {
     return this.#position;
   }
   get liquidBalance(): bigint {
-    return this.#liquidBalance;
+    return this.#ledger.liquidBalance;
+  }
+  get capBasisStake(): bigint | undefined {
+    return this.#ledger.capBasisStake;
   }
 
   async advanceFrame(event: EvidenceEvent): Promise<FrameState> {
-    return this.#serial(() => {
+    return this.#ledger.serial(() => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Cannot advance a terminal round');
       assertEvidenceEvent(event, this.game.outcomes.length, this.#frameRevision, '$.event');
       if (this.#frameRevision >= this.game.evidence.eventCount)
@@ -165,11 +176,11 @@ export class RoundBook {
       request.outcome,
       request.stake,
     ]);
-    return this.#idempotent(request.idempotencyKey, fingerprint, () => {
+    return this.#ledger.execute<RoundAction>(request.idempotencyKey, fingerprint, () => {
       this.#assertFrame(request.expectedFrameRevision);
       if (this.#terminal || this.#position) fail('OPEN_REJECTED', 'Position cannot be opened');
       const first = this.#entryCount === 0;
-      if (!first && request.stake > this.#liquidBalance)
+      if (!first && request.stake > this.#ledger.liquidBalance)
         fail(
           'OPEN_REJECTED',
           'Re-entry must be self-financing from liquidated proceeds',
@@ -183,7 +194,7 @@ export class RoundBook {
         this.#frameRevision,
       ).multiplier;
       const claim = multiply(rational(request.stake), multiplier);
-      const capBasis = this.#capBasisStake ?? request.stake;
+      const capBasis = this.#ledger.capBasisStake ?? request.stake;
       const position = Object.freeze({
         outcome: request.outcome,
         contingentPayout: claim,
@@ -192,7 +203,7 @@ export class RoundBook {
         entryCount: this.#entryCount + 1,
         openedAtFrameRevision: this.#frameRevision,
       });
-      const receipt = this.#makeReceipt(
+      const receipt = this.#mint(
         request.idempotencyKey,
         fingerprint,
         'open',
@@ -202,8 +213,8 @@ export class RoundBook {
       );
       this.#position = position;
       this.#entryCount += 1;
-      this.#capBasisStake = capBasis;
-      if (!first) this.#liquidBalance -= request.stake;
+      this.#ledger.adoptCapBasis(request.stake);
+      if (!first) this.#ledger.applyDebit(request.stake);
       return receipt;
     });
   }
@@ -213,9 +224,9 @@ export class RoundBook {
     assertIdempotencyKey(request.idempotencyKey);
     assertRevisionInput(request.expectedFrameRevision, '$.expectedFrameRevision');
     const fingerprint = commandFingerprint('sell', [request.expectedFrameRevision]);
-    return this.#idempotent(request.idempotencyKey, fingerprint, () => {
+    return this.#ledger.execute<RoundAction>(request.idempotencyKey, fingerprint, () => {
       this.#assertFrame(request.expectedFrameRevision);
-      if (this.#terminal || !this.#position || this.#capBasisStake === undefined)
+      if (this.#terminal || !this.#position || this.#ledger.capBasisStake === undefined)
         fail('SELL_REJECTED', 'No active position to sell');
       const theoretical = fairValueClaim(
         this.#position.contingentPayout,
@@ -223,13 +234,8 @@ export class RoundBook {
         this.#position.outcome,
         this.game.pricing.liquidationSpread,
       );
-      const result = payableWithinCap(
-        theoretical,
-        this.#capBasisStake,
-        this.game.risk.maxWinMultiple,
-        this.#liquidBalance,
-      );
-      const receipt = this.#makeReceipt(
+      const result = this.#ledger.creditWithinCap(theoretical);
+      const receipt = this.#mint(
         request.idempotencyKey,
         fingerprint,
         'sell',
@@ -238,7 +244,7 @@ export class RoundBook {
         result.capped,
       );
       this.#position = undefined;
-      this.#liquidBalance += result.credited;
+      this.#ledger.applyCredit(result.credited);
       return receipt;
     });
   }
@@ -254,7 +260,7 @@ export class RoundBook {
       revealedSeed,
       serializeTranscript(transcript),
     ]);
-    return this.#idempotent(request.idempotencyKey, fingerprint, () => {
+    return this.#ledger.execute<RoundAction>(request.idempotencyKey, fingerprint, () => {
       this.#assertFrame(request.expectedFrameRevision);
       if (this.#terminal) fail('SETTLE_REJECTED', 'Round is already terminal');
       if (this.#frameRevision !== this.game.evidence.eventCount)
@@ -270,16 +276,8 @@ export class RoundBook {
         this.#position && this.#position.outcome === transcript.truth
           ? this.#position.contingentPayout
           : rational(0n);
-      const result =
-        this.#capBasisStake === undefined
-          ? { credited: 0n, capped: false }
-          : payableWithinCap(
-              theoretical,
-              this.#capBasisStake,
-              this.game.risk.maxWinMultiple,
-              this.#liquidBalance,
-            );
-      const receipt = this.#makeReceipt(
+      const result = this.#ledger.creditWithinCap(theoretical);
+      const receipt = this.#mint(
         request.idempotencyKey,
         fingerprint,
         'settle',
@@ -289,7 +287,7 @@ export class RoundBook {
       );
       this.#terminal = true;
       this.#position = undefined;
-      this.#liquidBalance += result.credited;
+      this.#ledger.applyCredit(result.credited);
       return receipt;
     });
   }
@@ -298,15 +296,16 @@ export class RoundBook {
     return JSON.stringify(this.snapshot());
   }
   snapshot(): RoundBookSnapshot {
+    const capBasisStake = this.#ledger.capBasisStake;
     const base = {
-      schema: 'reveal-engine/round-book-v1' as const,
+      schema: ROUND_BOOK_SCHEMA,
       adapter: Object.freeze({
         id: this.game.id,
         version: this.game.adapterVersion,
         fingerprint: adapterFingerprint(this.game),
       }),
       frameRevision: this.#frameRevision,
-      ledgerRevision: this.#ledgerRevision,
+      ledgerRevision: this.#ledger.ledgerRevision,
       posterior: Object.freeze({
         weights: Object.freeze(this.#posterior.weights.map(String)),
         total: String(this.#posterior.total),
@@ -319,7 +318,7 @@ export class RoundBook {
       position: this.#position
         ? Object.freeze({
             outcome: this.#position.outcome,
-            contingentPayout: wireRational(this.#position.contingentPayout),
+            contingentPayout: toWireRational(this.#position.contingentPayout),
             stake: String(this.#position.stake),
             capBasisStake: String(this.#position.capBasisStake),
             entryCount: this.#position.entryCount,
@@ -327,12 +326,15 @@ export class RoundBook {
           })
         : null,
       entryCount: this.#entryCount,
-      capBasisStake: this.#capBasisStake === undefined ? null : String(this.#capBasisStake),
-      liquidBalance: String(this.#liquidBalance),
+      capBasisStake: capBasisStake === undefined ? null : String(capBasisStake),
+      liquidBalance: String(this.#ledger.liquidBalance),
       terminal: this.#terminal,
       receipts: Object.freeze(
-        [...this.#receipts.values()].map((stored) =>
-          Object.freeze({ fingerprint: stored.fingerprint, receipt: wireReceipt(stored.receipt) }),
+        this.#ledger.entries().map((stored) =>
+          Object.freeze({
+            fingerprint: stored.fingerprint,
+            receipt: toWireReceipt(stored.receipt),
+          }),
         ),
       ),
     };
@@ -342,7 +344,7 @@ export class RoundBook {
   static restore(game: GameDefinition, input: string | RoundBookSnapshot): RoundBook {
     const raw = parseSnapshotInput(input);
     if (
-      raw.schema !== 'reveal-engine/round-book-v1' ||
+      raw.schema !== ROUND_BOOK_SCHEMA ||
       raw.snapshotHash !== snapshotHash({ ...raw, snapshotHash: undefined })
     )
       fail('INVALID_SNAPSHOT', 'Snapshot hash or schema is invalid');
@@ -357,19 +359,19 @@ export class RoundBook {
       adapterVersion: game.adapterVersion,
       adapterFingerprint: raw.adapter.fingerprint,
       weights: Object.freeze(
-        raw.posterior.weights.map((value) => parseBigInt(value, '$.posterior.weights')),
+        raw.posterior.weights.map((value) => parseWireBigInt(value, '$.posterior.weights')),
       ),
-      total: parseBigInt(raw.posterior.total, '$.posterior.total'),
+      total: parseWireBigInt(raw.posterior.total, '$.posterior.total'),
     });
     assertPosteriorForGame(posterior, game);
     const book = new RoundBook(game, posterior);
-    book.#frameRevision = safeRevision(raw.frameRevision, '$.frameRevision');
+    book.#frameRevision = assertSnapshotRevision(raw.frameRevision, '$.frameRevision');
     book.#evidence = raw.evidence.map((event, index) =>
       Object.freeze({
         index: event.index,
         target: event.target,
-        favour: parseBigInt(event.favour, `$.evidence[${index}].favour`),
-        other: parseBigInt(event.other, `$.evidence[${index}].other`),
+        favour: parseWireBigInt(event.favour, `$.evidence[${index}].favour`),
+        other: parseWireBigInt(event.other, `$.evidence[${index}].other`),
         label: event.label,
       }),
     );
@@ -384,18 +386,20 @@ export class RoundBook {
       replayed.weights.some((weight, index) => weight !== posterior.weights[index])
     )
       fail('INVALID_SNAPSHOT', 'Posterior does not replay from snapshot evidence');
-    book.#ledgerRevision = safeRevision(raw.ledgerRevision, '$.ledgerRevision');
-    book.#entryCount = safeRevision(raw.entryCount, '$.entryCount');
-    book.#capBasisStake =
-      raw.capBasisStake === null ? undefined : parseBigInt(raw.capBasisStake, '$.capBasisStake');
-    book.#liquidBalance = parseBigInt(raw.liquidBalance, '$.liquidBalance', true);
+    const ledgerRevision = assertSnapshotRevision(raw.ledgerRevision, '$.ledgerRevision');
+    book.#entryCount = assertSnapshotRevision(raw.entryCount, '$.entryCount');
+    const capBasisStake =
+      raw.capBasisStake === null
+        ? undefined
+        : parseWireBigInt(raw.capBasisStake, '$.capBasisStake');
+    const liquidBalance = parseWireBigInt(raw.liquidBalance, '$.liquidBalance', true);
     book.#terminal = raw.terminal;
     book.#position = raw.position
       ? Object.freeze({
           outcome: raw.position.outcome,
-          contingentPayout: domainRational(raw.position.contingentPayout),
-          stake: parseBigInt(raw.position.stake, '$.position.stake'),
-          capBasisStake: parseBigInt(raw.position.capBasisStake, '$.position.capBasisStake'),
+          contingentPayout: fromWireRational(raw.position.contingentPayout),
+          stake: parseWireBigInt(raw.position.stake, '$.position.stake'),
+          capBasisStake: parseWireBigInt(raw.position.capBasisStake, '$.position.capBasisStake'),
           entryCount: raw.position.entryCount,
           openedAtFrameRevision: raw.position.openedAtFrameRevision,
         })
@@ -406,17 +410,11 @@ export class RoundBook {
     let settled = false;
     let firstStake: bigint | undefined;
     let lastOpenStake: bigint | undefined;
-    const orderedReceipts = [...raw.receipts].sort(
-      (left, right) => left.receipt.ledgerRevision - right.receipt.ledgerRevision,
-    );
-    for (const [index, stored] of orderedReceipts.entries()) {
-      const receipt = domainReceipt(stored.receipt);
-      if (
-        receipt.ledgerRevision !== index + 1 ||
-        receipt.frameRevision > book.#frameRevision ||
-        stored.fingerprint !== receipt.commandFingerprint
-      )
-        fail('INVALID_SNAPSHOT', 'Receipt revisions are not canonical');
+    const stored: StoredReceipt<RoundAction>[] = raw.receipts.map((entry) => ({
+      fingerprint: entry.fingerprint,
+      receipt: fromWireReceipt<RoundAction>(entry.receipt, ROUND_ACTIONS),
+    }));
+    book.#ledger.install(stored, book.#frameRevision, (receipt) => {
       if (receipt.action === 'open') {
         if (settled || activePosition || receipt.debited <= 0n || receipt.credited !== 0n)
           fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
@@ -441,33 +439,23 @@ export class RoundBook {
         settled = true;
         activePosition = false;
       }
-      book.#receipts.set(
-        receipt.idempotencyKey,
-        Object.freeze({ fingerprint: stored.fingerprint, receipt }),
-      );
-    }
+    });
     if (
-      book.#receipts.size > ENGINE_LIMITS.maxEvidenceEvents ||
-      book.#ledgerRevision !== book.#receipts.size ||
       book.#entryCount !== openCount ||
       book.#terminal !== settled ||
       Boolean(book.#position) !== activePosition ||
-      (firstStake === undefined) !== (book.#capBasisStake === undefined) ||
-      (firstStake !== undefined && firstStake !== book.#capBasisStake)
+      (firstStake === undefined) !== (capBasisStake === undefined) ||
+      (firstStake !== undefined && firstStake !== capBasisStake)
     )
       fail('INVALID_SNAPSHOT', 'Snapshot state invariants failed');
-    if (reconstructedLiquid !== book.#liquidBalance || reconstructedLiquid < 0n)
+    if (reconstructedLiquid !== liquidBalance)
       fail('INVALID_SNAPSHOT', 'Snapshot accounting does not conserve liquid value');
-    if (
-      book.#capBasisStake !== undefined &&
-      book.#liquidBalance > book.#capBasisStake * game.risk.maxWinMultiple
-    )
-      fail('INVALID_SNAPSHOT', 'Snapshot exceeds the chain cap');
+    book.#ledger.restoreBalances({ ledgerRevision, liquidBalance, capBasisStake });
     if (
       book.#position &&
       (book.#position.outcome < 0 ||
         book.#position.outcome >= game.outcomes.length ||
-        book.#position.capBasisStake !== book.#capBasisStake ||
+        book.#position.capBasisStake !== capBasisStake ||
         book.#position.entryCount !== openCount ||
         book.#position.stake !== lastOpenStake ||
         book.#position.openedAtFrameRevision > book.#frameRevision)
@@ -483,74 +471,26 @@ export class RoundBook {
         received: expected,
       });
   }
-  #makeReceipt(
+  #mint(
     key: string,
     fingerprint: string,
-    action: Receipt['action'],
+    action: RoundAction,
     debited: bigint,
     credited: bigint,
     capped: boolean,
   ): Receipt {
-    return Object.freeze({
-      schema: 'reveal-engine/receipt-v1',
-      idempotencyKey: key,
-      commandFingerprint: fingerprint,
+    return this.#ledger.mint(
+      key,
+      fingerprint,
       action,
-      ledgerRevision: this.#ledgerRevision + 1,
-      frameRevision: this.#frameRevision,
+      this.#frameRevision,
       debited,
       credited,
-      balanceDelta: credited - debited,
       capped,
-    });
-  }
-  async #idempotent(key: string, fingerprint: string, operation: () => Receipt): Promise<Receipt> {
-    return this.#serial(() => {
-      if (
-        typeof key !== 'string' ||
-        key.length === 0 ||
-        Buffer.byteLength(key, 'utf8') > ENGINE_LIMITS.maxIdempotencyKeyBytes
-      )
-        fail('IDEMPOTENCY_CONFLICT', 'Invalid idempotency key', '$.idempotencyKey');
-      const old = this.#receipts.get(key);
-      if (old) {
-        if (old.fingerprint !== fingerprint)
-          fail(
-            'IDEMPOTENCY_CONFLICT',
-            'Idempotency key was used for a different command',
-            '$.idempotencyKey',
-          );
-        return old.receipt;
-      }
-      if (this.#receipts.size >= ENGINE_LIMITS.maxEvidenceEvents)
-        fail('IDEMPOTENCY_CONFLICT', 'Receipt limit reached');
-      const receipt = operation();
-      this.#ledgerRevision = receipt.ledgerRevision;
-      this.#receipts.set(key, Object.freeze({ fingerprint, receipt }));
-      return receipt;
-    });
-  }
-  async #serial<T>(operation: () => T): Promise<T> {
-    let resolve!: () => void;
-    const gate = new Promise<void>((done) => {
-      resolve = done;
-    });
-    const prior = this.#tail;
-    this.#tail = gate;
-    await prior;
-    try {
-      return operation();
-    } finally {
-      resolve();
-    }
+    );
   }
 }
 
-function commandFingerprint(action: string, fields: readonly (string | number | bigint)[]): string {
-  return createHash('sha256')
-    .update(encodeFields(['round-command-v1', action, ...fields]))
-    .digest('hex');
-}
 function assertRequestRecord(
   value: unknown,
   code: 'OPEN_REJECTED' | 'SELL_REJECTED' | 'SETTLE_REJECTED',
@@ -573,93 +513,11 @@ function assertRevisionInput(value: unknown, path: string): asserts value is num
 function freezePosterior(posterior: Posterior): Posterior {
   return Object.freeze({ ...posterior, weights: Object.freeze([...posterior.weights]) });
 }
-function wireRational(value: Rational): WireRational {
-  return Object.freeze({
-    numerator: String(value.numerator),
-    denominator: String(value.denominator),
-  });
-}
-function wireReceipt(receipt: Receipt): WireReceipt {
-  return Object.freeze({
-    ...receipt,
-    debited: String(receipt.debited),
-    credited: String(receipt.credited),
-    balanceDelta: String(receipt.balanceDelta),
-  });
-}
-function domainRational(value: WireRational): Rational {
-  return rational(
-    parseBigInt(value.numerator, '$.numerator', true),
-    parseBigInt(value.denominator, '$.denominator'),
-  );
-}
-function domainReceipt(value: WireReceipt): Receipt {
-  const receipt = Object.freeze({
-    ...value,
-    debited: parseBigInt(value.debited, '$.receipt.debited', true),
-    credited: parseBigInt(value.credited, '$.receipt.credited', true),
-    balanceDelta: parseSignedBigInt(value.balanceDelta, '$.receipt.balanceDelta'),
-  });
-  if (
-    receipt.schema !== 'reveal-engine/receipt-v1' ||
-    !['open', 'sell', 'settle'].includes(receipt.action) ||
-    receipt.balanceDelta !== receipt.credited - receipt.debited ||
-    !/^[0-9a-f]{64}$/u.test(receipt.commandFingerprint) ||
-    typeof receipt.idempotencyKey !== 'string' ||
-    receipt.idempotencyKey.length === 0 ||
-    Buffer.byteLength(receipt.idempotencyKey, 'utf8') > ENGINE_LIMITS.maxIdempotencyKeyBytes
-  )
-    fail('INVALID_SNAPSHOT', 'Snapshot receipt accounting is invalid');
-  safeRevision(receipt.ledgerRevision, '$.receipt.ledgerRevision');
-  safeRevision(receipt.frameRevision, '$.receipt.frameRevision');
-  return receipt;
-}
-function parseBigInt(value: string, path: string, allowZero = false): bigint {
-  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/u.test(value))
-    fail('INVALID_SNAPSHOT', 'Invalid canonical integer', path);
-  const parsed = BigInt(value);
-  if ((!allowZero && parsed <= 0n) || parsed.toString(2).length > ENGINE_LIMITS.maxBigIntBits)
-    fail('INVALID_SNAPSHOT', 'Snapshot integer outside limits', path);
-  return parsed;
-}
-function parseSignedBigInt(value: string, path: string): bigint {
-  if (typeof value !== 'string' || !/^-?(0|[1-9][0-9]*)$/u.test(value) || value === '-0')
-    fail('INVALID_SNAPSHOT', 'Invalid canonical signed integer', path);
-  const parsed = BigInt(value);
-  if ((parsed < 0n ? -parsed : parsed).toString(2).length > ENGINE_LIMITS.maxBigIntBits)
-    fail('INVALID_SNAPSHOT', 'Snapshot integer outside limits', path);
-  return parsed;
-}
-function safeRevision(value: number, path: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) fail('INVALID_SNAPSHOT', 'Invalid revision', path);
-  return value;
-}
-function snapshotHash(value: unknown): string {
-  return createHash('sha256').update(stableJson(value)).digest('hex');
-}
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if (value && typeof value === 'object')
-    return `{${Object.entries(value)
-      .filter(([, child]) => child !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
-      .join(',')}}`;
-  return JSON.stringify(value);
-}
+
 function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapshot {
-  let value: unknown = input;
-  if (typeof input === 'string') {
-    if (Buffer.byteLength(input, 'utf8') > ENGINE_LIMITS.maxSnapshotBytes)
-      fail('PAYLOAD_TOO_LARGE', 'Snapshot exceeds byte limit');
-    try {
-      value = JSON.parse(input) as unknown;
-    } catch {
-      fail('INVALID_SNAPSHOT', 'Snapshot is not valid JSON');
-    }
-  }
-  const candidate = snapshotRecord(value, '$');
-  snapshotKeys(
+  const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
+  const candidate = assertSnapshotRecord(value, '$');
+  assertSnapshotKeys(
     candidate,
     [
       'schema',
@@ -678,10 +536,10 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
     ],
     '$',
   );
-  const adapter = snapshotRecord(candidate.adapter, '$.adapter');
-  snapshotKeys(adapter, ['id', 'version', 'fingerprint'], '$.adapter');
-  const posterior = snapshotRecord(candidate.posterior, '$.posterior');
-  snapshotKeys(posterior, ['weights', 'total'], '$.posterior');
+  const adapter = assertSnapshotRecord(candidate.adapter, '$.adapter');
+  assertSnapshotKeys(adapter, ['id', 'version', 'fingerprint'], '$.adapter');
+  const posterior = assertSnapshotRecord(candidate.posterior, '$.posterior');
+  assertSnapshotKeys(posterior, ['weights', 'total'], '$.posterior');
   if (!Array.isArray(posterior.weights))
     fail('INVALID_SNAPSHOT', 'Posterior weights must be an array', '$.posterior.weights');
   posterior.weights.forEach((item, index) =>
@@ -694,8 +552,12 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
   )
     fail('INVALID_SNAPSHOT', 'Evidence must be a bounded array', '$.evidence');
   candidate.evidence.forEach((item, index) => {
-    const event = snapshotRecord(item, `$.evidence[${index}]`);
-    snapshotKeys(event, ['index', 'target', 'favour', 'other', 'label'], `$.evidence[${index}]`);
+    const event = assertSnapshotRecord(item, `$.evidence[${index}]`);
+    assertSnapshotKeys(
+      event,
+      ['index', 'target', 'favour', 'other', 'label'],
+      `$.evidence[${index}]`,
+    );
     if (!Number.isSafeInteger(event.index) || !Number.isSafeInteger(event.target))
       fail(
         'INVALID_SNAPSHOT',
@@ -707,8 +569,8 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
     assertWireString(event.label, `$.evidence[${index}].label`);
   });
   if (candidate.position !== null) {
-    const position = snapshotRecord(candidate.position, '$.position');
-    snapshotKeys(
+    const position = assertSnapshotRecord(candidate.position, '$.position');
+    assertSnapshotKeys(
       position,
       [
         'outcome',
@@ -720,11 +582,15 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
       ],
       '$.position',
     );
-    const contingentPayout = snapshotRecord(
+    const contingentPayout = assertSnapshotRecord(
       position.contingentPayout,
       '$.position.contingentPayout',
     );
-    snapshotKeys(contingentPayout, ['numerator', 'denominator'], '$.position.contingentPayout');
+    assertSnapshotKeys(
+      contingentPayout,
+      ['numerator', 'denominator'],
+      '$.position.contingentPayout',
+    );
     assertWireString(contingentPayout.numerator, '$.position.contingentPayout.numerator');
     assertWireString(contingentPayout.denominator, '$.position.contingentPayout.denominator');
     if (
@@ -736,32 +602,14 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
     assertWireString(position.stake, '$.position.stake');
     assertWireString(position.capBasisStake, '$.position.capBasisStake');
   }
-  if (
-    !Array.isArray(candidate.receipts) ||
-    candidate.receipts.length > ENGINE_LIMITS.maxEvidenceEvents
-  )
+  if (!Array.isArray(candidate.receipts) || candidate.receipts.length > ENGINE_LIMITS.maxReceipts)
     fail('INVALID_SNAPSHOT', 'Receipts must be a bounded array', '$.receipts');
   candidate.receipts.forEach((item, index) => {
-    const stored = snapshotRecord(item, `$.receipts[${index}]`);
-    snapshotKeys(stored, ['fingerprint', 'receipt'], `$.receipts[${index}]`);
-    assertHex(stored.fingerprint, `$.receipts[${index}].fingerprint`);
-    const receipt = snapshotRecord(stored.receipt, `$.receipts[${index}].receipt`);
-    snapshotKeys(
-      receipt,
-      [
-        'schema',
-        'idempotencyKey',
-        'commandFingerprint',
-        'action',
-        'ledgerRevision',
-        'frameRevision',
-        'debited',
-        'credited',
-        'balanceDelta',
-        'capped',
-      ],
-      `$.receipts[${index}].receipt`,
-    );
+    const stored = assertSnapshotRecord(item, `$.receipts[${index}]`);
+    assertSnapshotKeys(stored, ['fingerprint', 'receipt'], `$.receipts[${index}]`);
+    assertWireHex(stored.fingerprint, `$.receipts[${index}].fingerprint`);
+    const receipt = assertSnapshotRecord(stored.receipt, `$.receipts[${index}].receipt`);
+    assertSnapshotKeys(receipt, RECEIPT_WIRE_KEYS, `$.receipts[${index}].receipt`);
     [
       'schema',
       'idempotencyKey',
@@ -783,7 +631,7 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
       );
   });
   if (
-    candidate.schema !== 'reveal-engine/round-book-v1' ||
+    candidate.schema !== ROUND_BOOK_SCHEMA ||
     typeof adapter.id !== 'string' ||
     typeof adapter.version !== 'string' ||
     typeof candidate.terminal !== 'boolean' ||
@@ -792,32 +640,11 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
     !Number.isSafeInteger(candidate.entryCount)
   )
     fail('INVALID_SNAPSHOT', 'Snapshot scalar fields are invalid');
-  assertHex(adapter.fingerprint, '$.adapter.fingerprint');
+  assertWireHex(adapter.fingerprint, '$.adapter.fingerprint');
   assertWireString(candidate.liquidBalance, '$.liquidBalance');
   if (candidate.capBasisStake !== null)
     assertWireString(candidate.capBasisStake, '$.capBasisStake');
-  assertHex(candidate.snapshotHash, '$.snapshotHash');
-  if (Buffer.byteLength(stableJson(candidate), 'utf8') > ENGINE_LIMITS.maxSnapshotBytes)
-    fail('PAYLOAD_TOO_LARGE', 'Snapshot exceeds byte limit');
+  assertWireHex(candidate.snapshotHash, '$.snapshotHash');
+  assertSnapshotSize(candidate);
   return candidate as unknown as RoundBookSnapshot;
-}
-
-function snapshotRecord(value: unknown, path: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    fail('INVALID_SNAPSHOT', 'Expected an object', path);
-  return value as Record<string, unknown>;
-}
-function snapshotKeys(value: Record<string, unknown>, keys: readonly string[], path: string): void {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index]))
-    fail('INVALID_SNAPSHOT', 'Object has missing or unknown fields', path);
-}
-function assertWireString(value: unknown, path: string): asserts value is string {
-  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 1234)
-    fail('INVALID_SNAPSHOT', 'Expected a bounded string', path);
-}
-function assertHex(value: unknown, path: string): asserts value is string {
-  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/u.test(value))
-    fail('INVALID_SNAPSHOT', 'Expected canonical 32-byte hexadecimal', path);
 }

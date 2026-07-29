@@ -1,6 +1,9 @@
 import { timingSafeEqual } from 'node:crypto';
 import { fail } from '../api/errors.js';
 
+/** A value that may appear in an unambiguous canonical field vector. */
+export type CanonicalField = string | Uint8Array | bigint | number;
+
 function lengthPrefix(length: number): Buffer {
   if (!Number.isSafeInteger(length) || length < 0 || length > 0xffff_ffff)
     fail('PAYLOAD_TOO_LARGE', 'Canonical field is too large');
@@ -10,7 +13,7 @@ function lengthPrefix(length: number): Buffer {
 }
 
 /** Unambiguous typed framing: field count, then uint32 byte length + bytes per field. */
-export function encodeFields(fields: readonly (string | Uint8Array | bigint | number)[]): Buffer {
+export function encodeFields(fields: readonly CanonicalField[]): Buffer {
   const encoded = fields.map((field) => {
     if (typeof field === 'bigint') return Buffer.from(field.toString(10), 'ascii');
     if (typeof field === 'number') {
@@ -28,4 +31,16 @@ export function encodeFields(fields: readonly (string | Uint8Array | bigint | nu
 export function constantTimeHexEqual(left: string, right: string): boolean {
   if (!/^[0-9a-f]{64}$/u.test(left) || !/^[0-9a-f]{64}$/u.test(right)) return false;
   return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
+}
+
+/** Deterministic JSON with sorted keys and dropped `undefined`; anchors snapshot checksums. */
+export function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object')
+    return `{${Object.entries(value)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(',')}}`;
+  return JSON.stringify(value);
 }

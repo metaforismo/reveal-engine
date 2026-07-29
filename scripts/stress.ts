@@ -2,11 +2,20 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { RevealEngineError } from '../src/api/errors.js';
-import { makeTranscript, verifyTranscriptDetailed } from '../src/core/fairness.js';
-import { initialPosterior } from '../src/core/posterior.js';
-import { RoundBook, type Receipt } from '../src/protocol/round-book.js';
-import { binaryBeaconReference, constellationReference } from '../src/reference/index.js';
-import { serializeTranscript, transcriptToWire } from '../src/serialization/transcript.js';
+import {
+  makeTranscript,
+  verifyTranscriptDetailed,
+} from '../src/modules/progressive-market/fairness.js';
+import { initialPosterior } from '../src/modules/progressive-market/posterior.js';
+import { RoundBook, type Receipt } from '../src/modules/progressive-market/round-book.js';
+import {
+  binaryBeaconReference,
+  constellationReference,
+} from '../src/modules/progressive-market/references/index.js';
+import {
+  serializeTranscript,
+  transcriptToWire,
+} from '../src/modules/progressive-market/transcript.js';
 import {
   assertStressArtifact,
   latencySummary,

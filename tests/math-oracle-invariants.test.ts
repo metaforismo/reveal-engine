@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { defineGame } from '../src/core/adapter.js';
+import { defineGame } from '../src/modules/progressive-market/adapter.js';
 import {
   ENGINE_API_VERSION,
   type EvidenceEvent,
   type GameDefinition,
-} from '../src/core/contracts.js';
-import { makeTranscript } from '../src/core/fairness.js';
+} from '../src/modules/progressive-market/contracts.js';
+import { makeTranscript } from '../src/modules/progressive-market/fairness.js';
 import { payable, payableWithinCap } from '../src/core/payments.js';
 import {
   fairValueClaim,
@@ -13,13 +13,13 @@ import {
   posteriorFor,
   probability,
   quote,
-} from '../src/core/posterior.js';
+} from '../src/modules/progressive-market/posterior.js';
 import { add, compare, floor, multiply, rational, type Rational } from '../src/core/rational.js';
 import {
   binaryBeaconReference,
   blackSignalReference,
   constellationReference,
-} from '../src/reference/index.js';
+} from '../src/modules/progressive-market/references/index.js';
 import { seed } from './helpers.js';
 
 class Fraction {

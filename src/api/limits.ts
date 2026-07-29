@@ -8,4 +8,16 @@ export const ENGINE_LIMITS = Object.freeze({
   maxBigIntBits: 4096,
   maxTranscriptBytes: 8 * 1024 * 1024,
   maxSnapshotBytes: 16 * 1024 * 1024,
+  /** Receipts retained by one round ledger, shared by every lifecycle module. */
+  maxReceipts: 10_000,
+  /** Simultaneous open claims a lifecycle module may hold in one round book. */
+  maxRoundClaims: 64,
+  /** Player choices a lifecycle module may log as deterministic transcript inputs. */
+  maxLoggedChoices: 10_000,
+  /** Steps a lifecycle module may declare for one round. */
+  maxSteps: 10_000,
+  /** Elements in one seeded permutation draw (deck shuffles, ordered truth models). */
+  maxPermutationSize: 1_024,
+  /** Draws one recorded random tape may contain. */
+  maxTapeDraws: 10_000,
 });

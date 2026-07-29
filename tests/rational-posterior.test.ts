@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { adapterFingerprint, defineGame } from '../src/core/adapter.js';
-import { ENGINE_API_VERSION } from '../src/core/contracts.js';
+import { adapterFingerprint, defineGame } from '../src/modules/progressive-market/adapter.js';
+import { ENGINE_API_VERSION } from '../src/modules/progressive-market/contracts.js';
 import {
   initialPosterior,
   posteriorFor,
   probability,
   quote,
   updatePosterior,
-} from '../src/core/posterior.js';
+} from '../src/modules/progressive-market/posterior.js';
 import { add, compare, divide, equal, multiply, rational } from '../src/core/rational.js';
-import { binaryBeaconReference, constellationReference } from '../src/reference/index.js';
+import {
+  binaryBeaconReference,
+  constellationReference,
+} from '../src/modules/progressive-market/references/index.js';
 
 describe('rational and posterior invariants', () => {
   it('normalizes sign/gcd and compares mathematical equality', () => {

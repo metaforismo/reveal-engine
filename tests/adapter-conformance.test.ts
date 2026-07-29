@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { checkAdapterConformance } from '../src/conformance/adapter-conformance.js';
-import { defineGame } from '../src/core/adapter.js';
-import { ENGINE_API_VERSION, type GameDefinition } from '../src/core/contracts.js';
+import {
+  assertAdapterConforms,
+  checkAdapterConformance,
+} from '../src/modules/progressive-market/conformance.js';
+import { defineGame } from '../src/modules/progressive-market/adapter.js';
+import {
+  ENGINE_API_VERSION,
+  type GameDefinition,
+} from '../src/modules/progressive-market/contracts.js';
 import { rational } from '../src/core/rational.js';
 import {
   binaryBeaconReference,
   blackSignalReference,
   constellationReference,
-} from '../src/reference/index.js';
+} from '../src/modules/progressive-market/references/index.js';
 
 describe('adapter conformance', () => {
   it.each([blackSignalReference, constellationReference, binaryBeaconReference])(
@@ -15,10 +21,18 @@ describe('adapter conformance', () => {
     (game) => {
       const report = checkAdapterConformance(game, 12);
       expect(report.ok, JSON.stringify(report.failures)).toBe(true);
+      expect(report.schema).toBe('reveal-engine/adapter-conformance-v1');
       expect(report.transcripts).toBe(12);
       expect(report.fingerprint).toMatch(/^[0-9a-f]{64}$/u);
+      expect(assertAdapterConforms(game, 2).ok).toBe(true);
     },
   );
+
+  it('throws with the failing check codes when an adapter does not conform', () => {
+    expect(() => assertAdapterConforms({} as GameDefinition, 1)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_ADAPTER' }),
+    );
+  });
 
   it('deep-freezes built-in adapters', () => {
     expect(() => (blackSignalReference.outcomes as string[]).push('E')).toThrow();

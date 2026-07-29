@@ -1,8 +1,8 @@
-import { uniform } from '../core/fairness.js';
-import { rational } from '../core/rational.js';
-import type { EvidenceSchedule, GameDefinition } from '../core/contracts.js';
-import { ENGINE_API_VERSION } from '../core/contracts.js';
-import { defineGame } from '../core/adapter.js';
+import { rational } from '../../../core/rational.js';
+import { defineGame } from '../adapter.js';
+import { ENGINE_API_VERSION, type EvidenceSchedule, type GameDefinition } from '../contracts.js';
+import { uniform } from '../fairness.js';
+
 const schedule: EvidenceSchedule = {
   modelVersion: 'constellation-evidence/v1',
   eventCount: 7,

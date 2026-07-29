@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { makeTranscript } from '../src/core/fairness.js';
-import { initialPosterior } from '../src/core/posterior.js';
-import { RoundBook } from '../src/protocol/round-book.js';
-import { binaryBeaconReference, constellationReference } from '../src/reference/index.js';
+import { makeTranscript } from '../src/modules/progressive-market/fairness.js';
+import { initialPosterior } from '../src/modules/progressive-market/posterior.js';
+import { RoundBook } from '../src/modules/progressive-market/round-book.js';
+import {
+  binaryBeaconReference,
+  constellationReference,
+} from '../src/modules/progressive-market/references/index.js';
 import { advanceAll, seed } from './helpers.js';
 
 describe('snapshot, reconnect, and deterministic replay', () => {

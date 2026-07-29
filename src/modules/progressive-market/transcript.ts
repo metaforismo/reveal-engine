@@ -1,12 +1,14 @@
-import { ENGINE_LIMITS } from '../api/limits.js';
-import { fail } from '../api/errors.js';
+import { ENGINE_LIMITS } from '../../api/limits.js';
+import { fail } from '../../api/errors.js';
+import { LEGACY_COMMITMENT_VERSION } from '../../core/versions.js';
 import {
-  LEGACY_COMMITMENT_VERSION,
+  LEGACY_TRANSCRIPT_SCHEMA,
+  TRANSCRIPT_SCHEMA,
   type CommitmentVersion,
   type EvidenceEvent,
   type Transcript,
-} from '../core/contracts.js';
-import { assertContext } from '../core/validation.js';
+} from './contracts.js';
+import { assertContext } from './validation.js';
 
 interface WireEvidence {
   readonly index: number;
@@ -17,7 +19,7 @@ interface WireEvidence {
 }
 
 export interface WireTranscriptV2 {
-  readonly schema: 'reveal-engine/transcript-v2';
+  readonly schema: typeof TRANSCRIPT_SCHEMA;
   readonly proofVersion: CommitmentVersion;
   readonly adapter: { readonly id: string; readonly version: string };
   readonly roundId: string;
@@ -25,6 +27,12 @@ export interface WireTranscriptV2 {
   readonly evidence: readonly WireEvidence[];
   readonly commitment: string;
 }
+
+/** Schemas this codec accepts, newest first. Anything else fails closed. */
+export const ACCEPTED_TRANSCRIPT_SCHEMAS = Object.freeze([
+  TRANSCRIPT_SCHEMA,
+  LEGACY_TRANSCRIPT_SCHEMA,
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -90,7 +98,7 @@ function domainEvent(value: unknown, path: string): EvidenceEvent {
 
 export function transcriptToWire(transcript: Transcript): WireTranscriptV2 {
   return Object.freeze({
-    schema: 'reveal-engine/transcript-v2',
+    schema: TRANSCRIPT_SCHEMA,
     proofVersion: transcript.context.proofVersion,
     adapter: Object.freeze({ id: transcript.context.gameId, version: transcript.adapterVersion }),
     roundId: transcript.context.roundId,
@@ -116,11 +124,10 @@ export function deserializeTranscript(input: unknown): Transcript {
     }
   }
   if (!isRecord(value)) fail('INVALID_TRANSCRIPT', 'Expected transcript object');
-  if (value.schema === 'reveal-engine/transcript-v2' && 'context' in value)
-    return parseDomain(value);
-  if (value.schema === 'reveal-engine/transcript-v2') return parseV2(value);
+  if (value.schema === TRANSCRIPT_SCHEMA && 'context' in value) return parseDomain(value);
+  if (value.schema === TRANSCRIPT_SCHEMA) return parseV2(value);
   if (
-    value.schema === 'reveal-engine/transcript-v1' ||
+    value.schema === LEGACY_TRANSCRIPT_SCHEMA ||
     (value.schema === undefined && 'context' in value)
   )
     return parseLegacy(value);
@@ -155,7 +162,7 @@ function parseDomain(value: Record<string, unknown>): Transcript {
   });
   assertContext(context);
   return Object.freeze({
-    schema: 'reveal-engine/transcript-v2',
+    schema: TRANSCRIPT_SCHEMA,
     adapterVersion,
     context,
     truth: Number(value.truth),
@@ -198,7 +205,7 @@ function parseV2(value: Record<string, unknown>): Transcript {
     value.evidence.map((event, index) => domainEvent(event, `$.evidence[${index}]`)),
   );
   return Object.freeze({
-    schema: 'reveal-engine/transcript-v2',
+    schema: TRANSCRIPT_SCHEMA,
     adapterVersion,
     context,
     truth: Number(value.truth),
@@ -253,7 +260,7 @@ function parseLegacy(value: Record<string, unknown>): Transcript {
   });
   assertContext(context);
   return Object.freeze({
-    schema: 'reveal-engine/transcript-v2',
+    schema: TRANSCRIPT_SCHEMA,
     adapterVersion:
       value.adapterVersion === undefined
         ? '1.0.0'

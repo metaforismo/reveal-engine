@@ -1,11 +1,7 @@
-import { defineGame } from '../core/adapter.js';
-import {
-  ENGINE_API_VERSION,
-  type EvidenceSchedule,
-  type GameDefinition,
-} from '../core/contracts.js';
-import { uniform } from '../core/fairness.js';
-import { rational } from '../core/rational.js';
+import { defineGame } from '../adapter.js';
+import { ENGINE_API_VERSION, type EvidenceSchedule, type GameDefinition } from '../contracts.js';
+import { uniform } from '../fairness.js';
+import { rational } from '../../../core/rational.js';
 
 const evidence: EvidenceSchedule = {
   modelVersion: 'binary-beacon-evidence/v1',

@@ -1,14 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { ENGINE_LIMITS } from '../../src/api/limits.js';
 import type { RevealEngineError } from '../../src/api/errors.js';
-import { COMMITMENT_VERSION, type RoundContext } from '../../src/core/contracts.js';
-import { makeTranscript, uniform, verifyTranscriptDetailed } from '../../src/core/fairness.js';
+import {
+  COMMITMENT_VERSION,
+  type RoundContext,
+} from '../../src/modules/progressive-market/contracts.js';
+import {
+  makeTranscript,
+  uniform,
+  verifyTranscriptDetailed,
+} from '../../src/modules/progressive-market/fairness.js';
 import { payable } from '../../src/core/payments.js';
-import { initialPosterior } from '../../src/core/posterior.js';
+import { initialPosterior } from '../../src/modules/progressive-market/posterior.js';
 import { rational } from '../../src/core/rational.js';
-import { RoundBook } from '../../src/protocol/round-book.js';
-import { binaryBeaconReference, constellationReference } from '../../src/reference/index.js';
-import { deserializeTranscript, transcriptToWire } from '../../src/serialization/transcript.js';
+import { RoundBook } from '../../src/modules/progressive-market/round-book.js';
+import {
+  binaryBeaconReference,
+  constellationReference,
+} from '../../src/modules/progressive-market/references/index.js';
+import {
+  deserializeTranscript,
+  transcriptToWire,
+} from '../../src/modules/progressive-market/transcript.js';
 import { seed } from '../helpers.js';
 
 describe('hostile input and failure taxonomy', () => {
