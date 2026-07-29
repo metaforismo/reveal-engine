@@ -112,6 +112,7 @@ export {
   CARDS_MAX_ANALYSIS_CELLS,
   CARDS_MAX_ANALYSIS_OPS,
   analyseDefinition,
+  estimateAnalysisCells,
   estimateAnalysisWork,
   forEachCanonicalState,
   type CardsAnalysis,

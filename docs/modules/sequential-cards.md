@@ -238,7 +238,7 @@ One round, one ticket, one ledger.
 | Action   | Effect                                                              | Credit boundary |
 | -------- | ------------------------------------------------------------------- | --------------- |
 | `open`   | debit the ticket total; price every row at `r / p`; log the backing | debit only      |
-| `reveal` | apply one derived reveal, fenced and idempotent                     | none            |
+| `reveal` | apply one reveal **the host derived**, fenced and idempotent        | none            |
 | `switch` | move a claim onto one other position at true odds                   | **none**        |
 | `split`  | hedge a claim evenly across a set at true odds                      | **none**        |
 | `cash`   | credit `floor(V)` for one selection and close it                    | credit          |
@@ -279,7 +279,36 @@ relation, not the hidden cards, so **two different rounds routinely publish the
 same reveal**. Without the round identity a book would accept a transcript that
 verifies perfectly and settle on somebody else's deal.
 
-### 6.2 Restore re-derives; it does not read
+### 6.2 A reveal is validated as public record, not as provenance
+
+`CardsBook` holds a definition and no seed. It therefore **cannot check that a
+reveal handed to `advanceReveal` came from the sealed deal**, and it does not
+pretend to. What `assertRevealSteps` establishes is that the step list is
+well-formed _public record_: positions and ranks distinct and in range, the
+eligibility rule respected, the published sort a permutation of exactly the
+positions still hidden, and every earlier sort still consistent with what has
+since turned face up. That is internal consistency. Provenance is a different
+property and only `settle` has the input for it — the revealed seed — at which
+point the whole step list is re-derived and a mismatch is refused.
+
+The gap between those two moments is real money. A fabricated reveal that clears
+the structural rules is accepted, the belief moves to it, and a mid-round `cash`
+credits against it: on `triad-middle-v1` with a 100-credit stake, substituting a
+different eligible position and a rank of our choosing credits **240** where the
+sealed board would have credited nothing. `settle` refuses the round afterwards,
+but the credit has already been made, and a host that simply never settles is
+never contradicted.
+
+So deriving the reveal is a **host obligation**: call `deriveRevealSteps()`
+against the sealed deal and pass what it returns. Do not accept a step from a
+client, and do not reconstruct one by hand. The module gives a host everything it
+needs to discharge this — `deriveRevealSteps` is deterministic from the seed and
+the choice log, and `CARDS_SELECTOR_PRECOMMITTED` and `CARDS_REVEAL_CHOICE_BOUND`
+check that it is — but it cannot discharge it for the host, because a book that
+held the seed for the whole round would be holding it before the reveal it is
+supposed to commit to.
+
+### 6.3 Restore re-derives; it does not read
 
 `CardsBook.restore` takes nothing money-bearing from the snapshot. Every claim is
 recomputed from the entry price at the pre-reveal belief and replayed through the
@@ -525,30 +554,99 @@ on `(code, details.reason)` and never on message text.
 
 ## 11. Limits
 
-| Limit                         | Value       | Why                                                                                  |
-| ----------------------------- | ----------- | ------------------------------------------------------------------------------------ |
-| `CARDS_MAX_STEPS`             | 8           | the module's step budget; a definition declares its own count inside it              |
-| `CARDS_MAX_DEALT`             | 16          | bounds the subset enumeration every price rests on                                   |
-| `CARDS_MAX_SIDE_MARKETS`      | 48          | with the backing width, stays inside `ENGINE_LIMITS.maxRoundClaims`                  |
-| `CARDS_MAX_SUPPORT`           | 200,000     | completions one belief may enumerate; bounds `C(size, dealt)`                        |
-| `CARDS_MAX_ANALYSIS_CELLS`    | 3,000,000   | reachable `(state, covered set)` pairs the definition-time walk may visit            |
-| `CARDS_MAX_ANALYSIS_OPS`      | 100,000,000 | estimated exact-rational operations that walk may cost, refused **before** it starts |
-| `CARDS_MAX_ENUMERATED_TRUTHS` | 20,000      | above this, `truth.enumerate()` returns `undefined` rather than a partial sweep      |
+| Limit                         | Value      | Why                                                                             |
+| ----------------------------- | ---------- | ------------------------------------------------------------------------------- |
+| `CARDS_MAX_STEPS`             | 8          | the module's step budget; a definition declares its own count inside it         |
+| `CARDS_MAX_DEALT`             | 16         | bounds the subset enumeration every price rests on                              |
+| `CARDS_MAX_SIDE_MARKETS`      | 48         | with the backing width, stays inside `ENGINE_LIMITS.maxRoundClaims`             |
+| `CARDS_MAX_SUPPORT`           | 200,000    | completions one belief may enumerate; bounds `C(size, dealt)`                   |
+| `CARDS_MAX_ANALYSIS_CELLS`    | 500,000    | reachable `(state, cover)` pairs the definition-time walk may visit             |
+| `CARDS_MAX_ANALYSIS_OPS`      | 20,000,000 | estimated exact-rational operations that walk may cost                          |
+| `CARDS_MAX_ENUMERATED_TRUTHS` | 20,000     | above this, `truth.enumerate()` returns `undefined` rather than a partial sweep |
 
-The last two are a pair, and the second exists because the first is not a bound
-on time. A cell is not a unit of work: `splitSetsOf` enumerates every subset of
-the live positions, so one cell costs `O(2^dealt)` rational operations and the
-cell budget alone bounds the walk at `cells × O(2^dealt)`. Measured on a 2026
-laptop, a legal-shaped definition at `size 18 / dealt 9` reached the cell budget
-only after **27 seconds** and one at `size 20 / dealt 11 / 4 reveals` after
-**281 seconds** — and `defineCardsGame` is synchronous, so that was a blocked
-event loop before the refusal arrived. `estimateAnalysisWork` closes an upper
-bound on the walk in BigInt from the declaration alone, before a single hand is
-enumerated, and both of those are now refused in under a millisecond. The
-estimate is deliberately loose — the shipped references come out 20× to 600×
-above their realised cell counts, at 24.0K, 75.6K and 8.0M against the 100M
-ceiling — because a bound that refuses a cheap definition costs an operator one
-message and a bound that admits an expensive one costs a blocked process.
+### 11.1 The two analysis ceilings, and how they are calibrated
+
+`defineCardsGame` is synchronous and proves its economics by exhaustion, so an
+oversized definition does not fail — it blocks. Both ceilings above are therefore
+closed from the declaration in BigInt, by `estimateAnalysisCells` and
+`estimateAnalysisWork`, and **both are checked before the walk starts**. There
+are two of them because the walk has two cost centres that scale on different
+axes, and neither bounds the other:
+
+- **cells** — the `(state, cover)` pairs of the reveal tree, which grows with
+  `C(size, dealt)` and the eligible set at each reveal. A wide deck with a narrow
+  hand is expensive here and cheap per cell.
+- **operations** — the exact-rational arithmetic inside a cell. `splitSetsOf`
+  enumerates every subset of the live positions and `identicalPairs` then
+  compares every unordered pair of the controls that produces, so one cell costs
+  `O(4^dealt)`. A narrow deck with a wide hand is expensive here and cheap in
+  cells. `estimateAnalysisWork` also carries the **belief enumeration**:
+  `cardsBelief` runs `C(size − i, dealt − i)` per distinct revealed prefix, and
+  at `size 100 / dealt 3` that is 1.6M completions against 1.5M cells — the same
+  order as the entire rest of the walk.
+
+**What round two got wrong, and it is worth being explicit about it.** The
+operations estimate had no term for `cardsBelief` at all, so it did not bound the
+work on the wide-deck axis; and the cell budget was counted from inside the walk
+rather than closed from the declaration, so a definition at `size 30 / dealt 5`
+was still refused only after 33 seconds of blocked event loop — the exact
+condition the operations bound had been introduced to remove. On top of that the
+published rate of ~100 ns per estimated operation was measured on the single
+loosest shape and presented as if it held everywhere. It does not: the
+looseness of the bound is shape-dependent by two orders of magnitude, and
+ns-per-operation is its reciprocal, so the true worst rate was ~44× the published
+one and the stated "roughly ten seconds" understated the ceiling by the same
+factor.
+
+**How the ceilings are calibrated now.** `scripts/analysis-calibration.ts` walks
+a committed probe table spanning both axes and reports the estimate, the realised
+cell count, the wall time and the rate for each. The ceilings are set from the
+**worst** rate in that table, on the shape where the bound is tightest, because
+that is the shape that converts a whole ceiling into wall time. Measured on a
+2026 laptop under Node 25:
+
+| Shape                           | est. ops    | est. cells | cells   | ms      | ns/op  | outcome |
+| ------------------------------- | ----------- | ---------- | ------- | ------- | ------ | ------- |
+| `size 13 / dealt 3 / split`     | 46,618      | 2,574      | 2,574   | ~55     | ~1,150 | walked  |
+| `size 9 / dealt 5 / width 2`    | 270,396     | 10,080     | 10,080  | ~60     | ~230   | walked  |
+| `size 9 / dealt 5 / 2× / split` | 9,148,986   | 124,110    | 13,230  | ~120    | ~13    | walked  |
+| `size 52 / dealt 3 / split`     | 3,602,300   | 198,900    | 198,900 | ~5,100  | ~1,430 | walked  |
+| **`size 70 / dealt 3 / split`** | 8,922,620   | 492,660    | 492,660 | ~13,200 | ~1,480 | walked  |
+| `size 90 / dealt 3 / split`     | 19,149,240  | 1,057,320  | —       | 0       | —      | refused |
+| `size 100 / dealt 3`            | 17,625,300  | 1,455,300  | —       | 0       | —      | refused |
+| `size 13 / dealt 7 / 2 reveals` | 121,827,420 | 2,606,604  | —       | 0       | —      | refused |
+| `size 30 / dealt 5`             | 104,171,886 | 3,562,650  | —       | 0       | —      | refused |
+
+Timings are approximate on purpose: repeated runs on the same machine vary by
+about ±10%, so a single sample is not a claim. The **reproducible** columns are
+the two estimates and the realised cell count, which are exact functions of the
+declaration and the walk. Only the derived ceiling is a claim, and it is derived
+from the worst rate observed rather than a mean.
+
+So: **the slowest definition these ceilings admit walks in about 13 s** (12.5 s
+to 14 s across runs), and that is the wall-time bound — not the nominal product
+of the operations ceiling with the worst rate (~31 s), which is unreachable
+because a shape tight enough to run at that rate is a wide deck with a narrow
+hand and the cell ceiling refuses it first. Every refusal above arrives in
+**under a millisecond**, because no ceiling is discovered from inside the walk
+any more. A real 52-card deck with a three-card hand sits comfortably inside
+both, at about 5 s.
+
+The cell bound is tight — 1.0× to 9.4× of the realised count, and **exact** on
+both single-reveal references. The operations bound is much looser, 18× to 691×
+of the realised cell count, because it has to assume every hidden position stays
+live and a real reveal eliminates most of them. That looseness is why a shape
+like `size 13 / dealt 7` is refused although it would in fact have walked in a
+few seconds, and it is the deliberate direction: a bound that refuses a cheap
+definition costs an operator one message, and a bound that admits an expensive
+one costs a blocked process. The shipped references leave 429×, 74× and 2.2×
+of operations headroom and 194×, 50× and 4.0× of cell headroom.
+
+`tests/sequential-cards/analysis-bound.test.ts` holds both estimates to being
+upper bounds rather than models: for each of eleven shapes it walks the
+definition, sums the completions of every distinct belief through
+`forEachCanonicalState`, and requires the estimate to dominate the realised
+cells and completions together.
 
 ## 12. What this module does not do
 
@@ -596,6 +694,18 @@ specification.
   still be a real control before the first one. All three shipped references
   report zero decoys. Disclosing a no-op state to a player is a game obligation
   that the conformance report can only equip, never discharge.
+- **It does not authenticate a reveal, only validate it.** `CardsBook` holds no
+  seed, so `advanceReveal` cannot establish that a step came from the sealed
+  deal; `assertRevealSteps` checks structure, eligibility and cumulative-sort
+  consistency, and a fabricated step that clears those is applied. The belief
+  then moves to it and a mid-round `cash` credits against it — 240 credits on a
+  100-credit `triad-middle-v1` stake, in the worked case in §6.2. `settle`
+  refuses the round afterwards, but the credit has already been made, and a host
+  that never settles is never contradicted. **Deriving the reveal with
+  `deriveRevealSteps()` is a host obligation**, and it is on the integration
+  checklist for that reason. This is the same shape of boundary as the snapshot
+  one in §6.3 and is stated with the same plainness: the module cannot close it,
+  so it says which side owns it.
 - **It holds no player identity, wallet, or persistence.** `CardsBook` is an
   in-memory reference for the state machine and the reconnect format. A
   production RGS still owns idempotency lookup, authorisation, the wallet
@@ -620,21 +730,30 @@ difference is listed here rather than left for an integrator to discover at the
 type-checker, because a specification a consumer wrote and an implementation that
 quietly diverges from it is worse than either alone.
 
-| `ENGINE.md` declares                                                                | This version                                                                                                                                                                                                                                                                                                  |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dormancy: DormancySpec` on the definition, and §5.1 assertions over it             | **Refused by name** with `UNDECLARED_FIELD`. The module owns no clock; the host owns the window and calls `cash` itself. §12 above says why silence would be worse.                                                                                                                                           |
-| `pricing.rounding: 'stochastic'` (the unbiased settlement draw of `MATH.md` §13)    | **Refused by name** with `INVALID_ROUNDING_POLICY`. Only `'floor'` is implemented; ADR 0005 Decision 4 says what it would take to close.                                                                                                                                                                      |
-| `book.actions` including `settleDormant`                                            | Absent, for the same reason. The module's list adds `reveal`, which the spec does not have: ADR 0005 Decision 2 makes a reveal a ledger command.                                                                                                                                                              |
-| §5.4: the commitment body "does not seal the realised steps"                        | It seals the realised steps **and** the choice log. A reveal is a function of the sealed deal and the log, so sealing it adds no freedom and closes a reveal log nothing had signed.                                                                                                                          |
-| §5.4: a verifier needs the client seed and the nonce in the transcript              | The wire transcript carries neither. Composition is a host obligation, published as `composeRoundSeed()` (§9); the transcript binds `roundId` instead, which §6.1 explains is load-bearing and the spec does not require. A host that wants the composition inputs in the artefact must carry them alongside. |
-| §8 error codes `SEED_REUSED`, `ROUND_NOT_DORMANT`, `INVALID_SETTLEMENT_REASON`      | No `CARDS_REJECTION_REASONS` counterpart. The first is an operator-custody property the module cannot observe (§9); the other two belong to `settleDormant`.                                                                                                                                                  |
-| §5.6 checks `CARDS_ROUNDING_UNBIASED`, `CARDS_ROUNDING_BOUNDED`                     | Not implemented: both quantify over `rounding: 'stochastic'`, which is refused. `CARDS_POLICY_RETURN_EXTREMAL` is the `'floor'` analogue and is stronger than the spec's wording — it is an argmin and argmax over the whole policy space, not over a shortlist.                                              |
-| §5.6 check `CARDS_EVERY_ROUND_SETTLES`                                              | Not implemented: it quantifies over `dormancy.windowSeconds`.                                                                                                                                                                                                                                                 |
-| §5.6 check `CARDS_OBJECTIVE_TOTAL`                                                  | Folded into `CARDS_ELIGIBLE_SET_NONEMPTY`, whose description states both halves.                                                                                                                                                                                                                              |
-| §5.6 check `CARDS_IDENTICAL_ACTIONS_ENUMERATED` failing an undeclared no-op control | Enumerated and reported; **not** a refusal. §12 above gives the two reasons.                                                                                                                                                                                                                                  |
+| `ENGINE.md` declares                                                                | This version                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §4.1 imports `from '@axiom-games/reveal-engine/sequential-cards'`                   | The package publishes `./modules/sequential-cards`, and there is no `./sequential-cards` alias, so the spec's code block does not resolve as written. The module lives under `./modules/` with every other lifecycle module and gains a second name for one export only by breaking that convention.                 |
+| §5.5: with `rebackMode: 'move'` a host "may instead call `reback`"                  | There is no `reback` method. A re-back **is** `switchClaim` at step revision 0, where `offeredActions` offers `switch` only for a single-position cover and the prior is uniform, so the move is priced at exactly `(1 − σ)` and crosses no credit boundary. §5.3 describes the same behaviour under the other name. |
+| §5.6 scopes `CARDS_BELIEF_EXHAUSTIVE` as a **definition** check                     | Declared and run as a **round** check. It cross-checks the belief against an independently coded enumeration at each step prefix of a seeded round, so it needs a seed and a round id; a definition-scoped check has neither. Its coverage is per reference per seed rather than once per definition.                |
+| `dormancy: DormancySpec` on the definition, and §5.1 assertions over it             | **Refused by name** with `UNDECLARED_FIELD`. The module owns no clock; the host owns the window and calls `cash` itself. §12 above says why silence would be worse.                                                                                                                                                  |
+| `pricing.rounding: 'stochastic'` (the unbiased settlement draw of `MATH.md` §13)    | **Refused by name** with `INVALID_ROUNDING_POLICY`. Only `'floor'` is implemented; ADR 0005 Decision 4 says what it would take to close.                                                                                                                                                                             |
+| `book.actions` including `settleDormant`                                            | Absent, for the same reason. The module's list adds `reveal`, which the spec does not have: ADR 0005 Decision 2 makes a reveal a ledger command.                                                                                                                                                                     |
+| §5.4: the commitment body "does not seal the realised steps"                        | It seals the realised steps **and** the choice log. A reveal is a function of the sealed deal and the log, so sealing it adds no freedom and closes a reveal log nothing had signed.                                                                                                                                 |
+| §5.4: a verifier needs the client seed and the nonce in the transcript              | The wire transcript carries neither. Composition is a host obligation, published as `composeRoundSeed()` (§9); the transcript binds `roundId` instead, which §6.1 explains is load-bearing and the spec does not require. A host that wants the composition inputs in the artefact must carry them alongside.        |
+| §8 error codes `SEED_REUSED`, `ROUND_NOT_DORMANT`, `INVALID_SETTLEMENT_REASON`      | No `CARDS_REJECTION_REASONS` counterpart. The first is an operator-custody property the module cannot observe (§9); the other two belong to `settleDormant`.                                                                                                                                                         |
+| §5.6 checks `CARDS_ROUNDING_UNBIASED`, `CARDS_ROUNDING_BOUNDED`                     | Not implemented: both quantify over `rounding: 'stochastic'`, which is refused. `CARDS_POLICY_RETURN_EXTREMAL` is the `'floor'` analogue and is stronger than the spec's wording — it is an argmin and argmax over the whole policy space, not over a shortlist.                                                     |
+| §5.6 check `CARDS_EVERY_ROUND_SETTLES`                                              | Not implemented: it quantifies over `dormancy.windowSeconds`.                                                                                                                                                                                                                                                        |
+| §5.6 check `CARDS_OBJECTIVE_TOTAL`                                                  | Folded into `CARDS_ELIGIBLE_SET_NONEMPTY`, whose description states both halves.                                                                                                                                                                                                                                     |
+| §5.6 check `CARDS_IDENTICAL_ACTIONS_ENUMERATED` failing an undeclared no-op control | Enumerated and reported; **not** a refusal. §12 above gives the two reasons.                                                                                                                                                                                                                                         |
 
 Everything else the specification asks for is implemented under the name it
-asks for. Four checks this module adds are not in the spec at all —
-`CARDS_DEFINITION_NOT_FROZEN`, `CARDS_POLICY_RETURN_EXTREMAL`,
-`CARDS_MIN_STAKE_SUFFICIENT` and `CARDS_SNAPSHOT_NOT_REVALIDATED` — and the last
-of those is the one that found ADR 0005 Decision 2.
+asks for, and that claim has been checked rather than assumed: all fourteen
+implementable spec error codes are present in `CARDS_REJECTION_REASONS`, and
+every check scope matches except the one tabled above. The three rows at the top
+of the table were missing from the first two versions of it, which is why the
+claim is now stated with what backs it. **Three** checks this module adds are not
+in the spec at all — `CARDS_DEFINITION_NOT_FROZEN`,
+`CARDS_POLICY_RETURN_EXTREMAL` and `CARDS_SNAPSHOT_NOT_REVALIDATED` — and the
+last of those is the one that found ADR 0005 Decision 2. Earlier versions of this
+paragraph counted four, including `CARDS_MIN_STAKE_SUFFICIENT`, which
+`ENGINE.md` §5.6 does ask for by name.

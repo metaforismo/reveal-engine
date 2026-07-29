@@ -604,6 +604,13 @@ export function assertPlayerChoices(
  * internal consistency, not provenance — only `settle`, which verifies the
  * transcript against the revealed seed, establishes that these are the committed
  * deal's reveals.
+ *
+ * That gap is a money boundary and it is published, not buried here:
+ * `docs/modules/sequential-cards.md` §6.2 works it through with the credit a
+ * fabricated reveal earns, §12 lists it among the things this module does not
+ * do, `docs/threat-model.md` carries it as an open attack story, and
+ * `docs/integration-checklist.md` names the host obligation that closes it —
+ * derive every step with `deriveRevealSteps()` against the sealed truth.
  */
 export function assertRevealSteps(
   definition: SequentialCardsDefinition,

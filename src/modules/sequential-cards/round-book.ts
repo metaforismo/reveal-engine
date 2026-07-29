@@ -735,7 +735,7 @@ export class CardsBook {
    * coordinated rewrite of a stake, its claim, its open receipt, and the cap
    * basis is internally consistent and restores. Snapshot integrity is a
    * deployment obligation — trusted storage, or a MAC the host owns — and
-   * `docs/modules/sequential-cards.md` §6.2 says so rather than implying the
+   * `docs/modules/sequential-cards.md` §6.3 says so rather than implying the
    * re-derivation covers it.
    */
   static restore(definition: SequentialCardsDefinition, input: string | object): CardsBook {

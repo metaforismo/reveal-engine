@@ -147,9 +147,47 @@ one at `size 20 / dealt 11 / 4 reveals` after 281 seconds, on a synchronous
 `defineCardsGame`. Operator-authored definitions are not player-reachable, so
 this was robustness rather than an exploit, but "bound it and say so" has to mean
 the time. `CARDS_MAX_ANALYSIS_OPS` and `estimateAnalysisWork` close an upper
-bound in BigInt from the declaration alone, before a single hand is enumerated;
-both cases above are now refused in under a millisecond, and
-`docs/modules/sequential-cards.md` §11 publishes the calibration.
+bound in BigInt from the declaration alone, before a single hand is enumerated.
+
+**Amended again in round three: that bound did not bound what this said it
+did.** Two things were wrong and the amendment above asserted both of them.
+
+First, `estimateAnalysisWork` had **no term for `cardsBelief`**, whose inner loop
+is `C(size − i, dealt − i)` per distinct revealed prefix. That cost dominates
+whenever the deck is much wider than the hand — at `size 100 / dealt 3` it is
+1.6M completions against 1.5M cells — so on that whole axis the formula was not
+an upper bound on the work at all, and the ns-per-operation rate calibrated
+elsewhere did not transfer to it. Second, only the operations ceiling was closed
+from the declaration; the **cell** budget was still counted from inside the walk,
+so `size 30 / dealt 5` was refused with `ANALYSIS_SPACE_TOO_LARGE` only after 33
+seconds of blocked event loop, which is precisely the condition this amendment
+claimed to have removed. And the published calibration — "roughly ten seconds"
+— was measured on the single loosest shape in the space; measured ns per
+estimated operation spanned ~300× across shapes, so the true worst was about 44×
+the figure this document and §11 both printed.
+
+The bound now has a term for each of the walk's three cost centres — the reveal
+tree's cells, the exact-rational arithmetic inside a cell, and the belief
+enumeration — and `estimateAnalysisCells` closes the cell budget from the
+declaration too, so **both** ceilings are checked before the walk starts. The
+ceilings were re-derived from the **worst** measured rate rather than the best,
+which moved them down: `CARDS_MAX_ANALYSIS_CELLS` from 3,000,000 to 500,000 and
+`CARDS_MAX_ANALYSIS_OPS` from 100,000,000 to 20,000,000. The slowest definition
+they admit now walks in about 13 s and every refusal arrives in under a
+millisecond;
+`scripts/analysis-calibration.ts` is the committed probe table those figures come
+from, and `tests/sequential-cards/analysis-bound.test.ts` holds both estimates to
+dominating the cells and completions eleven shapes actually realise.
+
+**What this cost, stated plainly.** The lower ceilings refuse definitions the old
+ones admitted, including some that would have walked in a few seconds — `size 13
+/ dealt 7` is the clearest, because the operations bound has to assume every
+hidden position stays live and a real reveal eliminates most of them. That is the
+direction this ADR already chose: a bound that refuses a cheap definition costs
+an operator one message, and a bound that admits an expensive one costs a blocked
+process. `docs/modules/sequential-cards.md` §11.1 publishes the whole measured
+table rather than a single derived rate, because a single rate is what was wrong
+here twice.
 
 ## Decision 6 — three findings from an independent review, and what each cost
 
@@ -189,7 +227,7 @@ deterministic unkeyed snapshot format, and `progressive-market` has the same
 property. Re-derivation defeats _inconsistent_ rewrites and nothing else; the
 stake in particular has no anchor inside the round, because it came from a wallet
 the module cannot see. `restore`'s docstring and
-`docs/modules/sequential-cards.md` §6.2 previously implied more than that and now
+`docs/modules/sequential-cards.md` §6.3 previously implied more than that and now
 say exactly this, and name snapshot integrity as a deployment obligation.
 
 **Fixed by narrowing — the worst-policy figure was not an argmin.** With a
@@ -270,6 +308,65 @@ walks disagree cell for cell. Three further spec checks that had no
 implementation (`CARDS_REVEAL_CHOICE_BOUND`, `CARDS_SINGLE_BACKED_POSITION`,
 `CARDS_TICKET_WELL_FORMED`, `CARDS_ROUNDING_NEVER_UNDERPAYS`) were added at the
 same time, which leaves §12.1's table shorter than the finding anticipated.
+
+## Decision 9 — round-three findings: name the boundary you cannot close
+
+A third independent read produced two major findings and three minor ones. All
+five are fixed. None was a broken control; every one was a **claim that outran
+what the code did**, which for this repository is the same kind of defect.
+
+**Fixed — the analysis ceilings did not bound what they said.** Decision 5 above
+carries the full amendment: a missing cost term, a budget still discovered from
+inside the walk, and a calibration measured on the one shape where it flattered
+itself.
+
+**Fixed by documenting — a book cannot tell where a reveal came from.**
+`CardsBook` holds a definition and no seed, so `advanceReveal` validates a step
+as public record and cannot establish that it came from the sealed deal. A
+fabricated step that clears the structural rules is applied, the belief moves to
+it, and a mid-round `cash` credits against it: 240 credits on a 100-credit
+`triad-middle-v1` stake where the sealed board pays nothing. `settle` refuses the
+round afterwards, but the credit is already made, and a host that never settles
+is never contradicted.
+
+The finding was not that this happens — it is inherent, and giving the book the
+seed for the whole round would be worse, because the book would then hold the
+seed before the reveal it is supposed to commit to. The finding was that the
+property lived **only in the `assertRevealSteps` docstring**, while the
+symmetric snapshot boundary got four paragraphs in §6. That asymmetry is the
+defect: this repository's standard is that a residual boundary is named where a
+reader will meet it. It is now in §6.2 with the credit it earns, in §12, in
+`docs/threat-model.md` as an open attack story, and in
+`docs/integration-checklist.md` as the host obligation that closes it. §6's
+action table said "apply one derived reveal", which implied the module did the
+deriving; it now says the host does. And the behaviour is pinned by a test, so
+the published gap is a checked claim and a future revision that closes it fails
+loudly rather than leaving the documentation overstating it.
+
+**Fixed — three published figures did not reproduce.** `docs/evidence-ledger.md`
+opens by saying every figure in it was produced by the command in its row, and
+four were stale by one commit: the test count, the coverage numbers, a
+"14 checks each" against a module that declares and runs 19 — contradicting §8
+of its own module doc — and a missing row for round two's review entirely, so
+the ledger under-reported the review effort the ADR documents. A ledger that
+does not reproduce is worse than no ledger, because it is read as evidence.
+
+**Fixed — §11's "20× to 600×" was wrong at both ends,** and §12.1's "everything
+else is implemented under the name it asks for" was missing three real
+divergences from `triad/docs/ENGINE.md`: the import specifier the spec's own
+code block uses does not resolve against this package's `exports` map, there is
+no `reback` method (a re-back is `switchClaim` at revision 0), and
+`CARDS_BELIEF_EXHAUSTIVE` is a round check here and a definition check there.
+All three are now in the table.
+
+Re-deriving that section rather than patching the three named rows turned up a
+fourth error nobody had reported: the paragraph closing §12.1 claimed four checks
+were absent from the specification, and `CARDS_MIN_STAKE_SUFFICIENT` is in it, by
+name, at `ENGINE.md` §5.6. It is three. The claim that "everything else is
+implemented under the name it asks for" is now backed by a check of all
+seventeen spec error codes and all check scopes rather than by assertion, which
+is the standard the rest of this document is held to and the reason a review
+finding is worth more than the line it lands on.
 
 ## Consequences
 

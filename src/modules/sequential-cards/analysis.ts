@@ -25,7 +25,7 @@ import {
   livePositions,
   transformedClaim,
 } from './pricing.js';
-import { eligibleSetSize, reject } from './validation.js';
+import { CARDS_MAX_DEALT, eligibleSetSize, reject } from './validation.js';
 
 /**
  * Definition-time proof by exhaustion.
@@ -81,70 +81,173 @@ import { eligibleSetSize, reject } from './validation.js';
  *   spread has to confront the argmin search rather than inherit this claim.
  */
 
-/** Reachable `(state, covered set)` pairs one analysis may visit. */
-export const CARDS_MAX_ANALYSIS_CELLS = 3_000_000;
+/**
+ * Reachable `(state, covered set)` pairs one analysis may visit.
+ *
+ * Checked twice: `estimateAnalysisCells` closes an upper bound on it from the
+ * declaration alone and `runAnalysis` refuses **before** the walk starts, and
+ * `budget()` counts the realised cells and refuses during the walk if the
+ * a-priori bound were ever wrong. The first is what makes the refusal cheap; the
+ * second is what makes it sound.
+ */
+export const CARDS_MAX_ANALYSIS_CELLS = 500_000;
 
 /**
  * Exact-rational operations one analysis may be *estimated* to perform.
  *
- * `CARDS_MAX_ANALYSIS_CELLS` bounds the walk in cells, and a cell is not a unit
- * of work: `splitSetsOf` enumerates every subset of the live positions of width
- * at least two, so one cell can cost `O(2^dealt)` rational operations and the
- * cell budget alone bounds the space at `cells × O(2^dealt)`. Measured on a 2026
- * laptop, a legal-shaped definition at `size 18 / dealt 9` was refused for
- * exceeding the cell budget only after **27 seconds**, and one at `size 20 /
- * dealt 11 / 4 reveals` after **281 seconds** — and `defineCardsGame` is
- * synchronous, so that is a blocked event loop before the refusal arrives.
+ * A cell is not a unit of work, so a cell budget alone bounds the space and not
+ * the time: `splitSetsOf` enumerates every subset of the live positions of width
+ * at least two, and `identicalPairs` then compares every unordered pair of the
+ * controls that produces, so one cell can cost `O(4^dealt)` rational operations.
+ * Measured on a 2026 laptop, a legal-shaped definition at `size 18 / dealt 9`
+ * was refused for exceeding the cell budget only after **27 seconds**, and one
+ * at `size 20 / dealt 11 / 4 reveals` after **281 seconds** — and
+ * `defineCardsGame` is synchronous, so that is a blocked event loop before the
+ * refusal arrives.
  *
  * Operator-authored definitions are not player-reachable, so this is a
  * robustness bound rather than an exploit, but "bound it and say so" has to mean
  * the time as well as the space. `estimateAnalysisWork` closes the form below in
- * BigInt from the declaration alone, before a single hand is enumerated, and
- * both cases above are now refused in under a millisecond.
+ * BigInt from the declaration alone, before a single hand is enumerated.
  *
- * **How the ceiling was calibrated**, on the same machine: the slowest accepted
- * definition measured (`size 13 / dealt 7`, two reveals) estimates 25.2M and
- * runs in 2.6 s, i.e. ~100 ns per estimated operation, so this ceiling is
- * roughly ten seconds of walk in the worst shape seen. The three shipped
- * references estimate 24.0K, 75.6K and 8.0M, the last with 12× headroom.
+ * **How the ceiling is calibrated.** Round two calibrated it on one shape and
+ * published the resulting rate as if it held everywhere; it did not, and the
+ * published figure was wrong by up to two orders of magnitude on shapes the
+ * measurement never touched. The rate a ceiling has to be set from is the
+ * **worst** one, because a bound is only as good as the shape where it is
+ * tightest — a loose bound merely wastes headroom, a tight one converts the
+ * ceiling into wall time at full rate. `scripts/analysis-calibration.ts` walks a
+ * committed probe table spanning both axes (wide deck / narrow hand, narrow deck
+ * / wide hand, split on and off, one reveal and two) and reports ns per
+ * estimated operation for each; `docs/modules/sequential-cards.md` §11 publishes
+ * the table and derives this ceiling from its maximum, not its minimum.
  */
-export const CARDS_MAX_ANALYSIS_OPS = 100_000_000n;
+export const CARDS_MAX_ANALYSIS_OPS = 20_000_000n;
 
 /**
- * An a-priori upper bound on the walk's exact-rational operations.
+ * The walk's shape, closed from the declaration in BigInt.
  *
- * Every factor is an upper bound on the corresponding loop, closed from the
- * declaration:
+ * `runAnalysis` visits a reveal tree. At revision `i` it holds `nodes` distinct
+ * `(hand, backed set, backed start, reveal prefix)` contexts, each carrying a
+ * map of incoming cover sets, and it pays for one cell per entry of that map.
+ * Both factors are bounded per revision rather than at their widest, which is
+ * what keeps the bound from inflating by the split combinatorics of a hand width
+ * that only the first revision ever has:
  *
- * - **lines** = `C(size, dealt) · C(dealt, width) · width · ∏ᵢ eligible(i)` —
- *   one per (hand, backed set, backed start, reveal ordering), which is exactly
- *   what the walk enumerates;
- * - **cells per line**: the incoming cover set is a singleton at revision 0 and
- *   the window at revision 0 adds nothing, so it grows by at most
- *   `g = dealt + splitSets` per later revision. Summing gives
- *   `(R + 1) + g · R(R − 1)/2`;
- * - **operations per cell**: one switch target per position plus one split set,
- *   i.e. `g` again.
+ * - **nodes** starts at `C(size, dealt) · C(dealt, width) · width` and multiplies
+ *   by `eligible(i)` at each reveal;
+ * - **masks**: `window` carries every incoming cover through unchanged and adds
+ *   at most one per switch target and one per split set, and those additions
+ *   depend only on the live set, not on the incoming cover. So the map grows by
+ *   at most `offers(i) = hidden(i) + splitSets(i)` per revision, where
+ *   `hidden(i) = dealt − i`. Revision 0 offers no liquidating action at all, so
+ *   it adds nothing;
+ * - **operations per cell**: one for the hold that every cover survives on, about
+ *   six exact-rational operations per offered control — its cover probability,
+ *   its transformed claim, and the two claim bounds it widens — and one
+ *   comparison per unordered pair of offered controls, which is what
+ *   `identicalPairs` costs.
+ */
+function walkShape(definition: SequentialCardsDefinition): { cells: bigint; ops: bigint } {
+  const { size } = definition.ladder;
+  const width = definition.backing.maxOpenBeforeReveal;
+  const offersSplit = definition.pricing.actions.includes('split');
+  // `CARDS_MAX_DEALT` bounds `dealt` for anything that reached
+  // `assertCardsDefinition`, and this is clamped for anything that did not: the
+  // `1n << hidden` below is the one place an unvalidated hand width would cost
+  // more than a wrong number.
+  const dealt = Math.min(Math.max(definition.ladder.dealt, 0), CARDS_MAX_DEALT);
+  let nodes = combinationCount(size, dealt) * combinationCount(dealt, width) * BigInt(width);
+  let masks = 1n;
+  let cells = 0n;
+  let ops = 0n;
+  for (let revision = 0; revision <= definition.reveal.count; revision += 1) {
+    const hidden = BigInt(Math.max(dealt - revision, 0));
+    const splitSets = offersSplit && hidden >= 2n ? (1n << hidden) - hidden - 1n : 0n;
+    // Revision 0 is the re-back window: it offers nothing that transforms a
+    // claim, so its cells cost one pass each and emit no new cover.
+    const offers = revision === 0 ? 0n : hidden + splitSets;
+    cells += nodes * masks;
+    ops += nodes * masks * (1n + 6n * offers + (offers * (offers + 1n)) / 2n);
+    if (revision === definition.reveal.count) break;
+    nodes *= BigInt(Math.max(eligibleSetSize(definition, revision), 1));
+    masks += offers;
+  }
+  return { cells, ops };
+}
+
+/**
+ * An a-priori upper bound on the completions `cardsBelief` enumerates.
  *
- * It is an over-estimate — the references come out 20× to 600× above their
- * realised cell counts — and it is deliberately an over-estimate: a bound that
- * refuses a cheap definition costs an operator one message, and a bound that
- * admits an expensive one costs a blocked process.
+ * **This is the term round two's estimate did not have**, and the shape it
+ * misses is the one where a deck is much wider than the hand. `cardsBelief`
+ * enumerates `C(|pool|, m)` ascending subsets per distinct belief — `|pool| =
+ * size − i` and `m = dealt − i` after `i` reveals — and `runAnalysis` memoises
+ * beliefs on the revealed `(position, rank)` prefix, so the cost is the number
+ * of distinct prefixes times the enumeration each one runs. At `size 100 /
+ * dealt 3` that is 1.6M completions against 1.5M cells: a term of the same order
+ * as the whole rest of the walk, which the old formula never multiplied in at
+ * all, so the estimate under-predicted the work by roughly half on that axis and
+ * the published ns-per-op rate was measured somewhere it did not apply.
+ *
+ * Distinct prefixes of length `i` are bounded by `P(dealt, i) · C(size, i)`: the
+ * reveal order is an ordered choice of `i` of the `dealt` positions, and the
+ * ranks they turn over are an `i`-subset of the ladder whose assignment to those
+ * positions is then forced, because the canonical board is ordered by rank.
+ */
+function estimateBeliefWork(definition: SequentialCardsDefinition): bigint {
+  const { size, dealt } = definition.ladder;
+  let prefixes = 1n;
+  let ranks = 1n;
+  let work = 0n;
+  for (let revision = 0; revision <= definition.reveal.count; revision += 1) {
+    // Clamped rather than assumed: both estimators are exported, so a caller can
+    // reach them with a definition `assertCardsDefinition` has not seen, and a
+    // negative argument to `combinationCount` would be an error raised from an
+    // estimate rather than an estimate.
+    work +=
+      prefixes *
+      ranks *
+      combinationCount(Math.max(size - revision, 0), Math.max(dealt - revision, 0));
+    if (revision === definition.reveal.count) break;
+    prefixes *= BigInt(Math.max(dealt - revision, 1));
+    ranks = (ranks * BigInt(Math.max(size - revision, 1))) / BigInt(revision + 1);
+  }
+  return work;
+}
+
+/**
+ * An a-priori upper bound on the `(state, covered set)` cells the walk visits.
+ *
+ * This is the half that makes a **refusal** cheap. Round two bounded the
+ * operations before the walk but left the cell budget to fire from inside it, so
+ * a definition at `size 30 / dealt 5` was still refused with
+ * `ANALYSIS_SPACE_TOO_LARGE` only after 33 seconds of blocked event loop —
+ * exactly the condition the operations bound was introduced to remove. The bound
+ * below is tight: it reproduces the realised cell count **exactly** on both
+ * single-reveal references, so the ceiling it is checked against is close to a
+ * statement about real work rather than a wide over-estimate.
+ */
+export function estimateAnalysisCells(definition: SequentialCardsDefinition): bigint {
+  return walkShape(definition).cells;
+}
+
+/**
+ * An a-priori upper bound on the walk's total exact-rational operations.
+ *
+ * The sum of the two cost centres a walk actually has: the per-cell rational
+ * arithmetic of `walkShape`, and the belief enumeration of `estimateBeliefWork`.
+ * Counting a completion as one operation over-weights it — a completion is an
+ * integer merge over `dealt` slots and an exact-rational operation is a BigInt
+ * multiply and a GCD — so the sum errs in the safe direction on that axis too.
+ *
+ * It remains an over-estimate overall, by between 1.1× and 690× of realised
+ * work depending on shape (§11 publishes the measured table), and it is
+ * deliberately one: a bound that refuses a cheap definition costs an operator
+ * one message, and a bound that admits an expensive one costs a blocked process.
  */
 export function estimateAnalysisWork(definition: SequentialCardsDefinition): bigint {
-  const { size, dealt } = definition.ladder;
-  const reveals = BigInt(definition.reveal.count);
-  const width = definition.backing.maxOpenBeforeReveal;
-  let lines = combinationCount(size, dealt) * combinationCount(dealt, width) * BigInt(width);
-  for (let index = 0; index < definition.reveal.count; index += 1)
-    lines *= BigInt(Math.max(eligibleSetSize(definition, index), 1));
-  // Subsets of the live positions of width >= 2, at their widest.
-  const splitSets = definition.pricing.actions.includes('split')
-    ? (1n << BigInt(dealt)) - BigInt(dealt) - 1n
-    : 0n;
-  const growth = BigInt(dealt) + splitSets;
-  const cellsPerLine = reveals + 1n + (growth * reveals * (reveals - 1n)) / 2n;
-  return lines * cellsPerLine * (growth === 0n ? 1n : growth);
+  return walkShape(definition).ops + estimateBeliefWork(definition);
 }
 
 export interface CardsAnalysis {
@@ -336,8 +439,19 @@ export function analyseDefinition(definition: SequentialCardsDefinition): CardsA
 
 function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
   // Refused before the walk starts, not after it has burned minutes discovering
-  // its own cell budget. See `CARDS_MAX_ANALYSIS_OPS`.
-  const estimate = estimateAnalysisWork(definition);
+  // its own budgets. **Both** ceilings are checked here: the operations bound
+  // catches the split-combinatorics axis, and the cell bound catches the wide
+  // reveal tree that the operations bound alone let run for 33 seconds before
+  // `budget()` fired from inside the walk. See `CARDS_MAX_ANALYSIS_OPS`.
+  const shape = walkShape(definition);
+  if (shape.cells > BigInt(CARDS_MAX_ANALYSIS_CELLS))
+    reject(
+      'INVALID_ADAPTER',
+      `Proving this definition's economics by exhaustion is estimated to visit ${shape.cells} reachable (state, cover) cells, above the ${CARDS_MAX_ANALYSIS_CELLS} this module will walk`,
+      '$.ladder',
+      'ANALYSIS_SPACE_TOO_LARGE',
+    );
+  const estimate = shape.ops + estimateBeliefWork(definition);
   if (estimate > CARDS_MAX_ANALYSIS_OPS)
     reject(
       'INVALID_ADAPTER',

@@ -19,7 +19,7 @@
   (the 3-card middle-pick adapter with a 14-market paytable), `duo-middle-v1`
   (two simultaneously backed positions), and `cascade-middle-v1` (two reveals,
   where the second has to read the order the first published).
-- Fourteen module conformance checks, including `CARDS_POLICY_RETURN_EXTREMAL`
+- Nineteen module conformance checks, including `CARDS_POLICY_RETURN_EXTREMAL`
   (argmin and argmax over the **whole** policy space, never a shortlist),
   `CARDS_CAP_NEVER_BINDS`, `CARDS_MIN_STAKE_SUFFICIENT`, and
   `CARDS_BELIEF_EXHAUSTIVE`, which cross-checks the posterior against a second
@@ -46,9 +46,41 @@
   [`docs/adr/0005-sequential-cards-scope-and-the-credit-boundary.md`](docs/adr/0005-sequential-cards-scope-and-the-credit-boundary.md).
 - The public-API snapshot test now pins the `sequential-cards` surface, and the
   package export map and smoke test carry `./modules/sequential-cards`.
+- **The definition-time analysis ceilings now bound what they claim to.**
+  `estimateAnalysisWork` gained the term it never had for `cardsBelief`'s
+  `C(size − i, dealt − i)` enumeration — the cost that dominates whenever the
+  deck is much wider than the hand — and the new `estimateAnalysisCells` closes
+  the cell budget from the declaration, so **both** ceilings are checked before
+  the walk rather than one of them from inside it. Re-derived from the worst
+  measured rate instead of the best, `CARDS_MAX_ANALYSIS_CELLS` drops
+  3,000,000 → 500,000 and `CARDS_MAX_ANALYSIS_OPS` 100,000,000 → 20,000,000.
+  The slowest definition they admit walks in about 13 s where the old pair admitted
+  25 s walks while publishing "roughly ten seconds", and refused others only
+  after 33 s. Lower ceilings refuse some shapes the old ones admitted; that is
+  the direction ADR 0005 Decision 5 chose and now measures.
+  `scripts/analysis-calibration.ts` is the committed probe table the figures
+  come from.
+- The reveal-provenance boundary is published rather than left in a docstring:
+  a book holds no seed, so `advanceReveal` validates a step as public record and
+  cannot establish it came from the sealed deal, and a mid-round `cash` credits
+  against a fabricated one before `settle` can refuse the round. Deriving every
+  step with `deriveRevealSteps()` is now a named host obligation in
+  `docs/integration-checklist.md`, an open row in `docs/threat-model.md`, and
+  §6.2 and §12 of the module doc; a test pins the behaviour.
 
 ### Reviewed
 
+- A third independent review found two major and three minor issues, all fixed:
+  the analysis ceilings above, the undocumented reveal-provenance boundary, four
+  stale figures in `docs/evidence-ledger.md`, a wrong looseness range in §11, and
+  three missing divergences from `triad/docs/ENGINE.md` in §12.1. Every one was a
+  published claim that outran the code rather than a broken control. See ADR 0005
+  Decision 9.
+- A second independent review found four major and four minor issues, all fixed:
+  commands re-reading the caller's request across the ledger's `await`,
+  `restore()` replaying receipt algebra without the round's own rules, a raw
+  `TypeError` escaping `restore()`, and an identical-action enumeration with no
+  reader. See ADR 0005 Decision 8.
 - An independent correctness review (GPT-5.6, read-only) found five issues.
   Three are fixed: settlement flooring the aggregate instead of each selection
   (a one-credit cross-selection carry), a settled snapshot trusting its own

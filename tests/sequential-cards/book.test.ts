@@ -764,6 +764,76 @@ describe('sequential-cards: the multi-position round book', () => {
     ).rejects.toMatchObject({ code: 'CLAIM_REJECTED', details: { reason: 'DUPLICATE_SELECTION' } });
   });
 
+  /**
+   * The reveal boundary, pinned as behaviour rather than left in a docstring.
+   *
+   * `CardsBook` holds a definition and no seed, so `advanceReveal` validates a
+   * step as **public record** — structure, eligibility, cumulative sorts — and
+   * cannot establish that it came from the sealed deal. A fabricated step that
+   * clears those rules is applied, the belief moves to it, and a mid-round
+   * `cash` credits against it. `settle` refuses the round afterwards, but the
+   * credit has already been made, and a host that never settles is never
+   * contradicted.
+   *
+   * This test exists so that the boundary `docs/modules/sequential-cards.md`
+   * §6.2 and §12 publish is a checked claim, and so that a future revision which
+   * closes it — by giving the book the sealed deal, say — fails here loudly
+   * rather than leaving the documentation overstating the gap.
+   */
+  it('applies a reveal the sealed deal never produced, and credits against it', async () => {
+    const seedHex = seed(0x9c);
+    const roundId = 'r-provenance';
+    const book = new CardsBook(triadMiddleReference);
+    await book.open({
+      idempotencyKey: 'open',
+      expectedStepRevision: 0,
+      roundId,
+      selections: [{ id: 's1', kind: 'position', position: 0, stake: 100n }],
+    });
+    const deal = deriveDeal(seedHex, triadMiddleReference, roundId);
+    const honest = deriveRevealSteps(triadMiddleReference, deal, book.choices)[0] as RevealStep;
+
+    // A different eligible position, a rank of our choosing, and a published
+    // sort that suits us. Nothing here came from the sealed deal.
+    const other = honest.position === 1 ? 2 : 1;
+    const forged: RevealStep = Object.freeze({
+      index: 0,
+      position: other,
+      rank: 2,
+      sorted: Object.freeze(other === 1 ? [0, 2] : [0, 1]),
+      label: `${triadMiddleReference.reveal.modelVersion}:0`,
+    });
+    expect(forged.rank).not.toBe(deal.ranks[other]);
+
+    const applied = await book.advanceReveal({
+      idempotencyKey: 'reveal-forged',
+      expectedStepRevision: 0,
+      step: forged,
+    });
+    expect(applied.action).toBe('reveal');
+    expect(book.stepRevision).toBe(1);
+
+    // And it is worth money: the sealed board would have decided this position,
+    // the forged one leaves it live and generously priced.
+    const cashed = await book.cash({
+      idempotencyKey: 'cash-forged',
+      expectedStepRevision: 1,
+      selectionId: 's1',
+    });
+    expect(cashed.credited).toBe(240n);
+
+    // Settlement is where provenance is finally established, and it refuses —
+    // after the credit, which is exactly why the host owns the derivation.
+    await expect(
+      book.settle({
+        idempotencyKey: 'settle',
+        expectedStepRevision: 1,
+        revealedSeed: seedHex,
+        transcript: buildCardsTranscript(seedHex, triadMiddleReference, roundId, book.choices),
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSCRIPT_MISMATCH' });
+  });
+
   it('refuses a definition that charges a second margin on liquidation', () => {
     expect(() =>
       defineCardsGame({

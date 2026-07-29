@@ -309,6 +309,7 @@ describe('stable public API snapshot', () => {
       'entryMultiplier',
       'enumerateDeals',
       'enumerateSelectorTuples',
+      'estimateAnalysisCells',
       'estimateAnalysisWork',
       'fairValue',
       'forEachCanonicalState',
