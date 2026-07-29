@@ -47,9 +47,15 @@ const files: readonly [string, unknown][] = [
     },
   ],
   [
-    'tests/fixtures/permutation-book-v1.json',
+    // `permutation-book-v1.json` is deliberately NOT regenerated. It is the
+    // frozen negative fixture for a retired schema: `v1` carried no round
+    // binding, so restoring one would install a book that could settle against
+    // any round an operator picked after seeing the ticket. It has no migration
+    // — the field it lacks is the published commitment — and the frozen-fixture
+    // suite asserts it is refused with `UNSUPPORTED_VERSION`.
+    'tests/fixtures/permutation-book-v2.json',
     {
-      note: 'Frozen reveal-engine/permutation-book-v1 snapshot for a settled three-line ticket.',
+      note: 'Frozen reveal-engine/permutation-book-v2 snapshot for a settled three-line ticket on a bound round.',
       seed: FROZEN_PERMUTATION_SEED,
       roundId: FROZEN_PERMUTATION_ROUND_ID,
       credited: String(permutationRound.credited),

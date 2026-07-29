@@ -12,7 +12,23 @@ import type { Rational } from '../../core/rational.js';
 export const PERMUTATION_MODULE_ID = 'permutation' as const;
 export const PERMUTATION_MODULE_VERSION = '1.0.0' as const;
 export const PERMUTATION_TRANSCRIPT_SCHEMA = 'reveal-engine/permutation-transcript-v1' as const;
-export const PERMUTATION_BOOK_SCHEMA = 'reveal-engine/permutation-book-v1' as const;
+
+/**
+ * Book snapshot schema. `v2` added the round binding and there is no migration.
+ *
+ * `v1` snapshots carried no `binding`, so a `v1` book could settle against a
+ * proof for any round an operator chose after seeing the ticket. There is no
+ * honest way to migrate one forward: the missing field is the published
+ * commitment, and nothing in a `v1` snapshot says what it was. Inventing one
+ * from the settlement the snapshot already carries would manufacture the
+ * evidence the binding exists to supply. So `v1` is refused, and
+ * `tests/fixtures/permutation-book-v1.json` stays on disk as the negative
+ * fixture that proves it is refused rather than silently accepted.
+ */
+export const PERMUTATION_BOOK_SCHEMA = 'reveal-engine/permutation-book-v2' as const;
+export const RETIRED_BOOK_SCHEMAS: readonly string[] = Object.freeze([
+  'reveal-engine/permutation-book-v1',
+]);
 
 /** Receipt actions this module's book mints. */
 export const PERMUTATION_ACTIONS = Object.freeze(['place', 'settle'] as const);
@@ -154,6 +170,41 @@ export const ACCEPTED_TRANSCRIPT_SCHEMAS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * The published round a book plays, fixed before it may accept a single bet.
+ *
+ * This is the module's answer to the ordering requirement in
+ * `aether-order/docs/ENGINE.md` §5: the operator draws a seed, derives the
+ * round, and **publishes** the commitment; only then does betting open. A book
+ * that carried no such binding would accept, at settlement, a proof for any
+ * round the operator liked — and because every transcript this module builds is
+ * internally valid and verifies against its own seed, an operator holding a
+ * placed ticket could simply search round ids until it found one the ticket
+ * loses on. Every artefact would still verify. The ticket would still be a
+ * loser.
+ *
+ * So `roundId` and `commitment` are pinned at construction (or by `bind()`
+ * before the first `place`), immutable afterwards, and `settle()` refuses any
+ * transcript that names a different pair.
+ *
+ * `commitment` already binds `roundId` — it is a field of the sealed body — so
+ * pinning the commitment alone would be sufficient. Both are carried because
+ * "this proof is for round X, not round Y" is a better diagnostic than a hash
+ * that failed to match, and because the round id is what a host's own logs are
+ * keyed by.
+ *
+ * What this does **not** do is constrain the operator's choice of seed *before*
+ * publication. Grinding a seed pre-publication is a custody and
+ * publication-ordering problem that no in-process check can see; it is the
+ * residual risk recorded in `docs/threat-model.md` and
+ * `docs/integration-checklist.md`, and this binding does not close it.
+ */
+export interface PermutationRoundBinding {
+  readonly roundId: string;
+  /** The commitment published before betting opened; 64 lowercase hex chars. */
+  readonly commitment: string;
+}
+
+/**
  * What a settled round records about the proof that closed it.
  *
  * The revealed seed is here on purpose. Once a round is terminal the seed is
@@ -169,6 +220,16 @@ export interface PermutationSettlement {
   readonly revealedSeed: string;
   readonly order: PermutationOrder;
   readonly commitment: string;
+  /**
+   * The key of the `settle` command that closed the round.
+   *
+   * Recorded so that every receipt's idempotency key is named by the state that
+   * receipt produced — a `place` key by its claim, the `settle` key by this. A
+   * restore that cannot check the settle key accepts a receipt log which
+   * disagrees with the operator's command log, and turns an idempotent retry of
+   * the original settle into an error rather than the original receipt.
+   */
+  readonly idempotencyKey: string;
 }
 
 /** One open bet on the round book. `payout` is always recomputed, never trusted. */

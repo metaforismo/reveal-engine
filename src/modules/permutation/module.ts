@@ -1,4 +1,3 @@
-import { fail } from '../../api/errors.js';
 import { defineLifecycleModule, type LifecycleModule } from '../../core/module.js';
 import { MODULE_API_VERSION } from '../../core/versions.js';
 import { enumerateOrders } from './bets.js';
@@ -106,11 +105,18 @@ export const permutation: LifecycleModule<PermutationShape> =
       acceptedSchemas: ACCEPTED_TRANSCRIPT_SCHEMAS,
       build: (seedHex, definition, roundId) =>
         makePermutationTranscript(seedHex, definition, roundId),
-      commitmentBody: (definition, round, truth, steps, choices) => {
-        if (choices.length !== 0)
-          fail('INVALID_CHOICE', 'Permutation rounds log no player choices', '$.choices');
-        return permutationCommitmentBody(definition, round, truth, steps);
-      },
+      // The choice log is dropped rather than checked, and that is the contract:
+      // `defineLifecycleModule()` wraps this call as `commitmentBody(..., guard(
+      // choices))`, and for `choiceTiming: 'none'` that guard raises
+      // `INVALID_CHOICE` on a non-empty log *before* this closure runs. A guard
+      // here would be unreachable — dead code that reads like a control.
+      //
+      // What makes the omission safe is not the wrapper but the arity:
+      // `permutationCommitmentBody` has no choice parameter at all, so there is
+      // no log for these bytes to bind and no way for one to reach them. See
+      // `docs/modules/permutation.md` §8.
+      commitmentBody: (definition, round, truth, steps, _choices) =>
+        permutationCommitmentBody(definition, round, truth, steps),
       toWire: permutationTranscriptToWire,
       fromWire: deserializePermutationTranscript,
     },
@@ -121,6 +127,19 @@ export const permutation: LifecycleModule<PermutationShape> =
       settlement: 'paytable',
       maxOpenClaims: MAX_OPEN_BETS,
       actions: PERMUTATION_ACTIONS,
+      // The contract's factory takes a definition and nothing else, so the book
+      // it returns is **unbound**: it has no round, and `place()` refuses it
+      // until `bind()` names the published commitment. That is deliberate rather
+      // than a gap — an unbound book cannot take money, so the one thing the
+      // narrow factory signature can produce is the one state in which no money
+      // is at risk. A host that already holds the round constructs
+      // `new PermutationBook(definition, binding)` directly and never sees the
+      // unbound state at all.
+      //
+      // `restore` likewise takes the contract's two arguments. `PermutationBook
+      // .restore` accepts an optional third — the round the caller published —
+      // and a host that holds it should call the class directly to get the
+      // stronger check. See `PermutationBook.restore`.
       create: (definition) => new PermutationBook(definition),
       restore: (definition, snapshot) => PermutationBook.restore(definition, snapshot),
       snapshot: (book) => book.snapshot(),

@@ -38,7 +38,13 @@ export async function buildFrozenPermutationRound(): Promise<FrozenPermutationRo
     FROZEN_PERMUTATION_ROUND_ID,
   );
   const winner = transcript.order[0] as number;
-  const book = new PermutationBook(definition);
+  // Bound to the round it will settle, exactly as an operator publishes it
+  // before betting opens. The frozen snapshot therefore carries a binding, and
+  // the fixture proves the wire form of one.
+  const book = new PermutationBook(definition, {
+    roundId: FROZEN_PERMUTATION_ROUND_ID,
+    commitment: transcript.commitment,
+  });
   await book.place({
     idempotencyKey: 'place-first',
     bet: { code: 'first', item: winner },

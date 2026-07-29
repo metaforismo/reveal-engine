@@ -2,6 +2,7 @@
 
 - [ ] Commitment is durably published before entries and any seed-dependent information.
 - [ ] For a module whose steps consume player decisions, the **seed pre-commitment** is published before the round accepts its first decision, and the settlement transcript's choice log is the one the round actually played.
+- [ ] For the permutation module, the `PermutationBook` is bound to the **published** round commitment before its first `place`, and that value is the one durably published — the module enforces commitment-before-first-bet within a book instance and cannot see whether the value was ever published, so binding a commitment published afterwards passes every check and provides none of the protection. Reconnects call `PermutationBook.restore(definition, snapshot, publishedBinding)` with the same value rather than trusting the snapshot's own.
 - [ ] Seed generation/grinding controls, key custody, rotation, reveal timing, and retention are documented.
 - [ ] Module ID/version, definition ID/version/fingerprint, and all wire schema versions are persisted per round.
 - [ ] The definition passes `reveal-conformance` with retained machine-readable output.

@@ -227,6 +227,10 @@ describe('permutation module fails closed on hostile input', () => {
   const definition = aetherOrderClassicReference;
   const transcript = makePermutationTranscript(seed(1), definition, 'security');
   const wire = permutationTranscriptToWire(transcript) as unknown as Record<string, unknown>;
+  const boundRound = Object.freeze({
+    roundId: transcript.roundId,
+    commitment: transcript.commitment,
+  });
 
   it.each([null, undefined, 0, 'x', [], {}, { schema: 'permutation/v9' }, Object.create(null)])(
     'verifies hostile transcript %# to a typed failure rather than throwing',
@@ -324,7 +328,7 @@ describe('permutation module fails closed on hostile input', () => {
   });
 
   it('refuses to score a ticket against something that is not an order', async () => {
-    const book = new PermutationBook(definition);
+    const book = new PermutationBook(definition, boundRound);
     await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n });
     for (const order of [null, undefined, 'abcde', [0, 1, 2], [0, 0, 1, 2, 3], new Array(5)]) {
       const error = captureError(() => book.grossFor(order as never));
@@ -334,7 +338,7 @@ describe('permutation module fails closed on hostile input', () => {
   });
 
   it('never lets a settlement run against an unverified proof', async () => {
-    const book = new PermutationBook(definition);
+    const book = new PermutationBook(definition, boundRound);
     await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n });
     const forgeries: readonly Record<string, unknown>[] = [
       { ...wire, commitment: '0'.repeat(64) },

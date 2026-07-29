@@ -10,6 +10,7 @@ import {
 } from '../src/modules/permutation/index.js';
 import {
   buildFrozenPermutationRound,
+  FROZEN_PERMUTATION_ROUND_ID,
   FROZEN_PERMUTATION_SEED,
   frozenPermutationGame,
   type FrozenPermutationRound,
@@ -19,7 +20,7 @@ const readFixture = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(`tests/fixtures/${name}`, 'utf8')) as Record<string, unknown>;
 
 /**
- * `permutation-transcript-v1` and `permutation-book-v1` are frozen on disk, not
+ * `permutation-transcript-v1` and `permutation-book-v2` are frozen on disk, not
  * round-tripped at run time.
  *
  * A round trip generated during the test moves both sides of the comparison
@@ -75,12 +76,13 @@ describe('frozen permutation wire fixtures', () => {
     ).toMatchObject({ ok: false, code: 'TRANSCRIPT_MISMATCH' });
   });
 
-  it('matches the committed book-v1 snapshot field for field', () => {
-    const fixture = readFixture('permutation-book-v1.json');
+  it('matches the committed book-v2 snapshot field for field', () => {
+    const fixture = readFixture('permutation-book-v2.json');
     expect(fixture.snapshot).toEqual(JSON.parse(JSON.stringify(round.snapshot)));
     const snapshot = fixture.snapshot as Record<string, unknown>;
-    expect(snapshot.schema).toBe('reveal-engine/permutation-book-v1');
+    expect(snapshot.schema).toBe('reveal-engine/permutation-book-v2');
     expect(Object.keys(snapshot).sort()).toEqual([
+      'binding',
       'capBasisStake',
       'claims',
       'definition',
@@ -93,6 +95,12 @@ describe('frozen permutation wire fixtures', () => {
       'stepRevision',
       'terminal',
     ]);
+    // The round this book was bound to before it took a bet. It is the field
+    // `v1` did not have, and the reason `v1` has no migration.
+    expect(snapshot.binding).toEqual({
+      roundId: FROZEN_PERMUTATION_ROUND_ID,
+      commitment: (round.wire as unknown as { commitment: string }).commitment,
+    });
     // The frozen ticket is not a clean sweep: one of its three lines lost.
     expect((snapshot.claims as unknown[]).length).toBe(3);
     expect(fixture.credited).toBe('3360');
@@ -101,6 +109,7 @@ describe('frozen permutation wire fixtures', () => {
     // re-derive the order rather than take the snapshot's word for it.
     expect(Object.keys(snapshot.settlement as object).sort()).toEqual([
       'commitment',
+      'idempotencyKey',
       'order',
       'revealedSeed',
       'roundId',
@@ -111,7 +120,7 @@ describe('frozen permutation wire fixtures', () => {
   });
 
   it('decodes the committed receipts through the strict codec', () => {
-    const snapshot = readFixture('permutation-book-v1.json').snapshot as Record<string, unknown>;
+    const snapshot = readFixture('permutation-book-v2.json').snapshot as Record<string, unknown>;
     const entries = snapshot.receipts as readonly { receipt: WireReceipt }[];
     const decoded = entries.map((entry) => fromWireReceipt(entry.receipt, PERMUTATION_ACTIONS));
     expect(decoded.map((receipt) => receipt.action)).toEqual(['place', 'place', 'place', 'settle']);
@@ -127,7 +136,7 @@ describe('frozen permutation wire fixtures', () => {
   });
 
   it('restores the committed snapshot and re-derives its settled credit', () => {
-    const fixture = readFixture('permutation-book-v1.json');
+    const fixture = readFixture('permutation-book-v2.json');
     const restored = PermutationBook.restore(
       frozenPermutationGame,
       JSON.stringify(fixture.snapshot as Record<string, unknown>),
@@ -158,7 +167,7 @@ describe('frozen permutation wire fixtures', () => {
   };
 
   it('rejects a re-sealed mutation of the committed snapshot on its merits', () => {
-    const snapshot = readFixture('permutation-book-v1.json').snapshot as Record<string, unknown>;
+    const snapshot = readFixture('permutation-book-v2.json').snapshot as Record<string, unknown>;
     expect(() => PermutationBook.restore(frozenPermutationGame, reseal(snapshot))).not.toThrow();
     const claims = snapshot.claims as Record<string, unknown>[];
     for (const tampered of [
@@ -197,12 +206,44 @@ describe('frozen permutation wire fixtures', () => {
   });
 
   it('also rejects an unsealed mutation, by the checksum', () => {
-    const snapshot = readFixture('permutation-book-v1.json').snapshot as Record<string, unknown>;
+    const snapshot = readFixture('permutation-book-v2.json').snapshot as Record<string, unknown>;
     expect(() =>
       PermutationBook.restore(
         frozenPermutationGame,
         JSON.stringify({ ...snapshot, liquidBalance: '999999' }),
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  /**
+   * `permutation-book-v1.json` is kept on disk as a **negative** fixture.
+   *
+   * A retired schema deserves a frozen artefact as much as a live one. `v1`
+   * carried no `binding`, so a book restored from one could settle against any
+   * round an operator chose after seeing the ticket — which is precisely the
+   * defect `v2` exists to close. It has no migration, because the field it lacks
+   * is the published commitment and nothing in a `v1` snapshot says what that
+   * was; reconstructing it from the settlement the snapshot already carries
+   * would manufacture the very evidence the binding is supposed to supply.
+   *
+   * So the bytes stay, and the test is that they are refused — by version, with
+   * a code that says so, rather than as a malformed object or (worse) silently
+   * accepted by a future decoder that grew a tolerant default.
+   */
+  it('refuses the retired v1 snapshot by version, and offers it no migration', () => {
+    const fixture = readFixture('permutation-book-v1.json');
+    const snapshot = fixture.snapshot as Record<string, unknown>;
+    expect(snapshot.schema).toBe('reveal-engine/permutation-book-v1');
+    expect(snapshot).not.toHaveProperty('binding');
+    // Re-sealed, so the refusal is on the schema and not on the checksum.
+    expect(() => PermutationBook.restore(frozenPermutationGame, reseal(snapshot))).toThrowError(
+      expect.objectContaining({ code: 'UNSUPPORTED_VERSION', path: '$.schema' }),
+    );
+    // And adding the missing field back does not make it a v2 snapshot: the
+    // schema tag is the decision, not the field list.
+    const dressed = { ...snapshot, binding: (round.snapshot as { binding: unknown }).binding };
+    expect(() => PermutationBook.restore(frozenPermutationGame, reseal(dressed))).toThrowError(
+      expect.objectContaining({ code: 'UNSUPPORTED_VERSION' }),
+    );
   });
 });

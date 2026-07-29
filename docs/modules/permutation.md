@@ -25,9 +25,18 @@ number below.
 moduleId          permutation
 moduleVersion     1.0.0
 transcript schema reveal-engine/permutation-transcript-v1
-snapshot schema   reveal-engine/permutation-book-v1
+snapshot schema   reveal-engine/permutation-book-v2
 receipt actions   place, settle
 ```
+
+`permutation-book-v1` is **retired and has no migration**. It carried no round
+binding (§9.1), so a book restored from one could settle against any round an
+operator chose after seeing the ticket. The field it lacks is the published
+commitment, and nothing in a `v1` snapshot says what that was — reconstructing it
+from the settlement the snapshot already carries would manufacture exactly the
+evidence the binding exists to supply. `parseSnapshotInput` refuses the tag with
+`UNSUPPORTED_VERSION`, and `tests/fixtures/permutation-book-v1.json` stays in the
+repository as the frozen **negative** fixture that proves the refusal.
 
 Supported draw sizes are `3 <= n <= 8`. The floor is 3 because at `n = 2` the
 catalogue degenerates — `first`, `last` and `stack` all describe the same two
@@ -376,7 +385,8 @@ merely malformed.
 
 Several independent bets on one draw, settled together, from **one ledger**.
 
-- **`place`** validates the bet, the per-line stake (quantum and bounds), the
+- **`place`** validates the round binding (§9.1), the bet, the per-line stake
+  (quantum and bounds), the
   ticket ceiling, the open-bet budget, and behavioural distinctness; funds the
   stake as `external`, so **every bet raises the round's cap basis**. Pinning the
   ceiling to the first stake would crush a legitimate ticket: at a `10x` cap,
@@ -390,11 +400,83 @@ Several independent bets on one draw, settled together, from **one ledger**.
   `ledger.creditClaim()` — which prices, mints and credits as one step and
   therefore cannot half-perform the cap chain.
 
+### 9.1 The round a book is bound to
+
+Verifying a transcript answers a question nobody asked.
+
+Every transcript this module builds is internally valid: it verifies against its
+own seed, its commitment opens, its reveals agree with its order. That is a
+property of _every_ round, not evidence about _this_ one. The question a
+settlement turns on is which round the ticket was placed into, and no amount of
+re-derivation inside a single transcript can answer it.
+
+So a `PermutationBook` carries a **round binding** — `(roundId, commitment)` —
+and the rules are:
+
+1. A book is constructed with one, or given one by `bind()`. `bind()` succeeds
+   once, and only while the book holds no claim.
+2. `place()` refuses an unbound book. An unbound book cannot take money.
+3. `settle()` refuses any transcript whose `roundId` differs from the binding's,
+   or whose `commitment` is not the bound one — compared in constant time, and
+   checked **before** the proof is verified, because "is this my round" is the
+   prior question.
+
+Without it the attack is short and complete. The operator holds the seed, so it
+can derive a transcript for any round id it likes. Take the ticket, then derive
+`round-0000`, `round-0001`, ... until one settles the ticket at zero, and settle
+against that. Nothing is forged: the transcript verifies, the commitment opens to
+the revealed seed, the receipts reconcile, a snapshot of that round restores
+cleanly. The ticket simply loses.
+`tests/permutation-module.test.ts` runs exactly that search and requires the
+refusal.
+
+The commitment already binds the round id — it is a field of the sealed body
+(§8) — so pinning the commitment alone would be sufficient. Both are carried
+because "this proof is for round X, not round Y" is a better diagnostic than a
+hash that failed to match, and because the round id is what a host's own logs are
+keyed by.
+
+**In a snapshot, the binding is pinned by the receipt log rather than read.** A
+`place` command's fingerprint covers `(roundId, commitment, code, parameters,
+stake)`: a bet is a claim on a particular draw, and the same bet in another round
+is a different command. This matters most where nothing else could contradict a
+rewrite — a **staked, non-terminal** snapshot has no settlement and no revealed
+seed, so before this the binding was the one field a reconnect could re-point
+freely, moving no balance and reconciling perfectly. A terminal snapshot is
+pinned twice: the settlement re-derives from the seed, and the binding must equal
+it.
+
+What is **not** pinned is a snapshot with no claims and no settlement. That is a
+book which has done nothing, and restoring one under another round is
+indistinguishable from constructing a fresh book bound to that round — which any
+caller may do anyway. `PermutationBook.restore()` also takes an optional third
+argument, the round the caller published; when supplied, any snapshot naming a
+different one is refused outright. An operator always holds that value, because
+publishing it is what opened the round.
+
+**What this does not do** is constrain the operator's choice of seed _before_
+publication. Grinding a seed pre-publication is a custody and publication-ordering
+problem that no in-process check can see. It is disclosed in
+[`threat-model.md`](../threat-model.md) and
+[`integration-checklist.md`](../integration-checklist.md), and the binding does
+not close it. Nor does the module know _when_ the commitment was published: it
+enforces commitment-before-first-`place` **within the book's own lifetime**, and
+a host that constructs a book, takes a ticket, and only then publishes the
+commitment it bound has satisfied this module and defeated the control. Ordering
+against the outside world is the host's to enforce; §11 says so plainly rather
+than implying the platform does it.
+
 `restore()` re-validates rather than trusts, and every money-bearing field is
 re-derived:
 
-- each claim's **bet and stake** are pinned by the `place` receipt's own command
-  fingerprint, so a rewritten ticket cannot survive its own log;
+- each claim's **round, bet and stake** are pinned by the `place` receipt's own
+  command fingerprint, so a rewritten ticket cannot survive its own log;
+- each `place` receipt's **`capped` flag** is pinned to `false` and the settle
+  receipt's **idempotency key** to the one the settlement records. Neither moves
+  a balance, which is precisely why they need pinning: a restored receipt log
+  that disagrees with the operator's command log is an audit failure that
+  reconciles perfectly, and a rewritten settle key turns an idempotent retry of
+  the original settle into an error instead of the original receipt;
 - each claim's **payout** is recomputed from `(code, stake)` and the published
   paytable, and is not in the snapshot at all — a money-bearing field a snapshot
   does not carry is one nobody can rewrite;
@@ -471,15 +553,76 @@ disjunction of _pairwise exclusive_ position pins the way these five are.
 overlapping pin sets, so pricing them exactly needs a counting argument this
 version does not implement. They are out of scope for `1.0.0`.
 
-The engine-side surface also differs from the game's reference implementation in
-shape, deliberately: this module has no `SeedContext` with a client seed or a
-nonce, no chained `previousCommitment`, and no signed receipt. Those are round
-_protocol_ concerns that the platform's `RoundIdentity`, `CommandLedger` and host
-integration already own or that a host layers on top; reproducing them inside the
-lifecycle module would fork the platform contract for one game. A port that needs
-byte-identical AETHER ORDER commitments must use that repository's layout, which
-is a different domain tag and a different field order; this module's commitment
-is `reveal-engine/commit-v2` and is frozen in
+### 11.1 What the host must enforce, because this module does not
+
+The engine-side surface differs from the game's reference implementation in
+shape, and the honest way to say so is to name what is missing and who owns it —
+not to assert that something else already handles it.
+
+**A `PermutationBook` has no round identity, and the platform does not give it
+one.** `RoundIdentity` exists in `src/core/module.ts`, but it is the sampler
+scope: it reaches `truth.derive` and `commitmentBody`, and it never reaches the
+book. `BookModel.create(definition)` takes a definition and nothing else. The
+binding in §9.1 is the module's own construct, built inside
+`src/modules/permutation/`, and it enforces exactly one ordering property:
+**within a single book instance, no bet is accepted before a commitment has been
+bound to it.** It cannot know when — or whether — that commitment was actually
+published. A host that binds a value it publishes only afterwards satisfies every
+check in this module and has none of the protection.
+
+So the ordering requirement in `aether-order/docs/ENGINE.md` §5 — publish the
+seed commitment, _then_ open betting — is **the host's to enforce**, and this
+module can only refuse to settle against a round other than the one it was told
+about. §5 states the underlying reason precisely, and it applies to the missing
+context fields below as much as to the seed:
+
+> a commitment over the seed alone would leave `nonce` and `variantId` free for
+> an operator that had already seen the ticket to search.
+
+This module's commitment binds the module id, the whole declarative definition
+and its fingerprint, the round id, the proof version, the truth and every step
+(§8) — so the round id is not free. There is no `nonce` or `variantId` in this
+module to leave free, because there is no `SeedContext`; the residual exposure is
+the operator's freedom to choose a seed before publishing.
+[`threat-model.md`](../threat-model.md) discloses that at platform level —
+"operator grinds many seeds and publishes the convenient one … **not closed
+here**" — and [`integration-checklist.md`](../integration-checklist.md) carries
+the two items a deployment has to satisfy for itself: the commitment is durably
+published before entries, and the permutation book is bound to that published
+commitment before its first `place`. Nothing in this module closes either.
+
+**Everything AETHER ORDER declares that this module does not have.** Stated in
+full, because a reader who finds §1's transcript schema matching will otherwise
+assume the sibling tags match too — and they do not.
+
+| ENGINE.md declares                                                                         | This module                                                                     |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `PERMUTATION_MODULE_VERSION = 'reveal-engine/permutation-v1'` (§2)                         | `PERMUTATION_MODULE_VERSION = '1.0.0'`; the platform tag is `moduleId` + semver |
+| `PERMUTATION_SNAPSHOT_SCHEMA = 'reveal-engine/permutation-round-snapshot-v1'`              | `reveal-engine/permutation-book-v2`, and a different structure                  |
+| `PERMUTATION_TRANSCRIPT_SCHEMA = 'reveal-engine/permutation-transcript-v1'`                | identical — the one tag that does match                                         |
+| `PERMUTATION_TICKET_SCHEMA`, `PERMUTATION_RECEIPT_SCHEMA`                                  | absent; the book has claims and core receipts, not tickets and signed ones      |
+| `SeedContext` / `RoundContext`: `variantId`, `nonce`, `clientSeed`, `gameId`               | absent; the derivation is `(seed, definition, roundId)` and nothing else        |
+| `previousCommitment` chaining                                                              | absent; no round binds its predecessor                                          |
+| `adapterVersion`, `adapterFingerprint`, `variantId`, `gameId` on the wire                  | absent; identity is `(moduleId, definitionId, definitionVersion, fingerprint)`  |
+| `PermutationPlayPolicy` + `permutationPlayPolicyDigest`, stamped into every round snapshot | absent; this module's snapshot has no field for it and digests no pacing policy |
+| adapter-supplied `BetFamily` (`enumerateInstances`, `resolve`)                             | replaced: the module **owns** the catalogue, so there is no adapter predicate   |
+| `n: 2 .. 12`                                                                               | `3 .. 8` (§1), for the reasons given there                                      |
+| signed receipts (`signerId`, Ed25519 `signature`, `verifyReceipt`)                         | absent; core receipts are an internal accounting record, not non-repudiation    |
+| eleven bet families                                                                        | five (above); the other six are not priced by this version                      |
+
+The two that are easiest to mistake for oversights are worth a sentence each.
+The **play policy** is a responsible-play surface AETHER ORDER digests into every
+round snapshot so that loosening it is detectable after the fact; this module
+neither carries nor digests it, so an integration that needs that property must
+implement it at the host layer and cannot infer it from a snapshot restoring
+cleanly. The **adapter `BetFamily`** difference runs the other way: because the
+catalogue lives in the module rather than in an adapter, there is no resolve
+predicate that could be swapped behind a declarative digest — which is a
+strengthening, and §7's behavioural claim identity is what makes it safe.
+
+A port that needs byte-identical AETHER ORDER commitments must use that
+repository's layout: a different domain tag and a different field order. This
+module's commitment is `reveal-engine/commit-v2` and is frozen in
 `tests/fixtures/permutation-transcript-v1.json`.
 
 ## 12. What this document does not claim
@@ -498,3 +641,11 @@ it or for how much. The receipts this module's ledger mints are an internal
 accounting record, not a signed non-repudiation artefact; binding a ticket to a
 round under an operator key is a host-layer concern and this module does not
 implement it. See `docs/certification-boundary.md`.
+
+The round binding (§9.1) is a narrower claim than it may read as. It proves that
+**this book settled the round it was told about before it took a bet**, and that
+a snapshot of a staked or settled round cannot be re-pointed at another one. It
+does not prove the commitment was published, does not prove when it was
+published, and does not constrain which seed the operator chose before publishing
+it. Those are ordering and custody controls the host owns; §11.1 names them and
+the integration checklist is where a deployment signs them off.

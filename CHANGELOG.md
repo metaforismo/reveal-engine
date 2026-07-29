@@ -31,14 +31,38 @@
   generator, its own factorials, resolve predicates written from the rules in
   prose.
 - Frozen wire fixtures for the two new formats,
-  `permutation-transcript-v1` and `permutation-book-v1`
+  `permutation-transcript-v1` and `permutation-book-v2`
   (`tests/fixtures/`, regenerated with `npm run fixtures:update`), covering a
-  settled three-line ticket with a deliberate loser.
+  settled three-line ticket with a deliberate loser on a bound round.
+  `permutation-book-v1.json` is kept as the frozen **negative** fixture: it is
+  the retired, unbindable format, and the suite asserts it is refused.
 - Package export `./modules/permutation`, wired into `scripts/package-smoke.mjs`
   and the public-API snapshot. The module is deliberately **not** re-exported
   from the package root: the root's progressive-market symbols exist only as
   deprecated 0.2 compatibility, and a module landing today has no such debt.
-- A terminal `permutation-book-v1` snapshot carries the round id and the
+- **A `PermutationBook` is bound to a published round before it may take a bet.**
+  The constructor takes `(definition, binding)` — or `bind()` supplies one while
+  the book still holds no claim — and `place()` refuses an unbound book while
+  `settle()` refuses any transcript naming a different `roundId` or opening a
+  different `commitment`, compared in constant time and checked before the proof
+  is verified. Without it, "the transcript verifies" was the only question asked
+  at settlement, and it is the wrong one: every transcript this module builds
+  verifies, so an operator holding a placed ticket could derive rounds until one
+  settled it at zero and settle against that, with every artefact still checking
+  out. `docs/modules/permutation.md` §9.1 carries the argument and §11.1 states
+  plainly what the module still cannot enforce — it cannot see whether or when
+  the commitment it was handed was actually published, which stays a host
+  ordering control.
+- A `place` command's fingerprint now covers the round binding as well as the
+  bet and the stake, so the binding is **pinned by the receipt log** rather than
+  read out of the snapshot. This is what protects a staked, non-terminal
+  snapshot, which has no settlement and no revealed seed and could otherwise be
+  re-pointed at another round without moving a single balance.
+- `PermutationBook.restore()` accepts an optional third argument, the round the
+  caller published; any snapshot naming a different one is refused with
+  `COMMITMENT_MISMATCH`. The contract's `book.restore(definition, snapshot)`
+  still works and is documented as the weaker of the two.
+- A terminal `permutation-book-v2` snapshot carries the round id and the
   **revealed seed**, so `restore()` re-derives the settled order and commitment
   from the proof rather than reconciling them against the credit. Reconciling
   the credit alone is not sufficient — two different orders can pay a ticket the
@@ -52,6 +76,42 @@
 - The module registry now lists two lifecycle modules. `listModules()` returns
   `['progressive-market', 'permutation']`, and the snapshot tests that pin that
   surface were extended rather than relaxed.
+- **Book snapshot schema `reveal-engine/permutation-book-v1` is retired with no
+  migration**, replaced by `-v2` which carries the round binding and the settle
+  command's idempotency key. There is no honest migration: the field `v1` lacks
+  is the published commitment, and nothing in a `v1` snapshot says what it was —
+  reconstructing one from the settlement the snapshot already carries would
+  manufacture the evidence the binding exists to supply. `v1` is refused with
+  `UNSUPPORTED_VERSION` and a message that says why. The format never shipped
+  outside this branch.
+- `restore()` now pins the two receipt fields that move no balance and were
+  therefore free: a `place` receipt's `capped` flag (always `false` — a debit
+  cannot meet a credit ceiling) and the `settle` receipt's idempotency key,
+  which the settlement record now carries so that every receipt's key is named
+  by the state that receipt produced. Both are audit-integrity rather than money
+  bugs, which is exactly why nothing else would have caught them: a restored
+  receipt log that disagrees with the operator's command log reconciles
+  perfectly.
+
+### Fixed
+
+- `enumerateOrders(n)` is bounded to the module's supported draw sizes, like
+  every other counting entry point. It was checked only for `n >= 0`, so a host
+  forwarding a caller-supplied size had an unbounded allocation: `n = 13` is
+  6.2e9 orders and `n = 20` never returns.
+- `enumerateInstances()` and `betParameters()` raise `CLAIM_REJECTED` on an
+  unknown bet code instead of falling past every `switch` case and returning
+  `undefined` three frames from where it breaks.
+- `assertBet()` enforces an exact key set per bet code. `{code: 'first', item: 0,
+position: 9}` was silently accepted as `first{0}`, so a host typo became a
+  different, cheaper claim — inert on the money path, because `betParameters()`
+  normalises what reaches the fingerprint and the wire, but a claim the player
+  did not ask for is not something to accept quietly.
+- The module's shadowed `INVALID_CHOICE` guard in `transcript.commitmentBody` is
+  gone. `defineLifecycleModule()` raises it first for `choiceTiming: 'none'`, so
+  the module's copy was unreachable and the test that read as proving it was
+  exercising core. What makes the omission safe is stated and tested instead:
+  `permutationCommitmentBody` has no choice parameter at all.
 
 ## 0.3.0 — 2026-07-29
 

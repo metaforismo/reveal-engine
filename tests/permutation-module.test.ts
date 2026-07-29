@@ -29,8 +29,11 @@ import {
   itemBelief,
   linePayout,
   makePermutationTranscript,
+  MAX_ITEMS,
+  MIN_ITEMS,
   permutation,
   permutationFingerprint,
+  permutationCommitmentBody,
   permutationTranscriptToWire,
   PermutationBook,
   price,
@@ -40,11 +43,24 @@ import {
   verifyPermutationTranscript,
   type PermutationBet,
   type PermutationDefinition,
+  type PermutationRoundBinding,
+  type PermutationTranscript,
 } from '../src/modules/permutation/index.js';
 import { seed } from './helpers.js';
 
 const CLASSIC = aetherOrderClassicReference;
 const SEVEN = aetherOrderSevenReference;
+
+/**
+ * The round an operator publishes before betting opens, read off the proof.
+ *
+ * Real deployments publish the commitment first and settle against it later;
+ * here the transcript is derived up front, which is the same act in the other
+ * order — the whole round is a pure function of `(seed, definition, roundId)`,
+ * so the commitment exists the moment the operator picks a seed.
+ */
+const bindingOf = (transcript: PermutationTranscript): PermutationRoundBinding =>
+  Object.freeze({ roundId: transcript.roundId, commitment: transcript.commitment });
 
 function captureError(operation: () => unknown): unknown {
   try {
@@ -71,7 +87,7 @@ describe('permutation module: contract surface', () => {
     expect(permutation.book.settlement).toBe('paytable');
     expect(permutation.book.actions).toEqual(['place', 'settle']);
     expect(permutation.transcript.schema).toBe('reveal-engine/permutation-transcript-v1');
-    expect(permutation.book.snapshotSchema).toBe('reveal-engine/permutation-book-v1');
+    expect(permutation.book.snapshotSchema).toBe('reveal-engine/permutation-book-v2');
     // A marginal module must price exactly; a seed pre-commitment is only for a
     // choice-timed one and this module logs no decisions at all.
     expect(typeof permutation.steps.price).toBe('function');
@@ -167,7 +183,22 @@ describe('permutation module: contract surface', () => {
     ).not.toBe(0);
   });
 
-  it('refuses a choice log it does not model', () => {
+  /**
+   * The refusal below is **core's**, and naming it as core's is the point.
+   *
+   * `defineLifecycleModule()` wraps every choice-taking hook as `hook(...,
+   * guard(choices))`, and for `choiceTiming: 'none'` that guard raises
+   * `INVALID_CHOICE` before the module's closure runs at all. A duplicate check
+   * inside the module would therefore never execute: dead code that reads like
+   * a control, is covered by no test that could tell the difference, and would
+   * go on passing if core's guard were deleted tomorrow.
+   *
+   * What makes leaving it out safe is not the wrapper but the **arity**.
+   * `permutationCommitmentBody` has no choice parameter, so there is no log for
+   * the sealed bytes to bind and no way for one to reach them — which is a
+   * stronger statement than a check, and the assertions below are what say it.
+   */
+  it('leaves the choice-log refusal to core, and has no parameter one could reach', () => {
     const round = {
       ...permutation.definitions.identity(CLASSIC),
       roundId: 'no-choices',
@@ -181,6 +212,29 @@ describe('permutation module: contract surface', () => {
     expect(() =>
       permutation.steps.derive(seed(3), CLASSIC, round, truth, ['x' as never]),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_CHOICE' }));
+
+    // The module's own proof-bearing function takes four arguments, not five.
+    expect(permutationCommitmentBody).toHaveLength(4);
+    expect(
+      Buffer.compare(
+        permutationCommitmentBody(CLASSIC, round, truth, steps),
+        permutation.transcript.commitmentBody(CLASSIC, round, truth, steps, []),
+      ),
+    ).toBe(0);
+    // So a caller that smuggles a log past the declaration cannot change the
+    // bytes: there is nothing on the other side that reads it.
+    expect(
+      Buffer.compare(
+        permutationCommitmentBody(CLASSIC, round, truth, steps),
+        (permutationCommitmentBody as unknown as (...args: readonly unknown[]) => Buffer)(
+          CLASSIC,
+          round,
+          truth,
+          steps,
+          ['x'],
+        ),
+      ),
+    ).toBe(0);
   });
 
   /**
@@ -679,7 +733,7 @@ describe('permutation module: multi-bet round book', () => {
 
   async function stakedRound(definition = CLASSIC, seedHex = seed(21), id = roundId) {
     const transcript = makePermutationTranscript(seedHex, definition, id);
-    const book = new PermutationBook(definition);
+    const book = new PermutationBook(definition, bindingOf(transcript));
     return { transcript, book, seedHex };
   }
 
@@ -754,7 +808,10 @@ describe('permutation module: multi-bet round book', () => {
 
   it('holds the ticket to its declared open-bet budget', async () => {
     const tight = definePermutationGame({ ...CLASSIC, id: 'tight-book', maxOpenBets: 2 });
-    const book = new PermutationBook(tight);
+    const book = new PermutationBook(
+      tight,
+      bindingOf(makePermutationTranscript(seed(22), tight, 'budget-round')),
+    );
     await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n });
     await book.place({ idempotencyKey: 'b', bet: { code: 'first', item: 1 }, stake: 25n });
     await expect(
@@ -786,13 +843,16 @@ describe('permutation module: multi-bet round book', () => {
     await expect(
       book.settle({ idempotencyKey: 's', revealedSeed: seed(99), transcript }),
     ).rejects.toMatchObject({ code: 'INVALID_TRANSCRIPT' });
+    // A rewritten commitment never reaches the verifier: it is not the
+    // commitment this book was bound to, which is the earlier and more
+    // fundamental refusal.
     await expect(
       book.settle({
         idempotencyKey: 's2',
         revealedSeed: seedHex,
         transcript: { ...permutationTranscriptToWire(transcript), commitment: '0'.repeat(64) },
       }),
-    ).rejects.toMatchObject({ code: 'INVALID_TRANSCRIPT' });
+    ).rejects.toMatchObject({ code: 'COMMITMENT_MISMATCH', path: '$.transcript.commitment' });
     expect(book.terminal).toBe(false);
     // The honest proof still settles afterwards: a rejected command left the
     // round untouched rather than half-applied.
@@ -827,7 +887,7 @@ describe('permutation module: multi-bet round book', () => {
   it('pays a multi-bet claim a single-basis cap would have crushed', async () => {
     const capped = definePermutationGame({ ...CLASSIC, id: 'tight-cap', maxWinMultiple: 10n });
     const transcript = makePermutationTranscript(seed(23), capped, 'cap-round');
-    const book = new PermutationBook(capped);
+    const book = new PermutationBook(capped, bindingOf(transcript));
     const winner = transcript.order[0] as number;
     const loser = transcript.order[1] as number;
     await book.place({ idempotencyKey: 'tiny', bet: { code: 'first', item: loser }, stake: 25n });
@@ -855,7 +915,7 @@ describe('permutation module: multi-bet round book', () => {
     const tight = definePermutationGame({ ...CLASSIC, id: 'binding-cap', maxWinMultiple: 2n });
     expect(checkModuleConformance(permutation, tight, 1).ok).toBe(false);
     const transcript = makePermutationTranscript(seed(24), tight, 'capped-round');
-    const book = new PermutationBook(tight);
+    const book = new PermutationBook(tight, bindingOf(transcript));
     await book.place({
       idempotencyKey: 'a',
       bet: { code: 'first', item: transcript.order[0] as number },
@@ -896,7 +956,7 @@ describe('permutation module: multi-bet round book', () => {
 describe('permutation module: snapshot and restore', () => {
   async function settledBook(definition = CLASSIC, seedHex = seed(31), roundId = 'snap-round') {
     const transcript = makePermutationTranscript(seedHex, definition, roundId);
-    const book = new PermutationBook(definition);
+    const book = new PermutationBook(definition, bindingOf(transcript));
     await book.place({
       idempotencyKey: 'a',
       bet: { code: 'first', item: transcript.order[0] as number },
@@ -1015,7 +1075,7 @@ describe('permutation module: snapshot and restore', () => {
   it('rejects a forged settled order even when the credit still reconciles', async () => {
     const seedHex = seed(41);
     const transcript = makePermutationTranscript(seedHex, CLASSIC, 'forgery');
-    const book = new PermutationBook(CLASSIC);
+    const book = new PermutationBook(CLASSIC, bindingOf(transcript));
     // A line that loses under the real order, chosen so the forged order below
     // makes it lose too: both settle at zero, so the credit tells them apart not
     // at all.
@@ -1055,7 +1115,7 @@ describe('permutation module: snapshot and restore', () => {
 
   it.each([
     ['not an object', '4'],
-    ['unknown key', JSON.stringify({ schema: 'reveal-engine/permutation-book-v1', extra: 1 })],
+    ['unknown key', JSON.stringify({ schema: 'reveal-engine/permutation-book-v2', extra: 1 })],
     ['not JSON', '{'],
   ])('fails closed on a hostile snapshot: %s', (_label, input) => {
     const error = captureError(() => PermutationBook.restore(CLASSIC, input));
@@ -1096,7 +1156,10 @@ describe('permutation module: snapshot and restore', () => {
     const seedHex = seed(2);
     const roundId = 'conformance-2';
     const order = derivePermutationOrder(seedHex, CLASSIC, roundId);
-    const book = new PermutationBook(CLASSIC);
+    const book = new PermutationBook(
+      CLASSIC,
+      bindingOf(makePermutationTranscript(seedHex, CLASSIC, roundId)),
+    );
     await book.place({
       idempotencyKey: 'place-first',
       bet: { code: 'first', item: order[0] as number },
@@ -1217,5 +1280,664 @@ describe('permutation module: the aether-order adapter surface', () => {
     expect(fields[0]).toBe('permutation');
     expect(fields[1]).toBe(permutation.version);
     expect(permutationFingerprint(CLASSIC)).toBe(permutation.definitions.fingerprint(CLASSIC));
+  });
+});
+
+/**
+ * The round a book is bound to, and what happens to a proof for any other one.
+ *
+ * Every transcript this module builds is internally valid and verifies against
+ * its own seed, so "the transcript verifies" answers a question nobody asked.
+ * The question a settlement turns on is *which round* the ticket was placed
+ * into, and the only thing that can answer it is a commitment published before
+ * the ticket existed.
+ */
+describe('permutation module: the round a book is bound to', () => {
+  const seedHex = seed(51);
+  const roundIdAt = (index: number): string => `round-${String(index).padStart(4, '0')}`;
+
+  /** Places a three-line ticket into the transcript's round and returns the book. */
+  async function ticketFor(transcript: PermutationTranscript): Promise<PermutationBook> {
+    const book = new PermutationBook(CLASSIC, bindingOf(transcript));
+    const first = transcript.order[0] as number;
+    const second = transcript.order[1] as number;
+    await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: first }, stake: 5_000n });
+    await book.place({
+      idempotencyKey: 'b',
+      bet: { code: 'slot', item: second, position: 1 },
+      stake: 5_000n,
+    });
+    await book.place({
+      idempotencyKey: 'c',
+      bet: { code: 'stack', before: first, after: second },
+      stake: 5_000n,
+    });
+    return book;
+  }
+
+  /**
+   * The attack, run end to end: place, then shop for a better round.
+   *
+   * An operator holding a placed ticket derives a transcript for every round id
+   * it likes — the seed is its own — and picks whichever settles the ticket at
+   * zero. Nothing about that transcript is forged: it verifies, its commitment
+   * opens to the revealed seed, and a snapshot of that round would reconcile.
+   * The only thing wrong with it is that it is not the round the player bet
+   * into, and that is exactly what the binding knows.
+   */
+  it('refuses a settlement for a round it was not bound to, however honest that proof is', async () => {
+    const honest = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(1));
+    const book = await ticketFor(honest);
+    expect(book.stakedTotal).toBe(15_000n);
+    const owed = book.grossFor(honest.order);
+    expect(owed.numerator).toBeGreaterThan(0n);
+
+    // Shop, exactly as an operator who had already seen the ticket would.
+    let shopped: PermutationTranscript | undefined;
+    for (let index = 0; index < 64 && shopped === undefined; index += 1) {
+      const candidate = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(index));
+      if (candidate.roundId !== honest.roundId && book.grossFor(candidate.order).numerator === 0n)
+        shopped = candidate;
+    }
+    expect(shopped, 'a losing round exists to shop for').toBeDefined();
+    // It is a genuine proof — that is the whole point of the example.
+    expect(verifyPermutationTranscript(seedHex, CLASSIC, shopped as PermutationTranscript).ok).toBe(
+      true,
+    );
+
+    await expect(
+      book.settle({
+        idempotencyKey: 's',
+        revealedSeed: seedHex,
+        transcript: shopped as PermutationTranscript,
+      }),
+    ).rejects.toMatchObject({ code: 'COMMITMENT_MISMATCH', path: '$.transcript.roundId' });
+    expect(book.terminal).toBe(false);
+    expect(book.liquidBalance).toBe(0n);
+
+    // The round it was bound to settles, and pays what it owed.
+    const receipt = await book.settle({
+      idempotencyKey: 's',
+      revealedSeed: seedHex,
+      transcript: honest,
+    });
+    expect(receipt.capped).toBe(false);
+    expect(rational(receipt.credited)).toEqual(owed);
+  });
+
+  /**
+   * The same refusal with the round id held fixed, so it is the commitment doing
+   * the work rather than a string comparison on a label.
+   */
+  it('refuses a proof that reuses the bound round id under a different commitment', async () => {
+    const honest = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(1));
+    const other = makePermutationTranscript(seed(52), CLASSIC, roundIdAt(1));
+    expect(other.commitment).not.toBe(honest.commitment);
+    const book = await ticketFor(honest);
+    await expect(
+      book.settle({ idempotencyKey: 's', revealedSeed: seed(52), transcript: other }),
+    ).rejects.toMatchObject({ code: 'COMMITMENT_MISMATCH', path: '$.transcript.commitment' });
+    expect(book.terminal).toBe(false);
+  });
+
+  it('will not take a bet, or settle, before the round is published', async () => {
+    const book = new PermutationBook(CLASSIC);
+    expect(book.binding).toBeUndefined();
+    await expect(
+      book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n }),
+    ).rejects.toMatchObject({ code: 'CLAIM_REJECTED', path: '$.binding' });
+    const transcript = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(3));
+    await expect(
+      book.settle({ idempotencyKey: 's', revealedSeed: seedHex, transcript }),
+    ).rejects.toMatchObject({ code: 'CLAIM_REJECTED', path: '$.binding' });
+    expect(book.claims).toHaveLength(0);
+    expect(book.capBasisStake).toBeUndefined();
+    expect(book.terminal).toBe(false);
+  });
+
+  it('binds once, before the first bet, and never again', async () => {
+    const transcript = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(4));
+    const book = new PermutationBook(CLASSIC);
+    book.bind(bindingOf(transcript));
+    expect(book.binding).toEqual(bindingOf(transcript));
+    // Re-binding is refused whether or not the value offered is the same one.
+    expect(() => book.bind(bindingOf(transcript))).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.binding' }),
+    );
+    await book.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: transcript.order[0] as number },
+      stake: 25n,
+    });
+
+    // And a book that already holds a claim cannot be pointed at a round chosen
+    // afterwards — the ordering the whole control rests on. Reaching that state
+    // needs a bound book, so this binds, places, and then tries to re-bind.
+    const staked = new PermutationBook(CLASSIC, bindingOf(transcript));
+    await staked.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: transcript.order[0] as number },
+      stake: 25n,
+    });
+    const later = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(5));
+    expect(() => staked.bind(bindingOf(later))).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.binding' }),
+    );
+    expect(staked.binding).toEqual(bindingOf(transcript));
+  });
+
+  it.each([
+    ['not an object', null],
+    ['a string', 'round-0001'],
+    ['an array', []],
+    ['missing the commitment', { roundId: 'r' }],
+    ['missing the round id', { commitment: '0'.repeat(64) }],
+    ['carrying an extra field', { roundId: 'r', commitment: '0'.repeat(64), nonce: 1 }],
+    ['an empty round id', { roundId: '', commitment: '0'.repeat(64) }],
+    ['a control character in the round id', { roundId: 'a\u0000b', commitment: '0'.repeat(64) }],
+    ['a short commitment', { roundId: 'r', commitment: '0'.repeat(63) }],
+    ['an upper-case commitment', { roundId: 'r', commitment: 'A'.repeat(64) }],
+    ['a non-hex commitment', { roundId: 'r', commitment: 'z'.repeat(64) }],
+  ])('refuses a malformed binding: %s', (_label, binding) => {
+    for (const operation of [
+      () => new PermutationBook(CLASSIC, binding as never),
+      () => new PermutationBook(CLASSIC).bind(binding as never),
+    ]) {
+      const error = captureError(operation);
+      expect(error).toBeInstanceOf(RevealEngineError);
+      expect(error).not.toBeInstanceOf(TypeError);
+      expect((error as RevealEngineError).code).toBe('CLAIM_REJECTED');
+    }
+  });
+
+  /**
+   * What a snapshot can and cannot be trusted to say about its own round.
+   *
+   * A *partial* rewrite — the binding alone, or the settlement alone — is caught,
+   * because the two have to agree with each other and with the revealed seed. A
+   * *consistent* rewrite of both is not, and no in-process check can catch it:
+   * the result is a perfectly valid snapshot of a different round. That is what
+   * the optional published binding is for, and both halves are pinned here so
+   * neither can quietly become an overclaim.
+   */
+  it('reconciles the binding against the settlement, and takes the published round when offered one', async () => {
+    const honest = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(1));
+    const book = await ticketFor(honest);
+    await book.settle({ idempotencyKey: 's', revealedSeed: seedHex, transcript: honest });
+    const snapshot = book.snapshot() as unknown as Record<string, unknown>;
+    expect(snapshot.binding).toEqual(bindingOf(honest));
+
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+    const other = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(2));
+
+    // Half a rewrite: the binding now names a round the settlement does not.
+    for (const mutation of [
+      { ...snapshot, binding: bindingOf(other) },
+      { ...snapshot, binding: { ...bindingOf(honest), commitment: '0'.repeat(64) } },
+      { ...snapshot, binding: null },
+    ])
+      expect(
+        () => PermutationBook.restore(CLASSIC, reseal(mutation)),
+        JSON.stringify(mutation.binding),
+      ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+
+    // The honest snapshot restores, and restores harder when told which round
+    // was actually published.
+    expect(PermutationBook.restore(CLASSIC, reseal(snapshot)).binding).toEqual(bindingOf(honest));
+    expect(PermutationBook.restore(CLASSIC, reseal(snapshot), bindingOf(honest)).terminal).toBe(
+      true,
+    );
+    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot), bindingOf(other))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+    );
+
+    // A whole-round rewrite is internally consistent and restores without the
+    // published binding. Stated here rather than left for a reader to discover.
+    const elsewhere = await ticketFor(other);
+    const consistent = elsewhere.snapshot() as unknown as Record<string, unknown>;
+    expect(() => PermutationBook.restore(CLASSIC, reseal(consistent))).not.toThrow();
+    expect(() =>
+      PermutationBook.restore(CLASSIC, reseal(consistent), bindingOf(honest)),
+    ).toThrowError(expect.objectContaining({ code: 'COMMITMENT_MISMATCH' }));
+  });
+});
+
+/**
+ * The declared module surface, exercised through the declaration itself.
+ *
+ * `permutation.book.create`, `.restore` and `.snapshot` are how a host that
+ * resolved the module by id reaches the book, and a factory wired to the wrong
+ * class satisfies the type perfectly. Reading the declaration's *properties*
+ * proves nothing about that; calling it does.
+ */
+describe('permutation module: the book reached through the declaration', () => {
+  const seedHex = seed(61);
+  const roundId = 'declared-surface';
+
+  it('creates, binds, settles, snapshots and restores through the declared factories', async () => {
+    const module = requireModule('permutation');
+    const transcript = makePermutationTranscript(seedHex, CLASSIC, roundId);
+    const book = module.book.create(CLASSIC) as PermutationBook;
+    expect(book).toBeInstanceOf(PermutationBook);
+    // The contract's factory has no round to hand over, so what it returns is
+    // unbound — and therefore cannot take money.
+    expect(book.binding).toBeUndefined();
+    await expect(
+      book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n }),
+    ).rejects.toMatchObject({ code: 'CLAIM_REJECTED', path: '$.binding' });
+
+    book.bind(bindingOf(transcript));
+    await book.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: transcript.order[0] as number },
+      stake: 100n,
+    });
+    const receipt = await book.settle({
+      idempotencyKey: 's',
+      revealedSeed: seedHex,
+      transcript,
+    });
+    expect(receipt.credited).toBe(480n);
+
+    const snapshot = module.book.snapshot(book);
+    expect(snapshot).toEqual(book.snapshot());
+    expect((snapshot as { schema: string }).schema).toBe(module.book.snapshotSchema);
+
+    const restored = module.book.restore(CLASSIC, snapshot) as PermutationBook;
+    expect(restored).toBeInstanceOf(PermutationBook);
+    expect(restored.snapshot()).toEqual(snapshot);
+    expect(restored.liquidBalance).toBe(480n);
+    expect(restored.binding).toEqual(bindingOf(transcript));
+
+    // And the declared restore re-validates rather than returning a fresh book.
+    const tampered = { ...(snapshot as Record<string, unknown>), liquidBalance: '999999' };
+    expect(() =>
+      module.book.restore(
+        CLASSIC,
+        JSON.stringify({
+          ...tampered,
+          snapshotHash: snapshotHash({ ...tampered, snapshotHash: undefined }),
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  it('declares a claim budget the book it builds actually enforces', async () => {
+    const module = requireModule('permutation');
+    const tight = definePermutationGame({ ...CLASSIC, id: 'declared-budget', maxOpenBets: 2 });
+    const transcript = makePermutationTranscript(seedHex, tight, roundId);
+    const book = module.book.create(tight) as PermutationBook;
+    book.bind(bindingOf(transcript));
+    await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n });
+    await book.place({ idempotencyKey: 'b', bet: { code: 'first', item: 1 }, stake: 25n });
+    await expect(
+      book.place({ idempotencyKey: 'c', bet: { code: 'first', item: 2 }, stake: 25n }),
+    ).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
+    expect(tight.maxOpenBets).toBeLessThanOrEqual(module.book.maxOpenClaims);
+  });
+});
+
+/**
+ * Hostile arguments reaching the pure counting exports.
+ *
+ * `validation.ts` sets the standard these hold to: "a hostile argument reaching
+ * a pure counting function is a `RevealEngineError` rather than a `TypeError`
+ * from three frames down". A function that returns `undefined` instead fails it
+ * more quietly and further from the cause.
+ */
+describe('permutation module: counting exports refuse what they cannot count', () => {
+  it.each([
+    ['below the floor', 2],
+    ['one above the ceiling', MAX_ITEMS + 1],
+    ['far above the ceiling', 13],
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['not a number', Number.NaN],
+    ['unsafe', Number.MAX_SAFE_INTEGER + 2],
+  ])('bounds enumerateOrders at the draw sizes it supports: %s', (_label, n) => {
+    const started = Date.now();
+    const error = captureError(() => enumerateOrders(n));
+    expect(error).toBeInstanceOf(RevealEngineError);
+    expect((error as RevealEngineError).code).toBe('INVALID_CONTEXT');
+    // The refusal is the point: an unbounded `n` is an unbounded allocation, so
+    // it has to be immediate rather than eventual.
+    expect(Date.now() - started).toBeLessThan(50);
+  });
+
+  it('still enumerates every supported draw size exactly', () => {
+    const factorial = (n: number): number => (n <= 1 ? 1 : n * factorial(n - 1));
+    for (let n = MIN_ITEMS; n <= MAX_ITEMS; n += 1)
+      expect(enumerateOrders(n)).toHaveLength(factorial(n));
+  });
+
+  it.each(['bogus', '__proto__', 'toString', 'constructor', '', 'FULL'])(
+    'refuses an unknown bet code rather than returning undefined: %j',
+    (code) => {
+      for (const operation of [
+        () => enumerateInstances(CLASSIC, code as never),
+        () => betParameters({ code } as never),
+        () => betFromParameters(CLASSIC, code, [0]),
+        () => assertBet({ code, item: 0 }, CLASSIC),
+      ]) {
+        const error = captureError(operation);
+        expect(error).toBeInstanceOf(RevealEngineError);
+        expect(error).not.toBeInstanceOf(TypeError);
+        expect((error as RevealEngineError).code).toBe('CLAIM_REJECTED');
+      }
+    },
+  );
+
+  it.each([
+    ['a field the code does not own', { code: 'first', item: 0, position: 9 }],
+    ['a slot parameter on a last bet', { code: 'last', item: 0, position: 0 }],
+    ['a stack field on a slot bet', { code: 'slot', item: 0, position: 0, after: 1 }],
+    ['an order on a first bet', { code: 'first', item: 0, order: [0, 1, 2, 3, 4] }],
+    ['a missing field', { code: 'slot', item: 0 }],
+    ['no fields at all', { code: 'stack' }],
+  ])('refuses a bet whose fields do not match its code: %s', (_label, bet) => {
+    const error = captureError(() => assertBet(bet, CLASSIC));
+    expect(error).toBeInstanceOf(RevealEngineError);
+    expect((error as RevealEngineError).code).toBe('CLAIM_REJECTED');
+  });
+
+  /**
+   * The reason the loose reading is a money problem and not only a tidiness one:
+   * `first{0}` and `slot{0,9}` are not the same claim, and `position: 9` is not
+   * even a legal position. Accepting the first spelling silently would sell a
+   * player a claim they did not ask for.
+   */
+  it('does not silently reinterpret a typo as a cheaper claim', async () => {
+    const transcript = makePermutationTranscript(seed(62), CLASSIC, 'typo-round');
+    const book = new PermutationBook(CLASSIC, bindingOf(transcript));
+    await expect(
+      book.place({
+        idempotencyKey: 'a',
+        bet: { code: 'first', item: 0, position: 9 } as never,
+        stake: 25n,
+      }),
+    ).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
+    expect(book.claims).toHaveLength(0);
+    expect(book.stakedTotal).toBe(0n);
+  });
+});
+
+/**
+ * Every field of every receipt in a terminal snapshot, rewritten and re-sealed.
+ *
+ * The receipt log is the part of a snapshot that says *what the player did*, and
+ * the contract requires it to be re-derived rather than read. "Re-derived"
+ * cannot mean "mostly": a field nobody checks is a field a restored audit record
+ * can disagree with the operator's command log about, even when the money still
+ * reconciles. Two used to be unchecked — a `place` receipt's `capped` flag and
+ * the `settle` receipt's idempotency key — and both are the kind that fail
+ * quietly, because neither moves a balance.
+ *
+ * So this sweeps the cross product rather than a chosen list: for every receipt
+ * and every wire field, one plausible rewrite, re-sealed so the checksum is not
+ * what refuses it. The count is asserted too, so a field added to the receipt
+ * wire form without a case here fails the test rather than slipping past it.
+ */
+describe('permutation module: no receipt field restores unchallenged', () => {
+  const seedHex = seed(71);
+  const roundId = 'receipt-sweep';
+
+  /** One plausible rewrite per field, per action. */
+  const rewrites: Readonly<Record<string, (current: unknown, action: string) => unknown>> =
+    Object.freeze({
+      schema: () => 'reveal-engine/receipt-v9',
+      idempotencyKey: (current) => `${String(current)}-rewritten`,
+      commandFingerprint: () => 'f'.repeat(64),
+      action: (_current, action) => (action === 'place' ? 'settle' : 'place'),
+      ledgerRevision: (current) => (current as number) + 1,
+      frameRevision: (current) => (current as number) + 1,
+      debited: (current) => (current === '0' ? '25' : '0'),
+      credited: (current) => (current === '0' ? '25' : '0'),
+      balanceDelta: (current) => `${-Number(current as string)}`,
+      capped: (current) => !(current as boolean),
+    });
+
+  it('refuses a rewrite of any single receipt field, on the merits', async () => {
+    const transcript = makePermutationTranscript(seedHex, CLASSIC, roundId);
+    const book = new PermutationBook(CLASSIC, {
+      roundId: transcript.roundId,
+      commitment: transcript.commitment,
+    });
+    await book.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: transcript.order[0] as number },
+      stake: 100n,
+    });
+    await book.place({
+      idempotencyKey: 'b',
+      bet: { code: 'last', item: transcript.order[0] as number },
+      stake: 25n,
+    });
+    const settleReceipt = await book.settle({
+      idempotencyKey: 'settle-key',
+      revealedSeed: seedHex,
+      transcript,
+    });
+    expect(settleReceipt.credited).toBeGreaterThan(0n);
+
+    const snapshot = book.snapshot() as unknown as Record<string, unknown>;
+    const entries = snapshot.receipts as {
+      fingerprint: string;
+      receipt: Record<string, unknown>;
+    }[];
+    expect(entries).toHaveLength(3);
+    expect(entries.map((entry) => entry.receipt.action)).toEqual(['place', 'place', 'settle']);
+    // The settle receipt names the key the settlement records, and that is now
+    // the thing restore checks rather than assumes.
+    expect((snapshot.settlement as { idempotencyKey: string }).idempotencyKey).toBe('settle-key');
+    expect(entries[2]?.receipt.idempotencyKey).toBe('settle-key');
+
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot))).not.toThrow();
+
+    const fields = Object.keys(entries[0]!.receipt);
+    // Every wire field has a rewrite; a new one added upstream fails here.
+    expect(fields.sort()).toEqual(Object.keys(rewrites).sort());
+
+    let swept = 0;
+    for (const [index, entry] of entries.entries())
+      for (const field of fields) {
+        const action = entry.receipt.action as string;
+        const mutated = {
+          ...snapshot,
+          receipts: entries.map((original, position) =>
+            position === index
+              ? {
+                  ...original,
+                  receipt: {
+                    ...original.receipt,
+                    [field]: rewrites[field]!(original.receipt[field], action),
+                  },
+                }
+              : original,
+          ),
+        };
+        const label = `receipt[${index}].${field}`;
+        expect(() => PermutationBook.restore(CLASSIC, reseal(mutated)), label).toThrowError(
+          RevealEngineError,
+        );
+        swept += 1;
+      }
+    expect(swept).toBe(entries.length * fields.length);
+  });
+
+  /**
+   * The two the sweep was added for, called out by name.
+   *
+   * A `place` receipt's `capped` flag and the `settle` receipt's key are the
+   * fields that move no balance, so a restore that missed them would still
+   * reconcile every number and still be wrong about what happened.
+   */
+  it('names the two fields that move no money and are checked anyway', async () => {
+    const transcript = makePermutationTranscript(seedHex, CLASSIC, roundId);
+    const book = new PermutationBook(CLASSIC, {
+      roundId: transcript.roundId,
+      commitment: transcript.commitment,
+    });
+    await book.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: transcript.order[0] as number },
+      stake: 100n,
+    });
+    await book.settle({ idempotencyKey: 'settle-key', revealedSeed: seedHex, transcript });
+    const snapshot = book.snapshot() as unknown as Record<string, unknown>;
+    const entries = snapshot.receipts as {
+      fingerprint: string;
+      receipt: Record<string, unknown>;
+    }[];
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+
+    const withReceipt = (
+      index: number,
+      patch: Record<string, unknown>,
+    ): Record<string, unknown> => ({
+      ...snapshot,
+      receipts: entries.map((entry, position) =>
+        position === index ? { ...entry, receipt: { ...entry.receipt, ...patch } } : entry,
+      ),
+    });
+
+    // A stake that claims to have met a ceiling. It did not; `place` mints
+    // `capped: false` unconditionally, because a debit cannot meet a credit cap.
+    expect(entries[0]?.receipt.capped).toBe(false);
+    expect(() =>
+      PermutationBook.restore(CLASSIC, reseal(withReceipt(0, { capped: true }))),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+
+    // A settle receipt filed under a key the settlement does not name. The
+    // balances all still reconcile — which is exactly why it needed a check.
+    expect(() =>
+      PermutationBook.restore(CLASSIC, reseal(withReceipt(1, { idempotencyKey: 'not-the-key' }))),
+    ).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.settlement.idempotencyKey' }),
+    );
+
+    // Rewriting both halves consistently is refused too: the settlement's key is
+    // itself bounded, and the pair has to agree.
+    const bothRewritten = {
+      ...withReceipt(1, { idempotencyKey: 'moved' }),
+      settlement: { ...(snapshot.settlement as object), idempotencyKey: 'moved' },
+    };
+    const restored = PermutationBook.restore(CLASSIC, reseal(bothRewritten));
+    // It restores — the pair is consistent — and the round is still terminal, so
+    // the rewrite bought nothing: no second settle is possible either way.
+    expect(restored.terminal).toBe(true);
+    expect(restored.liquidBalance).toBe(book.liquidBalance);
+  });
+});
+
+/**
+ * The binding on a **staked, non-terminal** snapshot — the hard case.
+ *
+ * A terminal snapshot can reconcile its binding against a settlement that
+ * re-derives from the revealed seed. A staked one has neither: no settlement, no
+ * seed, nothing that could contradict a rewritten round. Left there, an operator
+ * could take a ticket in round A, rewrite the reconnect snapshot to round B,
+ * restore, and settle against B — every balance reconciling, because a rewrite
+ * that moves no money moves no money.
+ *
+ * What closes it is that a `place` command's identity includes the round: the
+ * same bet at the same stake is a different command in a different draw. So the
+ * binding is pinned by every placement in the log, and the check is the one the
+ * contract already demands — re-derive what the player did from the receipts.
+ */
+describe('permutation module: a staked snapshot cannot be re-pointed at another round', () => {
+  const seedHex = seed(81);
+
+  it('pins the binding through every place receipt, with no settlement to lean on', async () => {
+    const roundA = makePermutationTranscript(seedHex, CLASSIC, 'staked-a');
+    const roundB = makePermutationTranscript(seedHex, CLASSIC, 'staked-b');
+    const book = new PermutationBook(CLASSIC, bindingOf(roundA));
+    await book.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: roundA.order[0] as number },
+      stake: 100n,
+    });
+    await book.place({
+      idempotencyKey: 'b',
+      bet: { code: 'slot', item: roundA.order[1] as number, position: 1 },
+      stake: 25n,
+    });
+
+    const snapshot = book.snapshot() as unknown as Record<string, unknown>;
+    // The premise: nothing else in this snapshot knows which round it is.
+    expect(snapshot.settlement).toBeNull();
+    expect(snapshot.terminal).toBe(false);
+
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot))).not.toThrow();
+
+    for (const mutation of [
+      { ...snapshot, binding: bindingOf(roundB) },
+      { ...snapshot, binding: { ...bindingOf(roundA), roundId: 'staked-b' } },
+      { ...snapshot, binding: { ...bindingOf(roundA), commitment: roundB.commitment } },
+    ])
+      expect(
+        () => PermutationBook.restore(CLASSIC, reseal(mutation)),
+        JSON.stringify(mutation.binding),
+      ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.claims' }));
+
+    // And the same ticket placed into the other round is a different command
+    // log, which is the property the refusal above rests on.
+    const elsewhere = new PermutationBook(CLASSIC, bindingOf(roundB));
+    await elsewhere.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: roundA.order[0] as number },
+      stake: 100n,
+    });
+    const here = (snapshot.receipts as { receipt: { commandFingerprint: string } }[])[0]!;
+    const there = elsewhere.snapshot().receipts[0]!;
+    expect(there.receipt.commandFingerprint).not.toBe(here.receipt.commandFingerprint);
+  });
+
+  /**
+   * The one case that is genuinely unpinned, stated rather than left to be found.
+   *
+   * A snapshot with no claims and no settlement describes a book that has done
+   * nothing. Restoring it under another round is indistinguishable from
+   * constructing a fresh book bound to that round, which any caller may do
+   * anyway — so there is nothing to defend, and pretending otherwise would be
+   * the overclaim.
+   */
+  it('does not pretend an empty snapshot binds anything, and takes the published round if given it', () => {
+    const roundA = makePermutationTranscript(seedHex, CLASSIC, 'staked-a');
+    const roundB = makePermutationTranscript(seedHex, CLASSIC, 'staked-b');
+    const snapshot = new PermutationBook(
+      CLASSIC,
+      bindingOf(roundA),
+    ).snapshot() as unknown as Record<string, unknown>;
+    expect(snapshot.claims).toEqual([]);
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+    const repointed = reseal({ ...snapshot, binding: bindingOf(roundB) });
+    expect(PermutationBook.restore(CLASSIC, repointed).binding).toEqual(bindingOf(roundB));
+    // Unless the caller says which round it published.
+    expect(() => PermutationBook.restore(CLASSIC, repointed, bindingOf(roundA))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+    );
   });
 });

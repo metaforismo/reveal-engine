@@ -616,6 +616,11 @@ export function stakedSnapshotFor(
       second,
     ],
   ];
+  // The round this staked book is bound to. Derived from the same seed the order
+  // came from, because that is what an operator publishes before betting opens:
+  // a binding invented independently of the draw would make the snapshot
+  // describe a state the book cannot reach.
+  const commitment = makePermutationTranscript(seedHex, definition, roundId).commitment;
   const base = {
     schema: PERMUTATION_BOOK_SCHEMA,
     definition: {
@@ -623,6 +628,7 @@ export function stakedSnapshotFor(
       version: definition.version,
       fingerprint: permutationFingerprint(definition),
     },
+    binding: { roundId, commitment },
     terminal: false,
     ledgerRevision: bets.length,
     stepRevision: 0,
@@ -636,7 +642,15 @@ export function stakedSnapshotFor(
     })),
     settlement: null,
     receipts: bets.map(([key, bet, stake], index) => {
-      const fingerprint = commandFingerprint('place', [bet.code, ...betParameters(bet), stake]);
+      // Includes the round: a `place` is a claim on a specific draw, so the
+      // command's identity carries the binding. See `placeFingerprint`.
+      const fingerprint = commandFingerprint('place', [
+        roundId,
+        commitment,
+        bet.code,
+        ...betParameters(bet),
+        stake,
+      ]);
       return {
         fingerprint,
         receipt: {
@@ -716,6 +730,29 @@ const snapshotIsRevalidated: Check = {
       ['$.terminal', reseal({ ...snapshot, terminal: true })],
       ['$.ledgerRevision', reseal({ ...snapshot, ledgerRevision: 7 })],
       ['$.receipts', reseal({ ...snapshot, receipts: [] })],
+      // A receipt field that moves no balance is still a field the restored
+      // audit record must not be free to invent: `place` mints `capped: false`
+      // unconditionally.
+      [
+        '$.receipts[0].receipt.capped',
+        reseal({
+          ...snapshot,
+          receipts: snapshot.receipts.map((entry, position) =>
+            position === 0 ? { ...entry, receipt: { ...entry.receipt, capped: true } } : entry,
+          ),
+        }),
+      ],
+      // The round the book was bound to before it took a bet. Dropping it, or
+      // pointing it at another round, must not restore a book that then settles
+      // against whatever proof arrives.
+      ['$.binding', reseal({ ...snapshot, binding: null })],
+      [
+        '$.binding.commitment',
+        reseal({
+          ...snapshot,
+          binding: { ...(snapshot.binding as { roundId: string }), commitment: '0'.repeat(64) },
+        }),
+      ],
       [
         '$.definition.fingerprint',
         reseal({

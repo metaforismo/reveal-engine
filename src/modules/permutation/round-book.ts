@@ -30,11 +30,13 @@ import { assertBet, betFromParameters, betParameters, betWins, claimSignature } 
 import {
   PERMUTATION_ACTIONS,
   PERMUTATION_BOOK_SCHEMA,
+  RETIRED_BOOK_SCHEMAS,
   type PermutationAction,
   type PermutationBet,
   type PermutationClaim,
   type PermutationDefinition,
   type PermutationOrder,
+  type PermutationRoundBinding,
   type PermutationSettlement,
   type PermutationTranscript,
 } from './contracts.js';
@@ -74,6 +76,11 @@ export interface PermutationBookSnapshot {
     readonly version: string;
     readonly fingerprint: string;
   };
+  /** The published round this book plays; `null` only before it is bound. */
+  readonly binding: {
+    readonly roundId: string;
+    readonly commitment: string;
+  } | null;
   readonly terminal: boolean;
   readonly ledgerRevision: number;
   readonly stepRevision: number;
@@ -86,6 +93,7 @@ export interface PermutationBookSnapshot {
     readonly revealedSeed: string;
     readonly order: readonly number[];
     readonly commitment: string;
+    readonly idempotencyKey: string;
   } | null;
   readonly receipts: readonly { readonly fingerprint: string; readonly receipt: WireReceipt }[];
   readonly snapshotHash: string;
@@ -155,8 +163,65 @@ function assertTicketCeiling(
     fail('CLAIM_REJECTED', 'Ticket stake exceeds the round ceiling', path);
 }
 
-function placeFingerprint(bet: PermutationBet, stake: bigint): string {
-  return commandFingerprint('place', [bet.code, ...betParameters(bet), stake]);
+/**
+ * Validates and freezes a round binding arriving from a host or a snapshot.
+ *
+ * Held to the transcript codec's rules for the same two fields, so a binding and
+ * the transcript it will be compared against cannot disagree about what a legal
+ * round id or commitment looks like.
+ */
+function freezeBinding(value: unknown, path = '$.binding'): PermutationRoundBinding {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    fail('CLAIM_REJECTED', 'Expected a round binding object', path);
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 2 || keys[0] !== 'commitment' || keys[1] !== 'roundId')
+    fail('CLAIM_REJECTED', 'A round binding carries exactly a roundId and a commitment', path);
+  const binding = value as PermutationRoundBinding;
+  if (
+    typeof binding.roundId !== 'string' ||
+    binding.roundId.length === 0 ||
+    Buffer.byteLength(binding.roundId, 'utf8') > ENGINE_LIMITS.maxIdentifierBytes ||
+    /[\u0000-\u001f\u007f]/u.test(binding.roundId)
+  )
+    fail('CLAIM_REJECTED', 'Expected a bounded printable round id', `${path}.roundId`);
+  if (typeof binding.commitment !== 'string' || !/^[0-9a-f]{64}$/u.test(binding.commitment))
+    fail('CLAIM_REJECTED', 'Expected canonical 32-byte hexadecimal', `${path}.commitment`);
+  return Object.freeze({ roundId: binding.roundId, commitment: binding.commitment });
+}
+
+/** True when two bindings name the same published round. */
+function bindingsEqual(left: PermutationRoundBinding, right: PermutationRoundBinding): boolean {
+  return left.roundId === right.roundId && constantTimeHexEqual(left.commitment, right.commitment);
+}
+
+/**
+ * A `place` command's identity — and it includes the round it was placed into.
+ *
+ * The round is part of what the player did, not context around it: the same bet
+ * for the same stake is a different command in a different round, because it is
+ * a claim on a different draw. Binding it here is what makes the binding
+ * **tamper-evident in a snapshot**, and that matters most exactly where the
+ * snapshot has nothing else to check it against.
+ *
+ * A terminal snapshot could reconcile its binding against the settlement, which
+ * re-derives from the revealed seed. A *staked, non-terminal* one has no
+ * settlement and no seed — so without this, an operator could take a ticket in
+ * round A, rewrite the reconnect snapshot's binding to round B, restore, and
+ * settle against B. Every balance would reconcile, because none of them moved.
+ * With this, rewriting the binding invalidates every `place` receipt in the log.
+ */
+function placeFingerprint(
+  binding: PermutationRoundBinding,
+  bet: PermutationBet,
+  stake: bigint,
+): string {
+  return commandFingerprint('place', [
+    binding.roundId,
+    binding.commitment,
+    bet.code,
+    ...betParameters(bet),
+    stake,
+  ]);
 }
 
 /**
@@ -191,19 +256,64 @@ function settleFingerprint(revealedSeed: string, transcript: PermutationTranscri
  *    revealed seed and re-verifies the transcript through the module's own
  *    verifier before a single claim is scored. A book that settled against an
  *    unverified order would pay out whatever it was handed.
+ * 4. **A verified proof is not enough; it must be the proof for _this_ round.**
+ *    Every transcript this module builds is internally valid and verifies
+ *    against its own seed, so "it verifies" says nothing about *which* round it
+ *    is. A book that checked only the proof would let an operator holding a
+ *    placed ticket search round ids for one the ticket loses on, settle against
+ *    it, and hand the player a receipt in which every artefact verifies. So the
+ *    book is **bound** to a published round before it may take a single bet, and
+ *    `settle()` refuses a transcript naming any other. See
+ *    `PermutationRoundBinding`.
  */
 export class PermutationBook {
   readonly #ledger: CommandLedger;
   readonly #claims = new Map<string, PermutationClaim>();
   readonly #signatures = new Map<string, string>();
+  #binding: PermutationRoundBinding | undefined;
   #stakedTotal = 0n;
   #stepRevision = 0;
   #terminal = false;
   #settlement: PermutationSettlement | undefined;
 
-  constructor(readonly definition: PermutationDefinition) {
+  /**
+   * A book is constructed bound, or bound by `bind()` before its first bet.
+   *
+   * The binding is optional here only because the lifecycle contract's
+   * `book.create(definition)` factory has no round to hand over — see
+   * `module.ts`. An unbound book is inert: it can be inspected and serialized,
+   * and `place()` refuses it, so the two-step path cannot take money before the
+   * round it plays has been published.
+   */
+  constructor(
+    readonly definition: PermutationDefinition,
+    binding?: PermutationRoundBinding,
+  ) {
     assertPermutationDefinition(definition);
+    if (binding !== undefined) this.#binding = freezeBinding(binding);
     this.#ledger = new CommandLedger({ maxWinMultiple: definition.maxWinMultiple });
+  }
+
+  /** The published round this book plays, or `undefined` before it is bound. */
+  get binding(): PermutationRoundBinding | undefined {
+    return this.#binding;
+  }
+
+  /**
+   * Pins the published round. Callable once, and only before the first bet.
+   *
+   * "Before the first bet" is the whole control. Binding a round after a ticket
+   * exists is the attack it prevents, spelled with an extra call: the operator
+   * would place, look, then choose. So a book that already holds a claim — or
+   * that is already bound, or already terminal — refuses.
+   */
+  bind(binding: PermutationRoundBinding): void {
+    const next = freezeBinding(binding);
+    if (this.#binding !== undefined)
+      fail('CLAIM_REJECTED', 'Round is already bound to a published commitment', '$.binding');
+    if (this.#claims.size !== 0 || this.#terminal)
+      fail('CLAIM_REJECTED', 'Round cannot be bound after it has accepted a bet', '$.binding');
+    this.#binding = next;
   }
 
   get claims(): readonly PermutationClaim[] {
@@ -248,9 +358,21 @@ export class PermutationBook {
     assertBet(request.bet, this.definition);
     assertLineStake(this.definition, request.stake);
     const bet = request.bet;
+    // Ahead of the ledger, not inside it: the command's own identity is a
+    // function of the round, so an unbound book has no `place` command to
+    // fingerprint, let alone to store against an idempotency key. The binding is
+    // immutable once set and `bind()` refuses a book that holds a claim, so this
+    // read cannot go stale between here and the serialized section below.
+    const binding = this.#binding;
+    if (binding === undefined)
+      fail(
+        'CLAIM_REJECTED',
+        'Round has no published commitment; bind it before accepting a bet',
+        '$.binding',
+      );
     const payout = linePayout(this.definition, bet.code, request.stake);
     const signature = claimSignature(this.definition, bet);
-    const fingerprint = placeFingerprint(bet, request.stake);
+    const fingerprint = placeFingerprint(binding, bet, request.stake);
     return this.#ledger.execute<PermutationAction>(request.idempotencyKey, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
       assertClaimBudget(this.#claims.size, this.definition.maxOpenBets);
@@ -295,6 +417,26 @@ export class PermutationBook {
     const fingerprint = settleFingerprint(revealedSeed, transcript);
     return this.#ledger.execute<PermutationAction>(request.idempotencyKey, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
+      const binding = this.#binding;
+      if (binding === undefined)
+        fail('CLAIM_REJECTED', 'Round has no published commitment to settle against', '$.binding');
+      // Asked *before* the proof is verified, because it is the more fundamental
+      // question: not "is this a valid transcript" — every transcript this
+      // module builds is — but "is this the round this book was bound to". A
+      // round id and a commitment that disagree with the binding are refused
+      // whether or not the seed opens them.
+      if (transcript.roundId !== binding.roundId)
+        fail(
+          'COMMITMENT_MISMATCH',
+          'Transcript settles a different round than the one this book is bound to',
+          '$.transcript.roundId',
+        );
+      if (!constantTimeHexEqual(transcript.commitment, binding.commitment))
+        fail(
+          'COMMITMENT_MISMATCH',
+          'Transcript does not open the commitment published for this round',
+          '$.transcript.commitment',
+        );
       const verification = verifyPermutationTranscript(revealedSeed, this.definition, transcript);
       if (!verification.ok)
         fail('INVALID_TRANSCRIPT', verification.message, verification.path, {
@@ -318,6 +460,7 @@ export class PermutationBook {
           revealedSeed,
           order: transcript.order,
           commitment: transcript.commitment,
+          idempotencyKey: request.idempotencyKey,
         });
         return receipt;
       };
@@ -343,6 +486,13 @@ export class PermutationBook {
         version: this.definition.version,
         fingerprint: permutationFingerprint(this.definition),
       }),
+      binding:
+        this.#binding === undefined
+          ? null
+          : Object.freeze({
+              roundId: this.#binding.roundId,
+              commitment: this.#binding.commitment,
+            }),
       terminal: this.#terminal,
       ledgerRevision: this.#ledger.ledgerRevision,
       stepRevision: this.#stepRevision,
@@ -369,6 +519,7 @@ export class PermutationBook {
               revealedSeed: this.#settlement.revealedSeed,
               order: Object.freeze([...this.#settlement.order]),
               commitment: this.#settlement.commitment,
+              idempotencyKey: this.#settlement.idempotencyKey,
             }),
       receipts: Object.freeze(
         this.#ledger.entries().map((stored) =>
@@ -407,8 +558,32 @@ export class PermutationBook {
    * A snapshot cannot re-derive it — that needs the revealed seed — so restore
    * checks its shape and nothing more. The proof of a settlement is the
    * transcript, verified against the seed; the snapshot is reconnect state.
+   *
+   * **The binding is pinned by the receipt log, not read out of the snapshot.**
+   * Every `place` receipt's command fingerprint covers `(roundId, commitment)`
+   * along with the bet and the stake, because a bet is a claim on a particular
+   * draw and the same bet in another round is another command. So rewriting the
+   * binding invalidates every placement — including on a *staked, non-terminal*
+   * snapshot, which has no settlement and no revealed seed and therefore nothing
+   * else that could contradict it. A terminal snapshot is pinned twice over: the
+   * settlement re-derives from the seed, and the binding must equal it.
+   *
+   * What remains is the wholly consistent rewrite of a snapshot with **no
+   * claims and no settlement** — which is a book that has done nothing, and
+   * restoring one under another round is indistinguishable from constructing a
+   * fresh book bound to that round, which any caller may do anyway.
+   *
+   * `expected` is the belt to that braces: a caller that holds the round it
+   * published passes it, and any snapshot naming a different one is refused
+   * outright rather than being reconstructed and then found consistent. An
+   * operator always holds that value, because publishing it is what opened the
+   * round.
    */
-  static restore(definition: PermutationDefinition, input: string | object): PermutationBook {
+  static restore(
+    definition: PermutationDefinition,
+    input: string | object,
+    expected?: PermutationRoundBinding,
+  ): PermutationBook {
     assertPermutationDefinition(definition);
     const raw = parseSnapshotInput(input);
     if (raw.snapshotHash !== snapshotHash({ ...raw, snapshotHash: undefined }))
@@ -420,7 +595,18 @@ export class PermutationBook {
     )
       fail('DEFINITION_MISMATCH', 'Snapshot belongs to another definition', '$.definition');
 
-    const book = new PermutationBook(definition);
+    const binding = raw.binding === null ? undefined : freezeBinding(raw.binding, '$.binding');
+    if (expected !== undefined) {
+      const wanted = freezeBinding(expected, '$.expected');
+      if (binding === undefined || !bindingsEqual(binding, wanted))
+        fail('COMMITMENT_MISMATCH', 'Snapshot belongs to another round', '$.binding');
+    }
+    // An unbound book cannot have taken a bet or settled, so a snapshot claiming
+    // otherwise is describing a state this class cannot reach.
+    if (binding === undefined && (raw.claims.length !== 0 || raw.terminal))
+      fail('INVALID_SNAPSHOT', 'Snapshot staked or settled an unbound round', '$.binding');
+
+    const book = new PermutationBook(definition, binding);
     book.#terminal = raw.terminal;
     book.#stepRevision = assertSnapshotRevision(raw.stepRevision, '$.stepRevision');
 
@@ -453,6 +639,19 @@ export class PermutationBook {
       fail('INVALID_SNAPSHOT', 'Snapshot exceeds the declared claim budget', '$.claims');
 
     const settlement = restoredSettlement(definition, raw);
+    // A settled round settled the round it was bound to. Rewriting one half of
+    // that pair is what a partial tamper looks like, and it is refused here; the
+    // consistent rewrite of both halves is what `expected` is for.
+    if (
+      settlement !== undefined &&
+      binding !== undefined &&
+      !bindingsEqual(binding, settlement.record)
+    )
+      fail(
+        'INVALID_SNAPSHOT',
+        'Snapshot settled a different round than the one it is bound to',
+        '$.settlement.roundId',
+      );
     let reconstructedLiquid = 0n;
     let stakedTotal = 0n;
     let placements = 0;
@@ -469,14 +668,19 @@ export class PermutationBook {
     book.#ledger.install(stored, book.#stepRevision, (receipt) => {
       if (receipt.action === 'place') {
         // A permutation round has exactly one frame, so every stake is fenced at
-        // revision 0 and only the settle receipt moves it. The field carries no
-        // semantics here, which is precisely why it would otherwise be the one
-        // receipt field a snapshot could rewrite unchallenged.
+        // revision 0 and only the settle receipt moves it. `capped` is the same
+        // kind of field: `place` mints it `false` unconditionally, because a
+        // stake is not a credit and nothing about it can meet a ceiling. Neither
+        // carries semantics here, which is exactly why an unpinned one is a
+        // receipt field a snapshot could rewrite unchallenged — and a restored
+        // log that reports a capped stake is an audit record that disagrees with
+        // the operator's own.
         if (
           settled ||
           receipt.debited <= 0n ||
           receipt.credited !== 0n ||
-          receipt.frameRevision !== 0
+          receipt.frameRevision !== 0 ||
+          receipt.capped
         )
           fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
         const claim = raw.claims[placements];
@@ -486,7 +690,8 @@ export class PermutationBook {
           restored === undefined ||
           receipt.idempotencyKey !== claim.key ||
           receipt.debited !== restored.stake ||
-          receipt.commandFingerprint !== placeFingerprint(restored.bet, restored.stake)
+          binding === undefined ||
+          receipt.commandFingerprint !== placeFingerprint(binding, restored.bet, restored.stake)
         )
           fail('INVALID_SNAPSHOT', 'Receipt does not match the restored claim', '$.claims');
         stakedTotal += receipt.debited;
@@ -538,15 +743,30 @@ export class PermutationBook {
       // credit the round has withdrawn nothing, so the already-liquid term is
       // zero.
       const theoretical = book.grossFor(settlement.proof.order);
-      const expected =
+      const expectedCredit =
         capBasisStake === undefined
           ? { credited: 0n, capped: false }
           : payableWithinCap(theoretical, capBasisStake, definition.maxWinMultiple, 0n);
-      if (settleReceipt.credited !== expected.credited || settleReceipt.capped !== expected.capped)
+      if (
+        settleReceipt.credited !== expectedCredit.credited ||
+        settleReceipt.capped !== expectedCredit.capped
+      )
         fail(
           'INVALID_SNAPSHOT',
           'Settled credit does not re-derive from the restored ticket and order',
           '$.settlement.order',
+        );
+      // Every receipt's idempotency key is named by the state that receipt
+      // produced: a `place` key by its claim, and the `settle` key by the
+      // settlement record. Without this the settle key is the one field a
+      // snapshot rewrites unchallenged, which puts the restored receipt log out
+      // of step with the operator's command log and turns an idempotent retry of
+      // the original settle into an error instead of the original receipt.
+      if (settleReceipt.idempotencyKey !== settlement.record.idempotencyKey)
+        fail(
+          'INVALID_SNAPSHOT',
+          'Settle receipt does not carry the key the settlement records',
+          '$.settlement.idempotencyKey',
         );
       book.#settlement = settlement.record;
     }
@@ -591,7 +811,7 @@ function restoredSettlement(
     }
   | undefined {
   if (raw.settlement === null) return undefined;
-  const { roundId, revealedSeed, order, commitment } = raw.settlement;
+  const { roundId, revealedSeed, order, commitment, idempotencyKey } = raw.settlement;
   assertSettledOrder(definition, order, '$.settlement.order', 'INVALID_SNAPSHOT');
   let proof: PermutationTranscript;
   try {
@@ -613,6 +833,7 @@ function restoredSettlement(
       revealedSeed,
       order: proof.order,
       commitment: proof.commitment,
+      idempotencyKey,
     }),
     proof,
     fingerprint: settleFingerprint(revealedSeed, proof),
@@ -652,11 +873,24 @@ function assertSettledOrder(
 function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
   const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
   const candidate = assertSnapshotRecord(value, '$');
+  // Ahead of the key set, so a retired schema is named as one. A `v1` snapshot
+  // is missing `binding` and would otherwise be reported as a malformed object,
+  // which is the least useful thing to tell an operator holding a real snapshot
+  // this build will never accept. It cannot be migrated forward: the field it
+  // lacks is the published commitment, and nothing in a `v1` snapshot says what
+  // that was. See `PERMUTATION_BOOK_SCHEMA`.
+  if (typeof candidate.schema === 'string' && RETIRED_BOOK_SCHEMAS.includes(candidate.schema))
+    fail(
+      'UNSUPPORTED_VERSION',
+      'Snapshot schema is retired and has no migration; the round binding it lacks cannot be reconstructed',
+      '$.schema',
+    );
   assertSnapshotKeys(
     candidate,
     [
       'schema',
       'definition',
+      'binding',
       'terminal',
       'ledgerRevision',
       'stepRevision',
@@ -685,6 +919,13 @@ function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
   assertWireString(definition.version, '$.definition.version');
   assertWireHex(definition.fingerprint, '$.definition.fingerprint');
 
+  if (candidate.binding !== null) {
+    const binding = assertSnapshotRecord(candidate.binding, '$.binding');
+    assertSnapshotKeys(binding, ['roundId', 'commitment'], '$.binding');
+    assertWireString(binding.roundId, '$.binding.roundId');
+    assertWireHex(binding.commitment, '$.binding.commitment');
+  }
+
   assertWireString(candidate.liquidBalance, '$.liquidBalance');
   if (candidate.capBasisStake !== null)
     assertWireString(candidate.capBasisStake, '$.capBasisStake');
@@ -705,10 +946,16 @@ function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
     const settlement = assertSnapshotRecord(candidate.settlement, '$.settlement');
     assertSnapshotKeys(
       settlement,
-      ['roundId', 'revealedSeed', 'order', 'commitment'],
+      ['roundId', 'revealedSeed', 'order', 'commitment', 'idempotencyKey'],
       '$.settlement',
     );
     assertWireString(settlement.roundId, '$.settlement.roundId');
+    // Bounded here as a wire string and nothing more, exactly like a claim key:
+    // the strict key rules belong to `fromWireReceipt`, and restore requires
+    // this value to equal the settle receipt's, so it inherits them.
+    // `assertIdempotencyKey` would report `IDEMPOTENCY_CONFLICT` from inside a
+    // snapshot parser, which is the wrong taxonomy for reconnect state.
+    assertWireString(settlement.idempotencyKey, '$.settlement.idempotencyKey');
     assertWireHex(settlement.revealedSeed, '$.settlement.revealedSeed');
     if (!Array.isArray(settlement.order))
       fail('INVALID_SNAPSHOT', 'Settled order must be an array', '$.settlement.order');

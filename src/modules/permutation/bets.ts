@@ -2,6 +2,9 @@ import { fail } from '../../api/errors.js';
 import { sha256Hex } from '../../core/random.js';
 import { encodeFields, type CanonicalField } from '../../internal/canonical.js';
 import {
+  MAX_ITEMS,
+  MIN_ITEMS,
+  PERMUTATION_BET_CODES,
   PERMUTATION_MODULE_ID,
   type Item,
   type PermutationBet,
@@ -68,12 +71,64 @@ function assertPosition(
 }
 
 /**
+ * The one place a bet code is checked, so no switch in this module needs a
+ * `default` arm that returns `undefined` on the way past.
+ *
+ * A `switch (code)` with no default is exhaustive over the *declared* union and
+ * silently total over everything else: `enumerateInstances(def, 'bogus')` and
+ * `betParameters({code: '__proto__'})` each fall through every case and hand the
+ * caller `undefined`, three frames from where it will actually break.
+ * `validation.ts` states the standard this restores — "a hostile argument
+ * reaching a pure counting function is a `RevealEngineError` rather than a
+ * `TypeError` from three frames down".
+ */
+function assertBetCode(code: unknown, path = '$.bet.code'): asserts code is PermutationBetCode {
+  if (typeof code !== 'string' || !(PERMUTATION_BET_CODES as readonly string[]).includes(code))
+    fail('CLAIM_REJECTED', 'Unknown bet code', path);
+}
+
+/** The exact field set each bet code carries, `code` included. */
+const BET_KEYS: Readonly<Record<PermutationBetCode, readonly string[]>> = Object.freeze({
+  full: Object.freeze(['code', 'order']),
+  slot: Object.freeze(['code', 'item', 'position']),
+  first: Object.freeze(['code', 'item']),
+  last: Object.freeze(['code', 'item']),
+  stack: Object.freeze(['code', 'before', 'after']),
+});
+
+/**
+ * Rejects a bet carrying any field its own code does not name.
+ *
+ * Reading only the fields the code names is the looser rule, and it turns a host
+ * typo into a different, cheaper claim: `{code:'first', item:0, position:9}`
+ * would be silently accepted as `first{0}`, and the player would be told they
+ * had bought what they asked for. `transcript.ts` and `round-book.ts` already
+ * hold every other untrusted boundary in this module to an exact key set, so
+ * this one is held to the same standard rather than left as the exception.
+ *
+ * Own enumerable keys only, so an inherited `position` from a poisoned prototype
+ * is not counted as a field the caller sent — the value checks below are what
+ * refuse those, and they refuse them whatever the key set says.
+ */
+function assertBetKeys(bet: object, code: PermutationBetCode, path: string): void {
+  const expected = BET_KEYS[code];
+  const actual = Object.keys(bet);
+  for (const key of actual)
+    if (!expected.includes(key))
+      fail('CLAIM_REJECTED', `A ${code} bet carries no '${key}' field`, `${path}.${key}`);
+  for (const key of expected)
+    if (!actual.includes(key))
+      fail('CLAIM_REJECTED', `A ${code} bet is missing its '${key}' field`, `${path}.${key}`);
+}
+
+/**
  * Validates a bet against a definition, fully, before anything reads it.
  *
  * A bet arrives from a host and is money-bearing on both sides — it decides a
  * debit and a credit — so nothing here coerces and every branch reports
  * `CLAIM_REJECTED` with a path. An unknown `code` is rejected before any
- * parameter is dereferenced.
+ * parameter is dereferenced, and a known code carrying a field it does not own
+ * is rejected before any of them is read.
  */
 export function assertBet(
   value: unknown,
@@ -83,8 +138,10 @@ export function assertBet(
   assertDrawShape(definition, '$.definition');
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     fail('CLAIM_REJECTED', 'Expected a bet object', path);
-  const bet = value as PermutationBet;
   const n = definition.items.length;
+  assertBetCode((value as { code?: unknown }).code, `${path}.code`);
+  const bet = value as PermutationBet;
+  assertBetKeys(bet, bet.code, path);
   switch (bet.code) {
     case 'full': {
       if (!Array.isArray(bet.order) || bet.order.length !== n)
@@ -117,8 +174,6 @@ export function assertBet(
       if (bet.before === bet.after)
         fail('CLAIM_REJECTED', 'A stack bet needs two distinct items', `${path}.after`);
       return;
-    default:
-      fail('CLAIM_REJECTED', 'Unknown bet code', `${path}.code`);
   }
 }
 
@@ -224,6 +279,7 @@ export function claimSignature(definition: PermutationDefinition, bet: Permutati
 
 /** Canonical numeric parameter vector, used by receipts and the snapshot codec. */
 export function betParameters(bet: PermutationBet): readonly number[] {
+  assertBetCode((bet as { code?: unknown } | null | undefined)?.code);
   switch (bet.code) {
     case 'full':
       return Object.freeze([...bet.order]);
@@ -305,6 +361,7 @@ export function enumerateInstances(
   code: PermutationBetCode,
 ): readonly PermutationBet[] {
   assertDrawShape(definition, '$.definition');
+  assertBetCode(code, '$.code');
   const n = definition.items.length;
   const items = Array.from({ length: n }, (_unused, index) => index);
   switch (code) {
@@ -339,9 +396,18 @@ export function enumerateInstances(
  * The truth space is small enough to enumerate for every supported `n`, and that
  * is deliberate: it is what lets conformance sweep all `n!` truths and prove the
  * step schedule cannot leak the truth, instead of sampling and hoping.
+ *
+ * Bounded to `MIN_ITEMS..MAX_ITEMS`, the same range `assertDrawShape` holds every
+ * other counting entry point in this module to, and for the same reason: the
+ * output is `n!` frozen arrays, so an unbounded `n` is an unbounded allocation.
+ * `n = 9` is 362,880 orders and already takes tens of milliseconds; `n = 13` is
+ * 6.2e9 and `n = 20` never returns. A host forwarding a caller-supplied draw
+ * size to a public export must get a typed refusal in microseconds, not a heap
+ * that grows until the process dies.
  */
 export function enumerateOrders(n: number): readonly PermutationOrder[] {
-  if (!Number.isSafeInteger(n) || n < 0) fail('INVALID_CONTEXT', 'Invalid draw size', '$.n');
+  if (!Number.isSafeInteger(n) || n < MIN_ITEMS || n > MAX_ITEMS)
+    fail('INVALID_CONTEXT', `Draw size must be ${MIN_ITEMS}..${MAX_ITEMS}`, '$.n');
   const results: PermutationOrder[] = [];
   const current: number[] = [];
   const used = new Array<boolean>(n).fill(false);

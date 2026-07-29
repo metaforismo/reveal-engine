@@ -265,6 +265,7 @@ describe('stable public API snapshot', () => {
       'PERMUTATION_MODULE_VERSION',
       'PERMUTATION_TRANSCRIPT_SCHEMA',
       'PermutationBook',
+      'RETIRED_BOOK_SCHEMAS',
       'aetherOrderClassicReference',
       'aetherOrderSevenReference',
       'assertBet',
