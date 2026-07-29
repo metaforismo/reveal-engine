@@ -296,6 +296,7 @@ describe('stable public API snapshot', () => {
       'permutationRound',
       'permutationTranscriptToWire',
       'price',
+      'representativeInstance',
       'serializePermutationTranscript',
       'stepsEqual',
       'triadReference',

@@ -32,12 +32,14 @@ import {
   makePermutationTranscript,
   MAX_ITEMS,
   MIN_ITEMS,
+  PERMUTATION_BET_CODES,
   permutation,
   permutationFingerprint,
   permutationCommitmentBody,
   permutationTranscriptToWire,
   PermutationBook,
   price,
+  representativeInstance,
   serializePermutationTranscript,
   triadReference,
   verifyPermutationTranscript,
@@ -54,6 +56,25 @@ import { seed } from './helpers.js';
 
 const CLASSIC = aetherOrderClassicReference;
 const SEVEN = aetherOrderSevenReference;
+
+/** A definition skeleton at any supported size, priced from the §5.1 closed forms. */
+const TRIAD_SHAPE = {
+  version: '1.0.0',
+  rtp: rational(24n, 25n),
+  maxWinMultiple: 1_000_000n,
+  stakeQuantum: 25n,
+  minLineStake: 25n,
+  maxLineStake: 2_500n,
+  maxTicketStake: 10_000n,
+  maxOpenBets: 6,
+} as const;
+
+function paytableForSize(size: number): PermutationDefinition['paytable'] {
+  let factorial = 1n;
+  for (let step = 2n; step <= BigInt(size); step += 1n) factorial *= step;
+  const flat = rational(24n * BigInt(size), 25n);
+  return { full: rational(24n * factorial, 25n), slot: flat, first: flat, last: flat, stack: flat };
+}
 
 /**
  * The round an operator publishes before betting opens, read off the proof.
@@ -81,6 +102,32 @@ describe('permutation module: contract surface', () => {
     expect(findModule('permutation')).toBe(permutation);
     expect(requireModule('permutation').moduleApiVersion).toBe(MODULE_API_VERSION);
     expect(Object.isFrozen(permutation)).toBe(true);
+  });
+
+  /**
+   * `definePermutationGame` prices each family from `representativeInstance`
+   * rather than from `enumerateInstances(...)[0]`, which cost `O(n!)` for `full`
+   * — 17.3 ms at `n = 8` on a public export a host may call per request.
+   *
+   * The cheap path is sound only while it returns exactly what the catalogue's
+   * head returns, so that equality is asserted here for every code at every
+   * supported `n` instead of being asserted in a comment. A future edit to
+   * either side that breaks the correspondence fails here rather than silently
+   * pricing a family off an instance that is not in it.
+   */
+  it('prices from a representative instance identical to the catalogue head', () => {
+    for (let size = MIN_ITEMS; size <= MAX_ITEMS; size += 1) {
+      const definition = definePermutationGame({
+        ...TRIAD_SHAPE,
+        id: `representative-n${size}`,
+        items: Array.from({ length: size }, (_unused, index) => `item-${index}`),
+        paytable: paytableForSize(size),
+      });
+      for (const code of PERMUTATION_BET_CODES)
+        expect(representativeInstance(definition, code)).toStrictEqual(
+          enumerateInstances(definition, code)[0],
+        );
+    }
   });
 
   it('declares the shape the lifecycle contract predicted for it', () => {
@@ -1207,6 +1254,7 @@ describe('permutation module: conformance', () => {
       expect(report.checks).toEqual([
         'NOT_DEEP_FROZEN',
         'SHUFFLE_NOT_BIJECTIVE',
+        'DERIVATION_OFF_SCHEDULE',
         'STEP_STRUCTURE_LEAKS_TRUTH',
         'PRICING_IDENTITY_BROKEN',
         'FAMILY_NOT_HOMOGENEOUS',
@@ -1218,10 +1266,11 @@ describe('permutation module: conformance', () => {
         'SNAPSHOT_NOT_REVALIDATED',
       ]);
       // `checks` is what was declared; `ran` is what executed. Six checks are
-      // definition-scoped and run once; five are round-scoped and run per seed.
+      // definition-scoped and run once; six are round-scoped and run per seed.
       expect(report.ran).toEqual({
         NOT_DEEP_FROZEN: 1,
         SHUFFLE_NOT_BIJECTIVE: 1,
+        DERIVATION_OFF_SCHEDULE: 3,
         STEP_STRUCTURE_LEAKS_TRUTH: 1,
         PRICING_IDENTITY_BROKEN: 1,
         FAMILY_NOT_HOMOGENEOUS: 1,

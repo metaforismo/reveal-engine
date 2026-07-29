@@ -34,6 +34,7 @@ export {
   claimSignature,
   enumerateInstances,
   enumerateOrders,
+  representativeInstance,
   type BetAssignment,
 } from './bets.js';
 export {

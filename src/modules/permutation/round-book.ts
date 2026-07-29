@@ -538,8 +538,9 @@ export class PermutationBook {
    *
    * Everything money-bearing is re-derived and reconciled, never read:
    *
-   * - each claim's **bet and stake** are pinned by the `place` receipt's own
-   *   command fingerprint, so a rewritten ticket cannot survive its own log;
+   * - each claim's **bet and stake** are checked against the `place` receipt's
+   *   own command fingerprint, so a claim rewritten *without* its receipt is
+   *   refused — see the paragraph below for the much narrower thing that buys;
    * - each claim's **payout** is recomputed from `(code, stake)` and the
    *   published paytable, and is not in the snapshot at all;
    * - the **settled credit** is recomputed by scoring the restored claims
@@ -552,6 +553,39 @@ export class PermutationBook {
    * The checksum is not the control. Anyone able to rewrite a field can
    * recompute the hash over it, so every tamper case in this module's tests
    * re-seals its mutation and is judged on the validation underneath.
+   *
+   * **Nor is the command fingerprint a control against a determined rewrite,
+   * and an earlier version of this comment claimed it was.** It said "a
+   * rewritten ticket cannot survive its own log". It can.
+   * `commandFingerprint` is an unkeyed SHA-256 over public fields and it is an
+   * export of this package, so a forger who can write to the snapshot store
+   * rewrites the log *alongside* the ticket. Inserting a `full`-order line for
+   * 5,000 chips that was never placed, minting its `place` receipt with the
+   * exported helper, renumbering the ledger, raising `capBasisStake` and
+   * `liquidBalance` and re-sealing the checksum produces a snapshot this method
+   * accepts — restoring a balance of 576,120 against an honest 120 — *while the
+   * caller passes the correct published round as `expected`*. Deleting a line
+   * works the same way. `tests/security/snapshot-mutation.test.ts` carries both
+   * directions as executed tests rather than as a caveat, because a disclosed
+   * exposure that nothing runs is a sentence, not a boundary.
+   *
+   * So the residual is not "which round this snapshot belongs to". It is **the
+   * entire ticket and its accounting**: which lines were placed, for how much,
+   * and what was credited. `expected` is orthogonal to it and does not narrow
+   * it. Every re-derivation above is a consistency check over attacker-supplied
+   * bytes, and consistency is exactly what a forger who holds the whole snapshot
+   * can supply.
+   *
+   * Closing it needs authentication, which this module does not provide and
+   * cannot provide by hashing: either the snapshot store is authenticated
+   * (integrity-protected storage the RGS controls, not a field inside the
+   * document), or the ticket and settlement are bound under a key the forger
+   * does not hold. The second is what `aether-order/docs/ENGINE.md` §7.6/§7.8
+   * specifies and what `src/modules/permutation/aether/receipt.ts` implements —
+   * `ticketDigest` and `settlementDigest` inside an Ed25519-signed receipt core.
+   * A deployment that reconnects real tickets from an unauthenticated store has
+   * this exposure whatever it passes as `expected`; `docs/integration-checklist.md`
+   * asks for the control explicitly.
    *
    * One field is an honest exception and is documented as one: the settlement's
    * `commitment` is a *label* naming which published proof settled this round.

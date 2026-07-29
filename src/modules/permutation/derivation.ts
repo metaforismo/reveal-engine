@@ -51,10 +51,23 @@ export function permutationRound(
  * sampler, and this module uses it unmodified. That is the whole point of the
  * boundary: modulo bias and domain reuse are the classic RNG failures and there
  * is exactly one implementation of the fix in this repository. Uniformity then
- * rests on two facts, both proved exhaustively rather than asserted — the
- * shuffle is a bijection from draw vectors onto `S_n`
- * (`SHUFFLE_NOT_BIJECTIVE`), and the sampler is unbiased for every modulus
- * (core's own suite). See `docs/modules/permutation.md`.
+ * rests on three facts, each with its own evidence:
+ *
+ * 1. the shuffle is a bijection from draw vectors onto `S_n` —
+ *    `SHUFFLE_NOT_BIJECTIVE`, by exhaustive enumeration;
+ * 2. the sampler is unbiased for every modulus —
+ *    `tests/sampler-unbiased.test.ts`, which checks the acceptance boundary,
+ *    drives the rejection branch at a modulus that rejects half of all draws,
+ *    and chi-squares the residues;
+ * 3. **this function is the composition of the two** —
+ *    `DERIVATION_OFF_SCHEDULE` and `tests/shuffle-uniformity.test.ts`, which
+ *    re-derive the order from the raw sampler under the declared schedule and
+ *    require this call to agree.
+ *
+ * The third is not pedantry. Facts 1 and 2 are both about something other than
+ * this function, and with only those two in place a naive-bias edit to
+ * `core/random.ts` passed conformance completely. See
+ * `docs/modules/permutation.md` §2.
  *
  * Pure in `(seed, definition, roundId)`: an operator holding a published
  * commitment cannot change what it opens to, and no player decision reaches it.

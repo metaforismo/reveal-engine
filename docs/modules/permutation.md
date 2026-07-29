@@ -69,7 +69,9 @@ two rounds would still produce different, non-interchangeable proofs. But the
 uniqueness is an operational property of the registry, and a deployment that
 mints definition ids from user input should read it as one.
 
-Uniformity rests on two lemmas and one stated assumption.
+Uniformity rests on three lemmas and one stated assumption. Lemmas A and B are
+properties of the schedule and of the sampler; Lemma C is the one that says the
+shipped code is the composition of them, and it is the one that was missing.
 
 **Lemma A — the shuffle is a bijection.** Descending Fisher-Yates draws
 `j_t` uniformly from `[0, n - t)` for `t = 0 .. n-2` and swaps index `n-1-t` with
@@ -84,8 +86,68 @@ asserted to equal `n!`, so a run that quietly covered less would fail.
 **Lemma B — the sampler is unbiased.** `uniformBigInt` rejects any 256-bit draw
 at or above `L = 2^256 - (2^256 mod M)`. `L` is divisible by `M`, so every
 residue owns exactly `L / M` accepted values and there is no modulo bias, for
-every modulus. That is core's property and core's test; this module does not
-restate it and does not reimplement it.
+every modulus.
+
+This is core's property, and `tests/sampler-unbiased.test.ts` is where it is
+established. Earlier rounds of this document ended the paragraph with "that is
+core's property and core's test", and **there was no such test**:
+`tests/core-primitives.test.ts` covered that the output is a genuine
+permutation, that it is deterministic, that label / round / seed separate the
+draw, and that the size limit holds, and nothing anywhere asserted the
+acceptance boundary or the absence of modulo bias. The citation was the weakest
+point in the fairness argument and it pointed at nothing. What is asserted now:
+
+- `L % M === 0` for every `M` in `1..512` and at the boundaries of the supported
+  range, including `2^256 - 1`;
+- the rejection region for every modulus this module's shuffles request
+  (`2..8`) is exactly `0, 1, 0, 1, 4, 2, 0` — which is _why_ the branch below
+  needed forcing;
+- the rejection branch is **executed**. For every modulus in real use
+  `2^256 mod M` is 0, 1, 2 or 4, so rejection fires with probability about
+  `2^-254` and no test had ever taken the branch — deleting the loop and
+  returning `value % M` would have been invisible to the entire suite. The test
+  drives `M = 2^255 + 1`, whose acceptance region is `L = M` and whose rejection
+  region is `2^255 - 1`, so roughly half of all draws reject; the returned value
+  is pinned against an independent reimplementation of the §7.3 payload, and a
+  decoy asserts that a loop-free `value % M` sampler disagrees;
+- residues are equidistributed, as an exact-rational chi-square against the
+  `p = 0.001` critical value, for every modulus in `2..8`, with a decoy that
+  narrows the digest to a power of two before reducing and is rejected by the
+  same bound.
+
+**Lemma C — the shipped derivation runs that schedule.** Lemmas A and B are both
+about things other than `derivePermutationOrder`: A applies its own swap loop to
+enumerated draw vectors and never calls the sampler, B is about the sampler and
+says nothing about how this module calls it. Composing them into a uniformity
+claim needs a third statement, that the code actually ships the composition, and
+until this round nothing in the repository asserted it.
+
+That gap was demonstrated, not theorised. An independent reviewer replaced
+`BigInt(position + 1)` with `BigInt(size)` in `src/core/random.ts` — the textbook
+naive-shuffle bias, measuring a chi-square of ~24,900 against a 119-df critical
+value of ~178 — and `npm run conformance` reported `ok: true` across every check
+and every reference. Six tests failed, five of them frozen fixtures, and a
+routine `npm run fixtures:update` took the suite to 565/566.
+
+Two things close it, and neither is a fixture, so neither can be regenerated
+away:
+
+1. the `DERIVATION_OFF_SCHEDULE` conformance check re-derives the order straight
+   from `uniformBigInt` under the declared schedule — label `'order'`, counter
+   `t`, modulus `n - t`, over `samplerScopeOf(permutationRound(...))` — and
+   requires `derivePermutationOrder` to agree, once per conformance seed. The
+   modulus is inside the sampler's own payload, so a wrong modulus does not widen
+   a range, it draws a different value: every draw after the first diverges.
+2. `tests/shuffle-uniformity.test.ts` repeats that binding for every supported
+   `n` over 64 rounds each, and adds a chi-square goodness-of-fit sweep over the
+   **real** derivation at `n = 3` and `n = 4`, computed as an exact rational
+   against the `p = 0.001` critical value. Both carry a decoy that runs the
+   naive-bias schedule and requires it to be rejected, so the assertions are live
+   rather than merely consistent.
+
+Under the reviewer's mutation, conformance now exits non-zero on all three
+permutation references and nine of the twelve tests in that file fail — after
+`npm run fixtures:update`, not before.
 
 **Assumption, stated rather than proved.** Lemma B gives uniformity _given_ that
 the HMAC-SHA256 outputs are uniform and independent across `(label, counter,
@@ -531,10 +593,11 @@ re-derived:
 - the **round** is supplied by the caller, not read: a bound snapshot restores
   only against the published round passed as the third argument, for the reason
   given above;
-- each claim's **bet and stake** are pinned by the `place` receipt's own command
-  fingerprint, so a rewritten ticket cannot survive its own log — and, since that
-  fingerprint also covers the round, a snapshot whose binding and receipts
-  disagree is refused whichever of the two was rewritten;
+- each claim's **bet and stake** are checked against the `place` receipt's own
+  command fingerprint, so a claim rewritten _without_ its receipt is refused —
+  and, since that fingerprint also covers the round, a snapshot whose binding and
+  receipts disagree is refused whichever of the two was rewritten. This is a
+  much smaller guarantee than it reads as; §9.2 states what it is not;
 - each `place` receipt's **`capped` flag** is pinned to `false` and the settle
   receipt's **idempotency key** to the one the settlement records. Neither moves
   a balance, which is precisely why they need pinning: a restored receipt log
@@ -572,6 +635,64 @@ hash over it, so every tamper case in this module's tests and conformance
 the validation underneath. Two cases deliberately do not re-seal, and each says
 so on the line above it: they exist to prove the checksum still catches plain
 corruption, and neither stands in for a merits-based rejection.
+
+### 9.2 What `restore()` does not protect, stated exactly
+
+This subsection exists because the previous round of this document got it wrong,
+in the direction that costs a player.
+
+`round-book.ts` claimed that "each claim's bet and stake are pinned by the
+`place` receipt's own command fingerprint, so a rewritten ticket cannot survive
+its own log". **It can.** `commandFingerprint` (`src/core/ledger.ts`) is an
+unkeyed SHA-256 over public fields and it is an export of this package, so a
+forger who can write to the snapshot store rewrites the log alongside the
+ticket. There is no secret anywhere in the artefact.
+
+The demonstrated forgery, now carried as an executed test in
+`tests/security/snapshot-mutation.test.ts` rather than as prose: start from an
+honest settled round — one line, 25 staked, 120 credited — insert a `full`-order
+line for 5,000 chips that was never placed, mint its `place` receipt with the
+exported `commandFingerprint`, renumber the ledger, raise `capBasisStake` and
+`liquidBalance`, re-seal the checksum. `restore()` accepts it and returns a book
+with a `liquidBalance` of **576,120** — a 4,800x inflation — **while the caller
+passes the correct published round as `expected`**. The mirror case, deleting a
+5,000-chip line, is accepted the same way.
+
+Three consequences, none of which earlier rounds of this document stated:
+
+1. **The residual is not "which round".** §12 and
+   [`threat-model.md`](../threat-model.md) previously described the whole-round
+   re-point as the exposure and offered `restore(definition, snapshot,
+publishedRound)` as the control. That control is real and it closes the
+   re-point, but it is **orthogonal** to ticket forgery. The residual is the
+   entire ticket and its accounting: which lines were placed, for how much, and
+   what was credited.
+2. **The integration checklist was not sufficient.** A deployment that follows
+   it to the letter — publishing the commitment first, reading the round from an
+   independent store — still restores a fabricated payout.
+3. **Every re-derivation in the list above is a consistency check over
+   attacker-supplied bytes**, and consistency is precisely what a forger holding
+   the whole snapshot can supply. Re-derivation raises the cost of a _sloppy_
+   rewrite to zero benefit; it does nothing against a complete one.
+
+Closing this needs authentication, and no amount of hashing inside the document
+substitutes for it. Exactly two things work:
+
+- **Authenticated storage.** The snapshot store is integrity-protected by the
+  RGS — a MAC the operator holds the key for, a database the game server cannot
+  write to unilaterally, or equivalent. The control is outside the document.
+- **A keyed or signed binding of the ticket and the settlement.** This is what
+  `aether-order/docs/ENGINE.md` §7.6/§7.8 specifies and what
+  `src/modules/permutation/aether/receipt.ts` now implements: `ticketDigest` and
+  `settlementDigest` inside an Ed25519-signed receipt core under a named
+  operator key. A forger who does not hold that key cannot mint a receipt for a
+  line nobody placed, and the player holds a copy.
+
+The platform `PermutationBook` snapshot provides neither and is not going to: it
+is reconnect state, and key custody is the operator's boundary
+(`docs/certification-boundary.md`). What it owes the reader is an accurate
+statement of what it is, which is a self-consistent document with no
+authentication, safe to restore only from a store the adversary cannot write.
 
 ## 10. No core was modified
 
@@ -730,14 +851,26 @@ does not constrain which seed the operator chose before publishing it. Those are
 ordering and custody controls the host owns; §11.1 names them and the integration
 checklist is where a deployment signs them off.
 
-In particular, **nothing here detects a whole-round rewrite of a snapshot**. An
-adversary who can write to the snapshot store can move a staked or settled ticket
-onto any round it likes, consistently, using only exported functions and no
-secret, and the result is indistinguishable in process from an honest snapshot of
-that other round. The command fingerprint does not stop this and §9.1 does not
-claim it does. What stands between that rewrite and a mis-settled ticket is a
-single operational fact: `restore()` refuses to reconstruct a bound snapshot
-unless the caller names the round it published, and that name comes from outside
-the rewritten store. If a deployment's reconnect path takes the round from the
-same store as the snapshot, this control is worth nothing and the deployment has
-reintroduced the whole problem. The integration checklist asks for it explicitly.
+In particular, **nothing here detects a rewrite of a snapshot by an adversary who
+can write to the snapshot store.** That statement is deliberately broader than
+the one this section carried in earlier rounds, which named only the whole-round
+re-point. §9.2 sets out the full residual and the demonstrated forgery; the short
+form is:
+
+- an adversary with write access to the store can move a ticket onto another
+  round, **and** can add lines that were never placed, delete lines that were,
+  change stakes, and inflate the credit to match — consistently, using only
+  exported functions and no secret;
+- `restore(definition, snapshot, publishedRound)` closes the first of those and
+  **only** the first. It is orthogonal to ticket forgery, and a deployment that
+  follows `integration-checklist.md` to the letter still restores a fabricated
+  payout;
+- the command fingerprint is unkeyed and its helper is exported, so it detects a
+  claim rewritten without its receipt and nothing else. §9.1 previously said it
+  meant "a rewritten ticket cannot survive its own log", which was false.
+
+What actually closes it is authentication the module does not supply:
+integrity-protected snapshot storage, or a keyed / signed binding of the ticket
+and settlement — the Ed25519 receipt core in
+`src/modules/permutation/aether/receipt.ts`, per `aether-order/docs/ENGINE.md`
+§7.6/§7.8. The integration checklist asks for both explicitly.

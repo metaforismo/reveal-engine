@@ -1,7 +1,11 @@
 import { commandFingerprint, RECEIPT_SCHEMA } from '../../core/ledger.js';
-import type { ConformanceFailure, ModuleConformanceCheck } from '../../core/module.js';
+import {
+  samplerScopeOf,
+  type ConformanceFailure,
+  type ModuleConformanceCheck,
+} from '../../core/module.js';
 import { add, compare, equal, multiply, rational } from '../../core/rational.js';
-import { sha256Hex } from '../../core/random.js';
+import { sha256Hex, uniformBigInt } from '../../core/random.js';
 import { snapshotHash } from '../../core/snapshot.js';
 import { encodeFields } from '../../internal/canonical.js';
 import {
@@ -24,6 +28,8 @@ import {
   derivePermutationOrder,
   derivePermutationSteps,
   makePermutationTranscript,
+  ordersEqual,
+  permutationRound,
   verifyPermutationTranscript,
 } from './derivation.js';
 import { fairMultiplier, freshProbability, linePayout, price } from './pricing.js';
@@ -131,6 +137,65 @@ const shuffleIsBijective: Check = {
             'SHUFFLE_NOT_BIJECTIVE',
             '$.truth.derive',
             `Shuffle produced ${produced.size} of ${expected} permutations`,
+          ),
+        ];
+  },
+};
+
+/**
+ * The shipped derivation is pinned to the draw schedule this module documents.
+ *
+ * `SHUFFLE_NOT_BIJECTIVE` above proves a property of the *algorithm*: it walks
+ * enumerated draw vectors through `shuffleFromDraws` and never calls the sampler
+ * at all. That independence is deliberate — a bijection proof that reused the
+ * implementation it is proving would be a tautology — but on its own it leaves
+ * the shipped code completely unpinned, and the gap is not hypothetical. An
+ * independent reviewer replaced `BigInt(position + 1)` with `BigInt(size)` in
+ * `core/random.ts` — the textbook naive-shuffle bias, measuring a chi-square of
+ * ~24,900 against a 119-df critical value of ~178 — and this suite reported
+ * `ok: true` across every check and every reference, because nothing in it drove
+ * `derivePermutationOrder`. Only frozen fixtures noticed, and a fixture diff is
+ * what `npm run fixtures:update` exists to erase.
+ *
+ * So this check re-derives the order from the sampler directly under the exact
+ * schedule §2 declares — label `'order'`, counter `t`, modulus `n - t`,
+ * descending Fisher-Yates over `samplerScopeOf(permutationRound(...))` — and
+ * requires the shipped function to agree. A deviation in the modulus, the
+ * counter, the label, the scope, the direction of the loop or the swap itself
+ * moves the result and fails here. The modulus is inside the sampler's own
+ * payload, so a wrong modulus does not merely widen a range, it draws a
+ * different value; every draw after the first therefore diverges.
+ *
+ * This is the uniformity property's second half, and it is the half that is
+ * about *this code* rather than about the schedule in the abstract. Lemma A
+ * covers the map from draw vectors to permutations; `tests/core-primitives.test.ts`
+ * covers the sampler's unbiasedness; this covers the claim that the shipped
+ * derivation is the composition of the two.
+ */
+const derivationFollowsSchedule: Check = {
+  code: 'DERIVATION_OFF_SCHEDULE',
+  description:
+    "Shipped derivation runs the declared draw schedule: label 'order', counter t, modulus n-t",
+  scope: 'round',
+  run({ definition, seedHex, roundId, count }) {
+    const size = definition.items.length;
+    const scope = samplerScopeOf(permutationRound(definition, roundId));
+    const expected = Array.from({ length: size }, (_unused, index) => index);
+    for (let position = size - 1, draw = 0; position > 0; position -= 1, draw += 1) {
+      const pick = Number(uniformBigInt(seedHex, scope, 'order', draw, BigInt(position + 1)));
+      count('scheduledDraws');
+      const swapped = expected[position] as number;
+      expected[position] = expected[pick] as number;
+      expected[pick] = swapped;
+    }
+    const actual = derivePermutationOrder(seedHex, definition, roundId);
+    return ordersEqual(actual, expected)
+      ? []
+      : [
+          failure(
+            'DERIVATION_OFF_SCHEDULE',
+            '$.truth.derive',
+            `Derived order [${actual.join(',')}] does not match the declared schedule's [${expected.join(',')}]`,
           ),
         ];
   },
@@ -844,6 +909,7 @@ const snapshotIsRevalidated: Check = {
 export const PERMUTATION_CHECKS: readonly Check[] = Object.freeze([
   frozenDefinition,
   shuffleIsBijective,
+  derivationFollowsSchedule,
   stepStructureIsTruthIndependent,
   pricingIdentityHolds,
   familiesAreHomogeneous,

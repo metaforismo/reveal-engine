@@ -1,4 +1,9 @@
+import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import {
+  commandFingerprint,
+  RECEIPT_SCHEMA as PERMUTATION_RECEIPT_SCHEMA,
+} from '../../src/core/ledger.js';
 import { snapshotHash } from '../../src/core/snapshot.js';
 import { initialPosterior } from '../../src/modules/progressive-market/posterior.js';
 import { makeTranscript } from '../../src/modules/progressive-market/fairness.js';
@@ -7,6 +12,9 @@ import {
   type RoundBookSnapshot,
 } from '../../src/modules/progressive-market/round-book.js';
 import { constellationReference } from '../../src/modules/progressive-market/references/index.js';
+import { makePermutationTranscript } from '../../src/modules/permutation/derivation.js';
+import { PermutationBook } from '../../src/modules/permutation/round-book.js';
+import { aetherOrderClassicReference } from '../../src/modules/permutation/references/index.js';
 import { seed } from '../helpers.js';
 
 type Json = Record<string, unknown>;
@@ -217,5 +225,166 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     expect(() =>
       RoundBook.restore(game, writeAt(valid, ['liquidBalance'], '999') as never),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+});
+
+/**
+ * The exposure `PermutationBook.restore()` does NOT close, executed rather than
+ * disclosed in prose.
+ *
+ * These two tests assert that a forged snapshot is **accepted**, which is not a
+ * thing a test suite should normally do. They are here because the alternative
+ * was worse: `round-book.ts` claimed that "a rewritten ticket cannot survive its
+ * own log", `docs/modules/permutation.md` §12 and `docs/threat-model.md`
+ * described the residual as a whole-round re-point, and
+ * `docs/integration-checklist.md` offered the published-round argument as the
+ * control. All four were wrong in the same direction, and nothing ran.
+ *
+ * `commandFingerprint` is an unkeyed SHA-256 over public fields and it is an
+ * export of this package. A forger with write access to the snapshot store
+ * therefore rewrites the receipt log alongside the ticket, and every
+ * re-derivation `restore()` performs is a consistency check over bytes the
+ * forger supplied. The published round — passed correctly in both tests below —
+ * is orthogonal: it pins which round, never which ticket.
+ *
+ * If someone later closes this by adding authentication, these tests fail. That
+ * is the point: the failure is the prompt to update `docs/modules/permutation.md`
+ * §9.2, the threat model row and the checklist item, so the disclosure and the
+ * code cannot drift apart again.
+ */
+describe('permutation snapshot forgery is not detectable in process', () => {
+  const permutationGame = aetherOrderClassicReference;
+
+  async function honestSettledRound(roundId: string) {
+    const seedHex = createHash('sha256').update(roundId).digest('hex');
+    const transcript = makePermutationTranscript(seedHex, permutationGame, roundId);
+    const binding = { roundId, commitment: transcript.commitment };
+    const book = new PermutationBook(permutationGame, binding);
+    await book.place({
+      idempotencyKey: 'honest',
+      bet: { code: 'first', item: transcript.order[0] as number },
+      stake: 25n,
+    });
+    const settled = await book.settle({
+      idempotencyKey: 'settle',
+      revealedSeed: seedHex,
+      transcript,
+    });
+    return { binding, book, settled, snapshot: JSON.parse(book.serialize()) as Json, transcript };
+  }
+
+  it('accepts a snapshot carrying a 5,000-chip line that was never placed', async () => {
+    const { binding, settled, snapshot, transcript } = await honestSettledRound('forge-add');
+    expect(settled.credited).toBe(120n);
+
+    // FULL ORDER on the settled order at 5,000 chips: 5000 * 576/5 = 576,000.
+    const forgedOrder = [...transcript.order];
+    const forgedStake = 5_000n;
+    const forgedFingerprint = commandFingerprint('place', [
+      binding.roundId,
+      binding.commitment,
+      'full',
+      ...forgedOrder,
+      forgedStake,
+    ]);
+    const receipts = snapshot.receipts as { fingerprint: string; receipt: Json }[];
+    const settleEntry = receipts[receipts.length - 1] as { fingerprint: string; receipt: Json };
+    const credited = 120n + 576_000n;
+
+    const forged: Json = {
+      ...snapshot,
+      claims: [
+        ...(snapshot.claims as Json[]).slice(0, 1),
+        { key: 'forged', code: 'full', parameters: forgedOrder, stake: String(forgedStake) },
+      ],
+      receipts: [
+        receipts[0],
+        {
+          fingerprint: forgedFingerprint,
+          receipt: {
+            schema: PERMUTATION_RECEIPT_SCHEMA,
+            idempotencyKey: 'forged',
+            commandFingerprint: forgedFingerprint,
+            action: 'place',
+            ledgerRevision: 2,
+            frameRevision: 0,
+            debited: String(forgedStake),
+            credited: '0',
+            balanceDelta: String(-forgedStake),
+            capped: false,
+          },
+        },
+        {
+          fingerprint: settleEntry.fingerprint,
+          receipt: {
+            ...settleEntry.receipt,
+            ledgerRevision: 3,
+            credited: String(credited),
+            balanceDelta: String(credited),
+          },
+        },
+      ],
+      capBasisStake: String(25n + forgedStake),
+      liquidBalance: String(credited),
+      ledgerRevision: 3,
+    };
+    const { snapshotHash: _drop, ...base } = forged;
+    const sealed = { ...base, snapshotHash: snapshotHash(base) };
+
+    // The correct published round, read from outside the rewritten store. It
+    // does not help, and the documentation used to say it did.
+    const restored = PermutationBook.restore(permutationGame, sealed, binding);
+    expect(restored.claims.length).toBe(2);
+    expect(restored.liquidBalance).toBe(576_120n);
+    expect(restored.stakedTotal).toBe(5_025n);
+  });
+
+  it('accepts a snapshot with a placed line deleted from it', async () => {
+    const roundId = 'forge-drop';
+    const seedHex = createHash('sha256').update(roundId).digest('hex');
+    const transcript = makePermutationTranscript(seedHex, permutationGame, roundId);
+    const binding = { roundId, commitment: transcript.commitment };
+    const book = new PermutationBook(permutationGame, binding);
+    await book.place({
+      idempotencyKey: 'kept',
+      bet: { code: 'first', item: transcript.order[0] as number },
+      stake: 25n,
+    });
+    await book.place({
+      idempotencyKey: 'dropped',
+      bet: { code: 'last', item: transcript.order[4] as number },
+      stake: 5_000n,
+    });
+    await book.settle({ idempotencyKey: 'settle', revealedSeed: seedHex, transcript });
+    const snapshot = JSON.parse(book.serialize()) as Json;
+    const receipts = snapshot.receipts as { fingerprint: string; receipt: Json }[];
+    const settleEntry = receipts[receipts.length - 1] as { fingerprint: string; receipt: Json };
+
+    const credited = 120n;
+    const forged: Json = {
+      ...snapshot,
+      claims: (snapshot.claims as Json[]).slice(0, 1),
+      receipts: [
+        receipts[0],
+        {
+          fingerprint: settleEntry.fingerprint,
+          receipt: {
+            ...settleEntry.receipt,
+            ledgerRevision: 2,
+            credited: String(credited),
+            balanceDelta: String(credited),
+          },
+        },
+      ],
+      capBasisStake: '25',
+      liquidBalance: String(credited),
+      ledgerRevision: 2,
+    };
+    const { snapshotHash: _drop, ...base } = forged;
+    const sealed = { ...base, snapshotHash: snapshotHash(base) };
+
+    const restored = PermutationBook.restore(permutationGame, sealed, binding);
+    expect(restored.claims.length).toBe(1);
+    expect(restored.stakedTotal).toBe(25n);
   });
 });

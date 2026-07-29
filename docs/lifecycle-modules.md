@@ -493,6 +493,34 @@ contract was designed against four shapes and the second one landed inside it.
 `sequential-cards` and `staged-survival` are the immediate next modules and are
 named here so the contract stays judged against them too.
 
+**With one caveat this page owes the reader, because the module page carries it
+and this one is where a host reads the contract.** "No core change" is true and
+it is not free: `permutation` fits by **narrowing two of the contract's five book
+slots to states in which no money is at risk**. `book.create(definition)` returns
+an unbound book that refuses every bet, and `book.restore(definition, snapshot)`
+restores only an unbound — therefore empty — snapshot. Both narrowings fail
+closed and are argued in `src/modules/permutation/module.ts` and
+`docs/modules/permutation.md` §9.1: the two-argument signatures have nowhere to
+put the published round that §9.1 requires before a bound snapshot may be
+reconstructed, so rather than ship the weaker reconstruction as the default a
+host falls into, they refuse it.
+
+The consequence for a host is concrete. **A host driving modules polymorphically
+through the `LifecycleModule` registry — which is the entire purpose of the
+registry — cannot open or reconnect a real permutation round through the
+contract.** It must downcast to the concrete `PermutationBook` class to reach
+`new PermutationBook(definition, binding)` and
+`PermutationBook.restore(definition, snapshot, publishedRound)`.
+`tests/permutation-module.test.ts` asserts both refusals, so this is a declared
+property rather than a gap.
+
+Whether the contract should grow a `restoreEvidence` slot is deliberately
+deferred: widening it for one module's control would put a slot on every module
+that only one fills, and `defineLifecycleModule()` would have to validate a type
+it can say nothing about. One module is not a pattern. If a second module needs
+out-of-band restore evidence, that is the point at which the slot should land,
+with an ADR arguing for it.
+
 Two **test-only** modules under `tests/support/` — not registered, not games —
 exercise the parts of the contract the progressive market does not use, so the
 contract is proved by something other than its first client:
