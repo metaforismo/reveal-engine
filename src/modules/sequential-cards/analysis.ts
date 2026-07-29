@@ -9,7 +9,13 @@ import {
   type Rational,
 } from '../../core/rational.js';
 import type { RevealStep, SequentialCardsDefinition } from './contracts.js';
-import { cardsBelief, forEachCombination, objectiveIndex, type CardsBelief } from './deck.js';
+import {
+  cardsBelief,
+  combinationCount,
+  forEachCombination,
+  objectiveIndex,
+  type CardsBelief,
+} from './deck.js';
 import {
   coverProbability,
   entryMultiplier,
@@ -19,7 +25,7 @@ import {
   livePositions,
   transformedClaim,
 } from './pricing.js';
-import { reject } from './validation.js';
+import { eligibleSetSize, reject } from './validation.js';
 
 /**
  * Definition-time proof by exhaustion.
@@ -78,6 +84,69 @@ import { reject } from './validation.js';
 /** Reachable `(state, covered set)` pairs one analysis may visit. */
 export const CARDS_MAX_ANALYSIS_CELLS = 3_000_000;
 
+/**
+ * Exact-rational operations one analysis may be *estimated* to perform.
+ *
+ * `CARDS_MAX_ANALYSIS_CELLS` bounds the walk in cells, and a cell is not a unit
+ * of work: `splitSetsOf` enumerates every subset of the live positions of width
+ * at least two, so one cell can cost `O(2^dealt)` rational operations and the
+ * cell budget alone bounds the space at `cells × O(2^dealt)`. Measured on a 2026
+ * laptop, a legal-shaped definition at `size 18 / dealt 9` was refused for
+ * exceeding the cell budget only after **27 seconds**, and one at `size 20 /
+ * dealt 11 / 4 reveals` after **281 seconds** — and `defineCardsGame` is
+ * synchronous, so that is a blocked event loop before the refusal arrives.
+ *
+ * Operator-authored definitions are not player-reachable, so this is a
+ * robustness bound rather than an exploit, but "bound it and say so" has to mean
+ * the time as well as the space. `estimateAnalysisWork` closes the form below in
+ * BigInt from the declaration alone, before a single hand is enumerated, and
+ * both cases above are now refused in under a millisecond.
+ *
+ * **How the ceiling was calibrated**, on the same machine: the slowest accepted
+ * definition measured (`size 13 / dealt 7`, two reveals) estimates 25.2M and
+ * runs in 2.6 s, i.e. ~100 ns per estimated operation, so this ceiling is
+ * roughly ten seconds of walk in the worst shape seen. The three shipped
+ * references estimate 24.0K, 75.6K and 8.0M, the last with 12× headroom.
+ */
+export const CARDS_MAX_ANALYSIS_OPS = 100_000_000n;
+
+/**
+ * An a-priori upper bound on the walk's exact-rational operations.
+ *
+ * Every factor is an upper bound on the corresponding loop, closed from the
+ * declaration:
+ *
+ * - **lines** = `C(size, dealt) · C(dealt, width) · width · ∏ᵢ eligible(i)` —
+ *   one per (hand, backed set, backed start, reveal ordering), which is exactly
+ *   what the walk enumerates;
+ * - **cells per line**: the incoming cover set is a singleton at revision 0 and
+ *   the window at revision 0 adds nothing, so it grows by at most
+ *   `g = dealt + splitSets` per later revision. Summing gives
+ *   `(R + 1) + g · R(R − 1)/2`;
+ * - **operations per cell**: one switch target per position plus one split set,
+ *   i.e. `g` again.
+ *
+ * It is an over-estimate — the references come out 20× to 600× above their
+ * realised cell counts — and it is deliberately an over-estimate: a bound that
+ * refuses a cheap definition costs an operator one message, and a bound that
+ * admits an expensive one costs a blocked process.
+ */
+export function estimateAnalysisWork(definition: SequentialCardsDefinition): bigint {
+  const { size, dealt } = definition.ladder;
+  const reveals = BigInt(definition.reveal.count);
+  const width = definition.backing.maxOpenBeforeReveal;
+  let lines = combinationCount(size, dealt) * combinationCount(dealt, width) * BigInt(width);
+  for (let index = 0; index < definition.reveal.count; index += 1)
+    lines *= BigInt(Math.max(eligibleSetSize(definition, index), 1));
+  // Subsets of the live positions of width >= 2, at their widest.
+  const splitSets = definition.pricing.actions.includes('split')
+    ? (1n << BigInt(dealt)) - BigInt(dealt) - 1n
+    : 0n;
+  const growth = BigInt(dealt) + splitSets;
+  const cellsPerLine = reveals + 1n + (growth * reveals * (reveals - 1n)) / 2n;
+  return lines * cellsPerLine * (growth === 0n ? 1n : growth);
+}
+
 export interface CardsAnalysis {
   /** `(hand, backed set, backed position, reveal path)` lines walked. */
   readonly lines: number;
@@ -107,7 +176,20 @@ export interface CardsAnalysis {
   readonly bestPolicyReturn: Rational;
   /** Exact return of the act-whenever-offered policy, per unit of stake. */
   readonly worstPolicyReturn: Rational;
-  /** Cells where an offered control has the identical return distribution as holding. */
+  /**
+   * Reachable cells where two offered controls have the **identical return
+   * distribution**, not merely the same mean.
+   *
+   * At a zero spread every offered action has the same expected value by
+   * construction, so a mean-based check passes in exactly the state where a
+   * control does nothing at all. Only the distribution separates them:
+   * `hold`, a `switch` and a `split` each pay their transformed claim on the
+   * outcomes their cover holds and zero elsewhere, and a `cash` pays a certain
+   * amount, so two of them coincide only when their covers carry exactly equal
+   * probability. `CARDS_IDENTICAL_ACTIONS_ENUMERATED` re-derives this from its
+   * own code path and refuses a definition whose two walks disagree on whether
+   * any such state exists.
+   */
   readonly identicalActionCells: number;
   /** The prior over board positions is uniform, which is what makes a re-back free. */
   readonly priorUniform: boolean;
@@ -140,6 +222,52 @@ function maskOf(positions: readonly number[]): number {
   let mask = 0;
   for (const position of positions) mask |= 1 << position;
   return mask;
+}
+
+/**
+ * One action's whole return distribution, at a unit incoming claim.
+ *
+ * An action that leaves a claim on the board pays `claim` on the completions its
+ * cover holds and exactly zero on the rest, so the pair `(claim, favourable)` —
+ * the amount and the belief weight it lands on — determines the distribution
+ * completely against a shared denominator. That is what a mean cannot see: with
+ * `liquidationSpread = 0` every action already has the same mean by
+ * construction, and only these two numbers separate a real control from a
+ * relabelled hold.
+ */
+interface Outcome {
+  readonly claim: Rational;
+  readonly favourable: bigint;
+}
+
+/** Belief weight a cover carries; the numerator of its probability. */
+function weightOf(belief: CardsBelief, positions: readonly number[]): bigint {
+  let favourable = 0n;
+  for (const position of positions) favourable += belief.positionWeights[position] as bigint;
+  return favourable;
+}
+
+/**
+ * Unordered pairs of offered actions with the identical return distribution.
+ *
+ * Both halves are compared: the amount and the weight it lands on. At a zero
+ * spread they imply one another, and checking both keeps the statement true for
+ * a revision that implements a spread rather than silently narrowing to a
+ * probability comparison that would then be the wrong question.
+ *
+ * A liquidation is deliberately absent from the comparison: outside a terminal
+ * cover its return is certain and every other action's is not, so it can never
+ * coincide with one — and inside a terminal cover no action is offered at all.
+ */
+function identicalPairs(outcomes: readonly Outcome[]): number {
+  let pairs = 0;
+  for (let left = 0; left < outcomes.length; left += 1)
+    for (let right = left + 1; right < outcomes.length; right += 1) {
+      const one = outcomes[left] as Outcome;
+      const other = outcomes[right] as Outcome;
+      if (one.favourable === other.favourable && rationalEqual(one.claim, other.claim)) pairs += 1;
+    }
+  return pairs;
 }
 
 /**
@@ -207,6 +335,16 @@ export function analyseDefinition(definition: SequentialCardsDefinition): CardsA
 }
 
 function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
+  // Refused before the walk starts, not after it has burned minutes discovering
+  // its own cell budget. See `CARDS_MAX_ANALYSIS_OPS`.
+  const estimate = estimateAnalysisWork(definition);
+  if (estimate > CARDS_MAX_ANALYSIS_OPS)
+    reject(
+      'INVALID_ADAPTER',
+      `Proving this definition's economics by exhaustion is estimated at ${estimate} exact-rational operations, above the ${CARDS_MAX_ANALYSIS_OPS} this module will attempt`,
+      '$.ladder',
+      'ANALYSIS_SPACE_TOO_LARGE',
+    );
   const { size, dealt } = definition.ladder;
   const revealCount = definition.reveal.count;
   const backingWidth = definition.backing.maxOpenBeforeReveal;
@@ -328,7 +466,10 @@ function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
 
       const probability = coverProbability(belief, covered);
       const liquidValue = multiply(multiply(probability, unit), factor);
-      let sameDistribution = false;
+      // Every action that leaves a claim on the board, as the pair that
+      // determines its whole return distribution at a unit claim: what it pays,
+      // and on how much of the belief it pays it. Hold is always among them.
+      const distributions: Outcome[] = [{ claim: unit, favourable: weightOf(belief, covered) }];
 
       if (offersCash) {
         if (!rationalEqual(fairValue(definition, unit, probability), liquidValue))
@@ -350,8 +491,10 @@ function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
             )
           )
             pricingIdentityHolds = false;
-          if (covered.length === 1 && rationalEqual(targetProbability, probability))
-            sameDistribution = true;
+          distributions.push({
+            claim: transformedClaim(definition, unit, probability, targetProbability),
+            favourable: weightOf(belief, [target]),
+          });
           for (const claim of [range.min, range.max])
             merge(1 << target, transformedClaim(definition, claim, probability, targetProbability));
         }
@@ -367,10 +510,14 @@ function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
           )
         )
           pricingIdentityHolds = false;
+        distributions.push({
+          claim: transformedClaim(definition, unit, probability, setProbability),
+          favourable: weightOf(belief, set),
+        });
         for (const claim of [range.min, range.max])
           merge(maskOf(set), transformedClaim(definition, claim, probability, setProbability));
       }
-      if (sameDistribution) identicalActionCells += 1;
+      if (identicalPairs(distributions) > 0) identicalActionCells += 1;
     }
     return outgoing;
   };

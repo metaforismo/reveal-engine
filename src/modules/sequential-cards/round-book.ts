@@ -41,6 +41,7 @@ import {
   CARDS_ACTIONS,
   CARDS_BOOK_SCHEMA,
   type CardsAction,
+  type CardsRejectionReason,
   type PlayerChoice,
   type RevealStep,
   type SequentialCardsDefinition,
@@ -352,16 +353,28 @@ export class CardsBook {
    * has to be complete before the first reveal because the sealed selector
    * indexes an eligible set whose size was fixed against the declared backing
    * width.
+   *
+   * **Read once, then never again.** Every field of the request is copied into a
+   * local before it is validated, and only the copies are priced, fingerprinted
+   * and stored. `CommandLedger.execute` serializes commands behind an `await`,
+   * so the body below runs on a later microtask than the validation above: a
+   * caller that keeps a handle on its own request object — or hands over one
+   * with an accessor — could otherwise have the round validate one stake and
+   * debit, price and store another. `#assertTicketShape` returns rows this book
+   * built, never the caller's.
    */
   async open(request: OpenRequest): Promise<CardsReceipt> {
     assertRequestRecord(request);
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedStepRevision);
-    assertIdentifier(request.roundId, '$.roundId', 'CLAIM_REJECTED');
+    const key = request.idempotencyKey;
+    const expected = request.expectedStepRevision;
+    const roundId = request.roundId;
+    assertIdempotencyKey(key);
+    assertRevisionInput(expected);
+    assertIdentifier(roundId, '$.roundId', 'CLAIM_REJECTED');
     const rows = this.#assertTicketShape(request.selections);
-    const fingerprint = openFingerprint(request.roundId, rows);
-    return this.#ledger.execute<CardsAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertStepRevision(request.expectedStepRevision);
+    const fingerprint = openFingerprint(roundId, rows);
+    return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
+      this.#assertStepRevision(expected);
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is terminal');
       if (this.#selections.size > 0)
         reject(
@@ -411,11 +424,11 @@ export class CardsBook {
           }),
         );
       });
-      const receipt = this.#mint(request.idempotencyKey, fingerprint, 'open', total, 0n, false);
+      const receipt = this.#mint(key, fingerprint, 'open', total, 0n, false);
       // Every row is fresh money from the wallet, so the round's ceiling is a
       // multiple of the whole ticket rather than of whichever row came first.
       this.#ledger.fundStake(total, 'external');
-      this.#roundId = request.roundId;
+      this.#roundId = roundId;
       for (const selection of priced) this.#selections.set(selection.id, selection);
       for (const selection of priced)
         if (selection.kind === 'position') {
@@ -442,19 +455,26 @@ export class CardsBook {
    * receipt would still look canonical while the board said something the round
    * never showed. Fencing it also makes a duplicated reveal an idempotent replay
    * rather than a second card turning over.
+   *
+   * The step is **copied field by field before it is fingerprinted**, and only
+   * the copy is validated, digested and pushed. Fingerprinting the caller's
+   * object and then storing it after the ledger's `await` would reopen exactly
+   * the hole this command was introduced to close, from inside the book: the
+   * receipt would seal one card and the board would show another.
    */
   async advanceReveal(request: RevealRequest): Promise<CardsReceipt> {
     assertRequestRecord(request);
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedStepRevision);
-    if (!isRecord(request.step)) fail('INVALID_TRANSCRIPT', 'Reveal must be an object', '$.step');
-    const step = request.step;
+    const key = request.idempotencyKey;
+    const expected = request.expectedStepRevision;
+    assertIdempotencyKey(key);
+    assertRevisionInput(expected);
+    const step = this.#copyRevealStep(request.step);
     const fingerprint = commandFingerprint('reveal', [
       stepDigest(this.#steps),
       ...encodeRevealStep(step),
     ]);
-    return this.#ledger.execute<CardsAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertStepRevision(request.expectedStepRevision);
+    return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
+      this.#assertStepRevision(expected);
       if (this.#terminal) fail('ROUND_TERMINAL', 'Cannot advance a terminal round');
       if (this.#selections.size === 0)
         reject(
@@ -471,9 +491,35 @@ export class CardsBook {
           'CHOICE_CONFLICT',
         );
       assertRevealSteps(this.definition, this.#choices, [...this.#steps, step]);
-      const receipt = this.#mint(request.idempotencyKey, fingerprint, 'reveal', 0n, 0n, false);
-      this.#steps.push(Object.freeze({ ...step, sorted: Object.freeze([...step.sorted]) }));
+      const receipt = this.#mint(key, fingerprint, 'reveal', 0n, 0n, false);
+      this.#steps.push(step);
       return receipt;
+    });
+  }
+
+  /**
+   * A private, frozen copy of one reveal step, taken before anything reads it.
+   *
+   * Only the shape needed to make the copy safe is checked here — the value
+   * rules are `assertRevealSteps`' job, inside the command. The width bound is
+   * not decoration: `sorted` is attacker-supplied and is about to be copied, so
+   * it is refused before an allocation is made from a length nobody checked.
+   */
+  #copyRevealStep(value: unknown): RevealStep {
+    if (!isRecord(value)) fail('INVALID_TRANSCRIPT', 'Reveal must be an object', '$.step');
+    const sorted: unknown = value.sorted;
+    if (!Array.isArray(sorted))
+      fail('INVALID_TRANSCRIPT', 'Reveal sort must be an array', '$.step.sorted');
+    if (sorted.length > this.definition.ladder.dealt)
+      fail('INVALID_TRANSCRIPT', 'Reveal sort is wider than the hand', '$.step.sorted');
+    const copy: number[] = [];
+    for (let index = 0; index < sorted.length; index += 1) copy.push(sorted[index] as number);
+    return Object.freeze({
+      index: value.index as number,
+      position: value.position as number,
+      rank: value.rank as number,
+      sorted: Object.freeze(copy),
+      label: value.label as string,
     });
   }
 
@@ -490,13 +536,16 @@ export class CardsBook {
   /** Liquidates one selection at fair value. Other selections are untouched. */
   async cash(request: CashRequest): Promise<CardsReceipt> {
     assertRequestRecord(request);
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedStepRevision);
-    assertIdentifier(request.selectionId, '$.selectionId', 'CLAIM_REJECTED');
-    const fingerprint = commandFingerprint('cash', [stepDigest(this.#steps), request.selectionId]);
-    return this.#ledger.execute<CardsAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertStepRevision(request.expectedStepRevision);
-      const selection = this.#assertActionable(request.selectionId, 'cash');
+    const key = request.idempotencyKey;
+    const expected = request.expectedStepRevision;
+    const selectionId = request.selectionId;
+    assertIdempotencyKey(key);
+    assertRevisionInput(expected);
+    assertIdentifier(selectionId, '$.selectionId', 'CLAIM_REJECTED');
+    const fingerprint = commandFingerprint('cash', [stepDigest(this.#steps), selectionId]);
+    return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
+      this.#assertStepRevision(expected);
+      const selection = this.#assertActionable(selectionId, 'cash');
       const belief = this.belief();
       const value = fairValue(
         this.definition,
@@ -504,14 +553,7 @@ export class CardsBook {
         coverProbability(belief, selection.positions),
       );
       return this.#ledger.creditClaim(value, (payable) => {
-        const receipt = this.#mint(
-          request.idempotencyKey,
-          fingerprint,
-          'cash',
-          0n,
-          payable.credited,
-          payable.capped,
-        );
+        const receipt = this.#mint(key, fingerprint, 'cash', 0n, payable.credited, payable.capped);
         this.#selections.set(
           selection.id,
           Object.freeze({
@@ -535,8 +577,10 @@ export class CardsBook {
    */
   async settle(request: SettleRequest): Promise<CardsReceipt> {
     assertRequestRecord(request);
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedStepRevision);
+    const key = request.idempotencyKey;
+    const expected = request.expectedStepRevision;
+    assertIdempotencyKey(key);
+    assertRevisionInput(expected);
     const revealedSeed = normalizeSeed(request.revealedSeed);
     const transcript = deserializeCardsTranscript(request.transcript);
     const objectiveRank = objectiveRankOf(this.definition, transcript.deal.ranks);
@@ -548,8 +592,8 @@ export class CardsBook {
       objectiveRank,
       objectivePosition,
     ]);
-    return this.#ledger.execute<CardsAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertStepRevision(request.expectedStepRevision);
+    return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
+      this.#assertStepRevision(expected);
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
       if (this.stepRevision !== this.definition.reveal.count)
         reject(
@@ -580,7 +624,7 @@ export class CardsBook {
       );
       const close = (payable: Payable): CardsReceipt => {
         const receipt = this.#mint(
-          request.idempotencyKey,
+          key,
           fingerprint,
           'settle',
           0n,
@@ -730,6 +774,7 @@ export class CardsBook {
       const path = `$.selections[${index}]`;
       assertIdentifier(entry.id, `${path}.id`, 'INVALID_SNAPSHOT');
       const stake = parseWireBigInt(entry.stake, `${path}.stake`);
+      if (stake <= 0n) fail('INVALID_SNAPSHOT', 'Stake must be positive', `${path}.stake`);
       if (entry.kind === 'position') {
         if (
           entry.marketId !== null ||
@@ -739,15 +784,39 @@ export class CardsBook {
           entry.openedPosition >= definition.ladder.dealt
         )
           fail('INVALID_SNAPSHOT', 'Position selection is invalid', path);
-        rows.push({ id: entry.id, kind: 'position', position: entry.openedPosition, stake });
+        rows.push(
+          Object.freeze({
+            id: entry.id,
+            kind: 'position' as const,
+            position: entry.openedPosition,
+            stake,
+          }),
+        );
       } else if (entry.kind === 'market') {
         if (entry.openedPosition !== null || typeof entry.marketId !== 'string')
           fail('INVALID_SNAPSHOT', 'Market selection is invalid', path);
         if (!definition.sideMarkets.some((market) => market.id === entry.marketId))
           fail('INVALID_SNAPSHOT', 'Unknown side market', `${path}.marketId`);
-        rows.push({ id: entry.id, kind: 'market', marketId: entry.marketId, stake });
+        rows.push(
+          Object.freeze({
+            id: entry.id,
+            kind: 'market' as const,
+            marketId: entry.marketId,
+            stake,
+          }),
+        );
       } else fail('INVALID_SNAPSHOT', 'Unknown selection kind', `${path}.kind`);
-      const row = rows[rows.length - 1] as TicketSelection;
+    }
+    // A restored ticket clears the same composition rules `open()` applies. A
+    // snapshot describing a ticket the round would have refused — an
+    // off-lattice stake, two rows on one position, a backing wider than the
+    // declared width — is not a round this book ever played, however
+    // self-consistent its receipts are.
+    if (rows.length > 0)
+      assertTicketComposition(definition, rows, (message, selectionPath) => {
+        fail('INVALID_SNAPSHOT', message, selectionPath);
+      });
+    for (const row of rows) {
       const probability =
         row.kind === 'position'
           ? coverProbability(prior, [row.position])
@@ -766,8 +835,8 @@ export class CardsBook {
           marketId: row.kind === 'market' ? row.marketId : null,
           openedPosition: row.kind === 'position' ? row.position : null,
           positions: Object.freeze(row.kind === 'position' ? [row.position] : []),
-          stake,
-          claim: entryClaim(definition, stake, probability),
+          stake: row.stake,
+          claim: entryClaim(definition, row.stake, probability),
           decidedAtStepRevision: -1,
           status: 'live',
           credited: 0n,
@@ -851,6 +920,55 @@ export class CardsBook {
             '$.decisions',
           );
         const belief = beliefAt(receipt.frameRevision);
+        // Everything from here to the re-priced claim is the module's own state
+        // machine, replayed rather than assumed. The receipt algebra above
+        // proves the log is internally consistent; it does not prove the round
+        // would have allowed the move, and a decision the rules would have
+        // refused is neither an inconsistency nor the stake.
+        assertRestoredCover(
+          definition,
+          receipt.action,
+          decision.positions,
+          `$.decisions[${decisionIndex}].positions`,
+        );
+        if (selection.decidedAtStepRevision === receipt.frameRevision)
+          fail(
+            'INVALID_SNAPSHOT',
+            'Two decisions on one selection inside one decision window',
+            `$.decisions[${decisionIndex}]`,
+          );
+        const excluded = book.#coveredByOthers(decision.selectionId);
+        if (
+          !offeredActions(definition, belief, selection.positions, {
+            stepRevision: receipt.frameRevision,
+            excluded,
+          }).includes(receipt.action)
+        )
+          fail(
+            'INVALID_SNAPSHOT',
+            'The round did not offer that action in the state the receipt was minted in',
+            `$.decisions[${decisionIndex}].action`,
+          );
+        for (const target of decision.positions) {
+          if (!belief.record.hidden.includes(target))
+            fail(
+              'INVALID_SNAPSHOT',
+              'A claim may only move onto a card that is still face down',
+              `$.decisions[${decisionIndex}].positions`,
+            );
+          if ((belief.positionWeights[target] as bigint) === 0n)
+            fail(
+              'INVALID_SNAPSHOT',
+              'A claim may not move onto an outcome of probability exactly zero',
+              `$.decisions[${decisionIndex}].positions`,
+            );
+          if (receipt.frameRevision === 0 && excluded.has(target))
+            fail(
+              'INVALID_SNAPSHOT',
+              'Another live selection already backs that position',
+              `$.decisions[${decisionIndex}].positions`,
+            );
+        }
         book.#selections.set(
           selection.id,
           Object.freeze({
@@ -1071,19 +1189,22 @@ export class CardsBook {
 
   async #transform(action: 'switch' | 'split', request: TransformRequest): Promise<CardsReceipt> {
     assertRequestRecord(request);
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedStepRevision);
-    assertIdentifier(request.selectionId, '$.selectionId', 'CLAIM_REJECTED');
+    const key = request.idempotencyKey;
+    const expected = request.expectedStepRevision;
+    const selectionId = request.selectionId;
+    assertIdempotencyKey(key);
+    assertRevisionInput(expected);
+    assertIdentifier(selectionId, '$.selectionId', 'CLAIM_REJECTED');
     const positions = assertTargetShape(this.definition, action, request.positions);
     const fingerprint = commandFingerprint(action, [
       stepDigest(this.#steps),
-      request.selectionId,
+      selectionId,
       positions.length,
       ...positions,
     ]);
-    return this.#ledger.execute<CardsAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertStepRevision(request.expectedStepRevision);
-      const selection = this.#assertActionable(request.selectionId, action);
+    return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
+      this.#assertStepRevision(expected);
+      const selection = this.#assertActionable(selectionId, action);
       const belief = this.belief();
       const excluded = this.#coveredByOthers(selection.id);
       for (const target of positions) {
@@ -1112,7 +1233,7 @@ export class CardsBook {
       const from = coverProbability(belief, selection.positions);
       const to = coverProbability(belief, positions);
       const claim = transformedClaim(this.definition, selection.claim, from, to);
-      const receipt = this.#mint(request.idempotencyKey, fingerprint, action, 0n, 0n, false);
+      const receipt = this.#mint(key, fingerprint, action, 0n, 0n, false);
       this.#selections.set(
         selection.id,
         Object.freeze({
@@ -1192,106 +1313,76 @@ export class CardsBook {
     return selection;
   }
 
+  /**
+   * Validates a caller's ticket and returns rows **this book built**.
+   *
+   * Every field is read exactly once, into a local, and the row that comes out
+   * is a fresh frozen object assembled from those locals. Returning the caller's
+   * objects — even inside a frozen array — would leave every later read of
+   * `row.stake` at the mercy of whoever supplied it, and there are several of
+   * them: the fingerprint, the debit total, the price, and the stored selection,
+   * all of which run after `CommandLedger.execute` has awaited its turn.
+   */
   #assertTicketShape(selections: unknown): readonly TicketSelection[] {
-    if (!Array.isArray(selections) || selections.length === 0)
+    if (!Array.isArray(selections))
       reject(
         'CLAIM_REJECTED',
         'A ticket needs at least one selection',
         '$.selections',
         'ROUND_NOT_OPEN',
       );
-    // The length is checked before a single row is read, so an oversized ticket
-    // costs one comparison rather than a full validation pass and every
-    // allocation that pass would make from attacker-supplied content.
+    // The length is read once and checked before a single row is read, so an
+    // oversized ticket costs one comparison rather than a full validation pass
+    // and every allocation that pass would make from attacker-supplied content.
+    const width = selections.length;
     const budget = this.definition.backing.maxOpenBeforeReveal + this.definition.sideMarkets.length;
-    if (selections.length > budget)
+    if (width > budget)
       reject(
         'CLAIM_REJECTED',
         `A ticket may hold at most ${budget} selections`,
         '$.selections',
         'DUPLICATE_SELECTION',
       );
-    const ids = new Set<string>();
-    const backed = new Set<number>();
     const rows: TicketSelection[] = [];
-    selections.forEach((entry: unknown, index) => {
+    for (let index = 0; index < width; index += 1) {
       const path = `$.selections[${index}]`;
+      const entry: unknown = selections[index];
       if (!isRecord(entry)) fail('CLAIM_REJECTED', 'Selection must be an object', path);
-      const row = entry as unknown as TicketSelection;
-      assertIdentifier(row.id, `${path}.id`, 'CLAIM_REJECTED');
-      if (ids.has(row.id))
-        reject(
-          'CLAIM_REJECTED',
-          'Selection ids must be unique',
-          `${path}.id`,
-          'DUPLICATE_SELECTION',
-        );
-      ids.add(row.id);
-      if (typeof row.stake !== 'bigint' || row.stake <= 0n)
+      const id: unknown = entry.id;
+      const kind: unknown = entry.kind;
+      const stake: unknown = entry.stake;
+      assertIdentifier(id, `${path}.id`, 'CLAIM_REJECTED');
+      if (typeof stake !== 'bigint' || stake <= 0n)
         reject(
           'CLAIM_REJECTED',
           'Stake must be a positive BigInt',
           `${path}.stake`,
           'STAKE_BELOW_MINIMUM',
         );
-      if (
-        row.stake < this.definition.pricing.minStakeCredits ||
-        row.stake % this.definition.pricing.stakeStepCredits !== 0n
-      )
-        reject(
-          'CLAIM_REJECTED',
-          `Every selection must stake at least ${this.definition.pricing.minStakeCredits} credits, on the ${this.definition.pricing.stakeStepCredits}-credit lattice`,
-          `${path}.stake`,
-          'STAKE_BELOW_MINIMUM',
-        );
-      if (row.kind === 'position') {
+      if (kind === 'position') {
+        const position: unknown = entry.position;
         if (
-          !Number.isSafeInteger(row.position) ||
-          row.position < 0 ||
-          row.position >= this.definition.ladder.dealt
+          !Number.isSafeInteger(position) ||
+          (position as number) < 0 ||
+          (position as number) >= this.definition.ladder.dealt
         )
           fail('UNKNOWN_OUTCOME', 'Backed position is out of range', `${path}.position`);
-        if (backed.has(row.position))
-          reject(
-            'CLAIM_REJECTED',
-            'A position may be backed by only one selection',
-            `${path}.position`,
-            'POSITION_ALREADY_BACKED',
-          );
-        backed.add(row.position);
-        if (backed.size > this.definition.backing.maxOpenBeforeReveal)
-          reject(
-            'CLAIM_REJECTED',
-            'More backed positions than the definition admits before a reveal',
-            `${path}.position`,
-            'POSITION_ALREADY_BACKED',
-          );
-      } else if (row.kind === 'market') {
-        if (!this.definition.sideMarkets.some((market) => market.id === row.marketId))
+        rows.push(
+          Object.freeze({ id, kind: 'position' as const, position: position as number, stake }),
+        );
+      } else if (kind === 'market') {
+        const marketId: unknown = entry.marketId;
+        if (
+          typeof marketId !== 'string' ||
+          !this.definition.sideMarkets.some((market) => market.id === marketId)
+        )
           fail('UNKNOWN_OUTCOME', 'Unknown side market', `${path}.marketId`);
+        rows.push(Object.freeze({ id, kind: 'market' as const, marketId, stake }));
       } else fail('CLAIM_REJECTED', 'Unknown selection kind', `${path}.kind`);
-      rows.push(row);
+    }
+    assertTicketComposition(this.definition, rows, (message, path, reason) => {
+      reject('CLAIM_REJECTED', message, path, reason);
     });
-    // Under `unbacked` eligibility the sealed selector indexes a set sized
-    // against the declared backing width, so the round is only derivable when
-    // the log is exactly that wide.
-    if (
-      this.definition.reveal.eligibility === 'unbacked' &&
-      backed.size !== this.definition.backing.maxOpenBeforeReveal
-    )
-      reject(
-        'CLAIM_REJECTED',
-        `This definition needs exactly ${this.definition.backing.maxOpenBeforeReveal} backed position(s) on the ticket`,
-        '$.selections',
-        'CHOICE_REQUIRED',
-      );
-    if (this.definition.ticket.requiresBackedMarket && backed.size === 0)
-      reject(
-        'CLAIM_REJECTED',
-        'A ticket of side markets alone has no reveal to derive',
-        '$.selections',
-        'BACKED_SELECTION_REQUIRED',
-      );
     return Object.freeze(rows);
   }
 
@@ -1366,6 +1457,119 @@ function marketProbability(
   return rational(favourable, belief.total);
 }
 
+/**
+ * The cover a restored decision claims to have moved a claim onto.
+ *
+ * `decisions[].positions` is the one untrusted array whose rules belong to the
+ * definition rather than to the snapshot format, so `parseCardsSnapshot` can
+ * only bound it — and it flows straight into `coverProbability`, where an
+ * out-of-range index reads `undefined` out of `belief.positionWeights` and
+ * raises a raw `TypeError` instead of the typed `RevealEngineError` every
+ * integration branches on. It is checked here in the canonical ascending form
+ * the live path always produces, so a repeated or unsorted cover — which no
+ * command could have written — is refused rather than priced.
+ */
+function assertRestoredCover(
+  definition: SequentialCardsDefinition,
+  action: 'switch' | 'split',
+  positions: readonly number[],
+  path: string,
+): void {
+  if (action === 'switch' ? positions.length !== 1 : positions.length < 2)
+    fail('INVALID_SNAPSHOT', `A ${action} cover has the wrong width`, path);
+  if (positions.length > definition.ladder.dealt)
+    fail('INVALID_SNAPSHOT', 'A cover names more positions than the hand holds', path);
+  positions.forEach((position, index) => {
+    if (
+      !Number.isSafeInteger(position) ||
+      position < 0 ||
+      position >= definition.ladder.dealt ||
+      (index > 0 && position <= (positions[index - 1] as number))
+    )
+      fail('INVALID_SNAPSHOT', 'Cover positions must be sorted, unique, and inside the hand', path);
+  });
+}
+
+/**
+ * A refusal, so one rule set can serve two boundaries with two error codes.
+ *
+ * A caller's ticket is a `CLAIM_REJECTED`; the same rule broken by a reconnect
+ * snapshot is an `INVALID_SNAPSHOT`, because `docs/api-contract.md` makes `code`
+ * the thing a host branches on and those are different situations for it.
+ */
+type TicketRefusal = (message: string, path: string, reason: CardsRejectionReason) => never;
+
+/**
+ * The composition rules of a ticket, in exactly one place.
+ *
+ * `open()` and `restore()` both run them. A snapshot describing a ticket this
+ * round's own rules would have refused is not a round this book ever played, and
+ * `docs/lifecycle-modules.md` is normative that `restore()` replays the receipt
+ * log **with the module's own state-machine rules** rather than with the receipt
+ * algebra alone. Keeping one implementation is what stops the two from drifting
+ * into a restore path that admits states no command sequence can reach.
+ */
+export function assertTicketComposition(
+  definition: SequentialCardsDefinition,
+  rows: readonly TicketSelection[],
+  refuse: TicketRefusal,
+): void {
+  const budget = definition.backing.maxOpenBeforeReveal + definition.sideMarkets.length;
+  if (rows.length === 0)
+    refuse('A ticket needs at least one selection', '$.selections', 'ROUND_NOT_OPEN');
+  if (rows.length > budget)
+    refuse(`A ticket may hold at most ${budget} selections`, '$.selections', 'DUPLICATE_SELECTION');
+  const ids = new Set<string>();
+  const backed = new Set<number>();
+  rows.forEach((row, index) => {
+    const path = `$.selections[${index}]`;
+    if (ids.has(row.id))
+      refuse('Selection ids must be unique', `${path}.id`, 'DUPLICATE_SELECTION');
+    ids.add(row.id);
+    if (
+      row.stake < definition.pricing.minStakeCredits ||
+      row.stake % definition.pricing.stakeStepCredits !== 0n
+    )
+      refuse(
+        `Every selection must stake at least ${definition.pricing.minStakeCredits} credits, on the ${definition.pricing.stakeStepCredits}-credit lattice`,
+        `${path}.stake`,
+        'STAKE_BELOW_MINIMUM',
+      );
+    if (row.kind !== 'position') return;
+    if (backed.has(row.position))
+      refuse(
+        'A position may be backed by only one selection',
+        `${path}.position`,
+        'POSITION_ALREADY_BACKED',
+      );
+    backed.add(row.position);
+    if (backed.size > definition.backing.maxOpenBeforeReveal)
+      refuse(
+        'More backed positions than the definition admits before a reveal',
+        `${path}.position`,
+        'POSITION_ALREADY_BACKED',
+      );
+  });
+  // Under `unbacked` eligibility the sealed selector indexes a set sized
+  // against the declared backing width, so the round is only derivable when
+  // the log is exactly that wide.
+  if (
+    definition.reveal.eligibility === 'unbacked' &&
+    backed.size !== definition.backing.maxOpenBeforeReveal
+  )
+    refuse(
+      `This definition needs exactly ${definition.backing.maxOpenBeforeReveal} backed position(s) on the ticket`,
+      '$.selections',
+      'CHOICE_REQUIRED',
+    );
+  if (definition.ticket.requiresBackedMarket && backed.size === 0)
+    refuse(
+      'A ticket of side markets alone has no reveal to derive',
+      '$.selections',
+      'BACKED_SELECTION_REQUIRED',
+    );
+}
+
 /** The `open` command fingerprint: the round it belongs to, plus every priced row. */
 export function openFingerprint(roundId: string, rows: readonly TicketSelection[]): string {
   return commandFingerprint('open', [
@@ -1392,6 +1596,14 @@ function assertRevisionInput(value: unknown): asserts value is number {
     fail('STALE_FRAME', 'Expected step revision is invalid', '$.expectedStepRevision');
 }
 
+/**
+ * The target cover of a switch or a split, validated and normalised.
+ *
+ * The array is copied out by index before anything is checked, so what is
+ * validated is what is fingerprinted and stored. The returned cover is sorted
+ * ascending and duplicate-free, which is the canonical form every fingerprint,
+ * every snapshot and every restore comparison is taken over.
+ */
 function assertTargetShape(
   definition: SequentialCardsDefinition,
   action: 'switch' | 'split',
@@ -1399,30 +1611,41 @@ function assertTargetShape(
 ): readonly number[] {
   if (!Array.isArray(positions))
     fail('CLAIM_REJECTED', 'Target positions must be an array', '$.positions');
-  if (action === 'switch' && positions.length !== 1)
+  const width = positions.length;
+  if (action === 'switch' && width !== 1)
     reject(
       'CLAIM_REJECTED',
       'A switch names exactly one target',
       '$.positions',
       'ACTION_NOT_OFFERED',
     );
-  if (action === 'split' && positions.length < 2)
+  if (action === 'split' && width < 2)
     reject(
       'CLAIM_REJECTED',
       'A split hedges at least two positions',
       '$.positions',
       'ACTION_NOT_OFFERED',
     );
-  positions.forEach((position, index) => {
+  if (width > definition.ladder.dealt)
+    reject(
+      'CLAIM_REJECTED',
+      'A cover cannot name more positions than the hand holds',
+      '$.positions',
+      'ACTION_NOT_OFFERED',
+    );
+  const cover: number[] = [];
+  for (let index = 0; index < width; index += 1) {
+    const position: unknown = positions[index];
     if (
       !Number.isSafeInteger(position) ||
-      position < 0 ||
-      position >= definition.ladder.dealt ||
-      positions.indexOf(position) !== index
+      (position as number) < 0 ||
+      (position as number) >= definition.ladder.dealt ||
+      cover.includes(position as number)
     )
       fail('UNKNOWN_OUTCOME', 'Target position is out of range or repeats', '$.positions');
-  });
-  return Object.freeze([...(positions as number[])].sort((left, right) => left - right));
+    cover.push(position as number);
+  }
+  return Object.freeze(cover.sort((left, right) => left - right));
 }
 
 function parseCardsSnapshot(input: string | object): CardsBookSnapshot {
@@ -1472,7 +1695,9 @@ function parseCardsSnapshot(input: string | object): CardsBookSnapshot {
       );
     if (
       !Number.isSafeInteger(selection.decidedAtStepRevision) ||
-      !Array.isArray(selection.positions)
+      !Array.isArray(selection.positions) ||
+      selection.positions.length > ENGINE_LIMITS.maxOutcomes ||
+      selection.positions.some((position: unknown) => !Number.isSafeInteger(position))
     )
       fail('INVALID_SNAPSHOT', 'Selection counters are invalid', `$.selections[${index}]`);
     const claim = assertSnapshotRecord(selection.claim, `$.selections[${index}].claim`);
@@ -1491,6 +1716,20 @@ function parseCardsSnapshot(input: string | object): CardsBookSnapshot {
     assertWireString(decision.action, `$.decisions[${index}].action`);
     if (!Number.isSafeInteger(decision.stepRevision) || !Array.isArray(decision.positions))
       fail('INVALID_SNAPSHOT', 'Decision fields are invalid', `$.decisions[${index}]`);
+    // The cover's *rules* are the definition's and `restore()` applies them; its
+    // element type is this parser's, because every sibling array is typed here
+    // and one untyped array is all it takes to turn a hostile snapshot into a
+    // raw `TypeError` in the BigInt arithmetic downstream.
+    if (decision.positions.length > ENGINE_LIMITS.maxOutcomes)
+      fail('INVALID_SNAPSHOT', 'Decision cover is too wide', `$.decisions[${index}].positions`);
+    decision.positions.forEach((position: unknown, slot: number) => {
+      if (!Number.isSafeInteger(position))
+        fail(
+          'INVALID_SNAPSHOT',
+          'Decision cover must hold integers',
+          `$.decisions[${index}].positions[${slot}]`,
+        );
+    });
   });
   if (candidate.settlement !== null) {
     const settlement = assertSnapshotRecord(candidate.settlement, '$.settlement');

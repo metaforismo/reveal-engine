@@ -110,7 +110,9 @@ export {
 
 export {
   CARDS_MAX_ANALYSIS_CELLS,
+  CARDS_MAX_ANALYSIS_OPS,
   analyseDefinition,
+  estimateAnalysisWork,
   forEachCanonicalState,
   type CardsAnalysis,
 } from './analysis.js';
@@ -129,6 +131,7 @@ export {
 
 export {
   CardsBook,
+  assertTicketComposition,
   openFingerprint,
   settlementTotal,
   ticketRowFields,

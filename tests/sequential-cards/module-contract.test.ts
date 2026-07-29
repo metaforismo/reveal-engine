@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { RevealEngineError } from '../../src/api/errors.js';
 import { ENGINE_LIMITS } from '../../src/api/limits.js';
 import {
   assertModuleConformance,
@@ -15,6 +16,10 @@ import {
   cardsRoundOf,
   defineCardsGame,
 } from '../../src/modules/sequential-cards/adapter.js';
+import {
+  CARDS_MAX_ANALYSIS_OPS,
+  estimateAnalysisWork,
+} from '../../src/modules/sequential-cards/analysis.js';
 import { stakedCardsSnapshot } from '../../src/modules/sequential-cards/checks.js';
 import type { SequentialCardsDefinition } from '../../src/modules/sequential-cards/contracts.js';
 import { cardsBelief, reachableObjectiveRanks } from '../../src/modules/sequential-cards/deck.js';
@@ -378,6 +383,43 @@ describe('sequential-cards: the lifecycle contract', () => {
       },
       'MISSING_CLIENT_ENTROPY',
     ],
+    // A definition is a contract about how money moves, so a field the module
+    // does not implement has to be refused rather than dropped: `freezeCards
+    // Definition` rebuilds field by field and `cardsFingerprint` seals field by
+    // field, so an unrecognised key would neither be honoured nor sealed, and
+    // two definitions differing only in it would share a fingerprint.
+    [
+      'a dormancy policy the module has no clock to honour',
+      (draft: Record<string, unknown>) => {
+        draft.dormancy = {
+          windowSeconds: 86_400,
+          onDormant: 'cash',
+          earlySettlementReasons: ['account-state-changed'],
+        };
+      },
+      'UNDECLARED_FIELD',
+    ],
+    [
+      'an unknown top-level field',
+      (draft: Record<string, unknown>) => {
+        draft.houseEdgeBoost = 3;
+      },
+      'UNDECLARED_FIELD',
+    ],
+    [
+      'an unknown pricing field',
+      (draft: Record<string, unknown>) => {
+        (draft.pricing as Record<string, unknown>).jackpotShare = 1;
+      },
+      'UNDECLARED_FIELD',
+    ],
+    [
+      'an unknown side-market field',
+      (draft: Record<string, unknown>) => {
+        draft.sideMarkets = [{ id: 'BAND:CORE', winningRanks: [6, 7, 8], boost: 2 }];
+      },
+      'UNDECLARED_FIELD',
+    ],
   ])('refuses a definition with %s', (_label, patch, reason) => {
     expect(mutate(patch)).toThrowError(
       expect.objectContaining({
@@ -419,6 +461,83 @@ describe('sequential-cards: the lifecycle contract', () => {
         risk: { ...cascadeMiddleReference.risk, capMustNotBind: false },
       }),
     ).not.toThrow();
+  });
+
+  /**
+   * The two capabilities the consuming game's specification declares and this
+   * version does not implement have to be refused **by name**, not dropped.
+   *
+   * `rounding: 'stochastic'` already was. `dormancy` was not: the assertion pass
+   * ignored unknown keys and `freezeCardsDefinition` rebuilt the definition
+   * field by field, so a declared dormancy policy vanished without a word and
+   * never entered the fingerprint — the definition would run under a policy it
+   * had never agreed to. `docs/modules/sequential-cards.md` §12 carries the
+   * table of what a consumer declares that this version does not implement.
+   */
+  it("names each capability it does not implement when a consumer's definition declares one", () => {
+    const consumerShaped = {
+      ...definition,
+      id: 'consumer-shaped-v1',
+      dormancy: {
+        windowSeconds: 86_400,
+        onDormant: 'cash',
+        earlySettlementReasons: ['account-state-changed'],
+      },
+    } as unknown as SequentialCardsDefinition;
+    let refusal: unknown;
+    try {
+      defineCardsGame(consumerShaped);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(RevealEngineError);
+    const error = refusal as RevealEngineError;
+    expect(error.code).toBe('INVALID_ADAPTER');
+    expect(error.path).toBe('$.dormancy');
+    expect(error.details).toMatchObject({ reason: 'UNDECLARED_FIELD' });
+    // The refusal says what is missing and why, so an integrator is not left
+    // guessing whether the field was honoured.
+    expect(error.message).toContain('dormancy');
+    expect(error.message).toContain('owns no clock');
+    // And nothing was silently kept: the accepted reference has no such field.
+    expect('dormancy' in definition).toBe(false);
+  });
+
+  /**
+   * The definition-time walk is bounded in **work**, not only in cells.
+   *
+   * `CARDS_MAX_ANALYSIS_CELLS` counts one cell per `(state, incoming cover)`
+   * pair and the work inside one cell is `O(2^dealt)` — `splitSetsOf`
+   * enumerates every subset of the live positions — so the cell budget alone
+   * let a legal-shaped definition burn minutes of blocked event loop before
+   * being refused. The estimate is closed from the declaration in BigInt and
+   * refuses before the walk starts.
+   */
+  it('refuses an unprovable definition before the walk starts, not after it', () => {
+    for (const reference of [triadMiddleReference, duoMiddleReference, cascadeMiddleReference])
+      expect(estimateAnalysisWork(reference)).toBeLessThan(CARDS_MAX_ANALYSIS_OPS);
+
+    const oversized = {
+      ...definition,
+      id: 'oversized-v1',
+      ladder: { size: 18, dealt: 9, objective: 'middle' as const },
+      reveal: { ...definition.reveal, count: 1 },
+      sideMarkets: [{ id: 'EXACT:9', winningRanks: [9] }],
+      risk: { maxWinMultiple: 1_000_000n, capMustNotBind: false },
+      pricing: { ...definition.pricing, minStakeCredits: 1_000_000n, stakeStepCredits: 1_000_000n },
+    } as unknown as SequentialCardsDefinition;
+    expect(estimateAnalysisWork(oversized)).toBeGreaterThan(CARDS_MAX_ANALYSIS_OPS);
+
+    const started = process.hrtime.bigint();
+    expect(() => defineCardsGame(oversized)).toThrowError(
+      expect.objectContaining({
+        code: 'INVALID_ADAPTER',
+        details: expect.objectContaining({ reason: 'ANALYSIS_SPACE_TOO_LARGE' }),
+      }),
+    );
+    // The same shape took 27 seconds to reach the cell budget. A generous
+    // ceiling here still proves the refusal no longer walks anything.
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(1_000);
   });
 
   it('accepts a definition whose numbers it can prove, and freezes it', () => {
@@ -525,14 +644,19 @@ describe('sequential-cards: the lifecycle contract', () => {
         'CARDS_ELIGIBLE_SET_NONEMPTY',
         'CARDS_TERMINAL_OFFERS_NOTHING',
         'CARDS_ACTIONS_VALUE_NEUTRAL',
+        'CARDS_IDENTICAL_ACTIONS_ENUMERATED',
         'CARDS_POLICY_RETURN_EXTREMAL',
         'CARDS_MARKET_REACHABLE',
         'CARDS_MIN_STAKE_SUFFICIENT',
+        'CARDS_ROUNDING_NEVER_UNDERPAYS',
         'CARDS_CAP_NEVER_BINDS',
         'CARDS_BELIEF_EXHAUSTIVE',
         'CARDS_BELIEF_NORMALISED',
         'CARDS_SELECTOR_PRECOMMITTED',
         'CARDS_REVEAL_DETERMINISTIC',
+        'CARDS_REVEAL_CHOICE_BOUND',
+        'CARDS_SINGLE_BACKED_POSITION',
+        'CARDS_TICKET_WELL_FORMED',
         'CARDS_SEED_MIXES_CLIENT_ENTROPY',
         'CARDS_SNAPSHOT_NOT_REVALIDATED',
       ]);
@@ -542,14 +666,19 @@ describe('sequential-cards: the lifecycle contract', () => {
         CARDS_ELIGIBLE_SET_NONEMPTY: 1,
         CARDS_TERMINAL_OFFERS_NOTHING: 1,
         CARDS_ACTIONS_VALUE_NEUTRAL: 1,
+        CARDS_IDENTICAL_ACTIONS_ENUMERATED: 1,
         CARDS_POLICY_RETURN_EXTREMAL: 1,
         CARDS_MARKET_REACHABLE: 1,
         CARDS_MIN_STAKE_SUFFICIENT: 1,
+        CARDS_ROUNDING_NEVER_UNDERPAYS: 1,
         CARDS_CAP_NEVER_BINDS: 1,
         CARDS_BELIEF_EXHAUSTIVE: 3,
         CARDS_BELIEF_NORMALISED: 3,
         CARDS_SELECTOR_PRECOMMITTED: 3,
         CARDS_REVEAL_DETERMINISTIC: 3,
+        CARDS_REVEAL_CHOICE_BOUND: 3,
+        CARDS_SINGLE_BACKED_POSITION: 3,
+        CARDS_TICKET_WELL_FORMED: 3,
         CARDS_SEED_MIXES_CLIENT_ENTROPY: 3,
         CARDS_SNAPSHOT_NOT_REVALIDATED: 3,
       });

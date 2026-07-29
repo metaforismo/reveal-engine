@@ -139,6 +139,18 @@ sample and calling the result a bound — is the defect
 `docs/math.md` and the threat model both exist to forbid, and it would be worse
 than declining the definition.
 
+**Amended in round two: a cell is not a unit of work.** The cell budget bounded
+the space and not the time. `splitSetsOf` enumerates every subset of the live
+positions, so one cell costs `O(2^dealt)` rational operations, and a legal-shaped
+definition at `size 18 / dealt 9` reached the cell budget only after 27 seconds —
+one at `size 20 / dealt 11 / 4 reveals` after 281 seconds, on a synchronous
+`defineCardsGame`. Operator-authored definitions are not player-reachable, so
+this was robustness rather than an exploit, but "bound it and say so" has to mean
+the time. `CARDS_MAX_ANALYSIS_OPS` and `estimateAnalysisWork` close an upper
+bound in BigInt from the declaration alone, before a single hand is enumerated;
+both cases above are now refused in under a millisecond, and
+`docs/modules/sequential-cards.md` §11 publishes the calibration.
+
 ## Decision 6 — three findings from an independent review, and what each cost
 
 An independent read of the finished module (GPT-5.6 at read-only, prompted for
@@ -192,12 +204,81 @@ and the two computed policies are the whole range rather than two samples of it.
 The `(1 − σ)` arithmetic is kept general so a future revision that implements a
 spread has to confront the argmin search rather than inherit this claim.
 
+## Decision 7 — a declared field this version does not implement is refused, not dropped
+
+`triad/docs/ENGINE.md` §4 declares `dormancy: DormancySpec` as a member of the
+definition. `assertCardsDefinition` ignored unknown keys and
+`freezeCardsDefinition` rebuilds a definition field by field, so the policy
+vanished without a word and never entered `cardsFingerprint`.
+
+That is strictly worse than the thing Decision 4 exists to avoid.
+`rounding: 'stochastic'` is declarable **so that it can be refused explicitly**
+rather than "failing in a consumer's type-checker, or silently flooring while the
+definition claims otherwise" — and dormancy was doing the silent thing. Two
+definitions differing only in a dropped field would also share a fingerprint,
+which is the one property `cardsFingerprint` exists to deny.
+
+**Decision:** `assertCardsDefinition` rejects **any** key it does not implement,
+at every level of the declaration, with `INVALID_ADAPTER` and a new
+`UNDECLARED_FIELD` reason. `dormancy` gets a message naming what is missing and
+why — the module owns no clock — rather than an anonymous typo report.
+`docs/modules/sequential-cards.md` §12.1 is the table of everything the consumer
+declares that this version does not implement, and where each one moved.
+
+## Decision 8 — round-two findings, and what each cost
+
+A second independent read produced four major findings and four minor ones. All
+eight are fixed; three of them changed how a boundary is written rather than what
+it computes.
+
+**Fixed — a command re-read the caller's request across the ledger's `await`.**
+`CommandLedger.execute` serialises commands, so `open()`'s pricing loop ran on a
+later microtask than the validation that guarded it, and it re-read `row.stake`
+for the fingerprint, the debit total, the price and the stored selection. A row
+whose accessor was honest for seven reads and inflated on the eighth produced a
+claim 40,000,000× the validated stake; plain data mutated synchronously produced
+an open receipt whose fingerprint did not cover the amount it debited, leaving a
+live round that could never reconnect. `advanceReveal` had the same shape and it
+reopened the exact hole Decision 2 introduced the reveal-as-command to close.
+Every command now reads each field once into a local before validating it,
+`#assertTicketShape` returns rows the book built, and the reveal is copied before
+it is fingerprinted.
+
+**Fixed — `restore()` replayed the receipt algebra but not the round's rules.**
+`docs/lifecycle-modules.md` is normative that it must do both, and the difference
+is not academic: a decision the state machine would have refused is neither an
+inconsistency nor the stake, so nothing in the arithmetic notices it. Fully
+self-consistent snapshots — receipts recomputed, claims re-priced, checksum
+re-sealed — restored a claim onto a face-up card, two decisions inside one
+decision window, and an unsorted cover no command could write. The ticket rules
+and the decision guards now live in one place each and both boundaries run them.
+
+**Fixed — a raw `TypeError` escaped `restore()`.** `decisions[].positions` was
+the one untrusted array `parseCardsSnapshot` did not type, and it reached
+`positionProbability`, where an out-of-range index made `0n + undefined`. The
+parser now types the elements and `restore` applies the definition's rules to
+them, so the failure is the typed `RevealEngineError` the contract exists to
+guarantee.
+
+**Fixed — the identical-action enumeration had no reader.**
+`analysis.identicalActionCells` was computed and asserted nowhere, and
+`CARDS_IDENTICAL_ACTIONS_ENUMERATED` — which `triad/docs/ENGINE.md` §5.6 devotes
+a paragraph to — did not exist. The analysis now compares whole return
+distributions across every pair of offered controls, and the new check re-derives
+the same reachable set from its own code path and refuses a definition whose two
+walks disagree cell for cell. Three further spec checks that had no
+implementation (`CARDS_REVEAL_CHOICE_BOUND`, `CARDS_SINGLE_BACKED_POSITION`,
+`CARDS_TICKET_WELL_FORMED`, `CARDS_ROUNDING_NEVER_UNDERPAYS`) were added at the
+same time, which leaves §12.1's table shorter than the finding anticipated.
+
 ## Consequences
 
 - Core is unchanged. `git diff platform/core -- src/api src/core src/conformance`
   is empty.
-- One consumer-declared capability (`rounding: 'stochastic'`) is refused at
-  definition time with a documented reason rather than approximated.
+- Two consumer-declared capabilities (`rounding: 'stochastic'` and `dormancy`)
+  are refused at definition time with documented reasons rather than
+  approximated or dropped, and `docs/modules/sequential-cards.md` §12.1 lists
+  every remaining divergence from the consumer's specification.
 - Two holes that the contract's prose did not prevent — an unsigned reveal log
   and an unbound round identity — are closed inside the module, and both are
   worth reading back into `docs/lifecycle-modules.md` as guidance for the next

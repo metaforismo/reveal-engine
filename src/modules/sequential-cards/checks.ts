@@ -1,3 +1,4 @@
+import { RevealEngineError } from '../../api/errors.js';
 import { RECEIPT_SCHEMA, commandFingerprint, toWireReceipt } from '../../core/ledger.js';
 import type { ConformanceFailure, ModuleConformanceCheck } from '../../core/module.js';
 import {
@@ -6,24 +7,42 @@ import {
   floor as floorRational,
   multiply,
   rational,
+  type Rational,
 } from '../../core/rational.js';
 import { snapshotHash } from '../../core/snapshot.js';
 import { weightProbability } from '../../core/weights.js';
 import { cardsFingerprint, defineCardsGame } from './adapter.js';
 import { analyseDefinition, forEachCanonicalState } from './analysis.js';
-import type { PlayerChoice, RevealStep, SequentialCardsDefinition } from './contracts.js';
+import type {
+  CardsRejectionReason,
+  PlayerChoice,
+  RevealStep,
+  SequentialCardsDefinition,
+} from './contracts.js';
 import {
   cardsBelief,
   cardsBeliefVector,
   claimProbability,
+  forEachCombination,
   objectivePositionOf,
   reachableObjectiveRanks,
+  type CardsBelief,
 } from './deck.js';
-import { coverProbability, entryMultiplier, isTerminalCover, offeredActions } from './pricing.js';
+import {
+  coverProbability,
+  entryMultiplier,
+  isTerminalCover,
+  livePositions,
+  offeredActions,
+  transformedClaim,
+} from './pricing.js';
 import {
   CardsBook,
+  assertTicketComposition,
   openFingerprint as openTicketFingerprint,
+  settlementTotal,
   type CardsBookSnapshot,
+  type CardsSelection,
   type TicketSelection,
 } from './round-book.js';
 import { deriveRevealSteps, eligiblePositions, encodeRevealStep, stepDigest } from './steps.js';
@@ -34,7 +53,7 @@ import {
   verifyCardsTranscript,
 } from './transcript.js';
 import { composeRoundSeed, deriveDeal, deriveSelectors } from './truth.js';
-import { eligibleSetSize } from './validation.js';
+import { assertPlayerChoices, eligibleSetSize } from './validation.js';
 import type { SequentialCardsShape } from './shape.js';
 
 type Check = ModuleConformanceCheck<SequentialCardsShape>;
@@ -578,6 +597,238 @@ const actionsAreValueNeutral: Check = {
   },
 };
 
+/** One offered control, as the pair that fixes its whole return distribution. */
+interface ControlOutcome {
+  readonly label: string;
+  readonly claim: Rational;
+  readonly favourable: bigint;
+}
+
+/** Belief weight a cover carries, counted here rather than read from a price. */
+function coverWeight(belief: CardsBelief, cover: readonly number[]): bigint {
+  let favourable = 0n;
+  for (const position of cover) favourable += belief.positionWeights[position] as bigint;
+  return favourable;
+}
+
+/** Every subset of `live` of width at least two, in ascending order. */
+function splitCoversOf(live: readonly number[]): number[][] {
+  const sets: number[][] = [];
+  for (let width = 2; width <= live.length; width += 1)
+    forEachCombination(live.length, width, (indices) =>
+      sets.push(indices.map((index) => live[index] as number)),
+    );
+  return sets;
+}
+
+/**
+ * Every cover a claim that started on `start` can be holding when the board is
+ * at `steps`, re-derived forward through the controls the definition offers.
+ *
+ * This is the reachability `analysis.ts` gets as a side effect of its claim
+ * walk, rebuilt here from the offer rules alone so the two enumerations are
+ * independent up to the shared definition of what is offered.
+ */
+function reachableCovers(
+  definition: SequentialCardsDefinition,
+  start: number,
+  steps: readonly RevealStep[],
+  beliefAt: (revision: number) => CardsBelief,
+): number[][] {
+  let covers: number[][] = [[start]];
+  for (let revision = 1; revision < steps.length; revision += 1) {
+    const belief = beliefAt(revision);
+    const live = livePositions(belief);
+    const seen = new Set(covers.map((cover) => cover.join(',')));
+    const next = [...covers];
+    const add = (cover: readonly number[]): void => {
+      const key = cover.join(',');
+      if (seen.has(key)) return;
+      seen.add(key);
+      next.push([...cover]);
+    };
+    for (const cover of covers) {
+      if (isTerminalCover(belief, cover)) continue;
+      const offers = offeredActions(definition, belief, cover, {
+        stepRevision: revision,
+        excluded: new Set<number>(),
+      });
+      if (offers.includes('switch'))
+        for (const target of live) if (!cover.includes(target)) add([target]);
+      if (offers.includes('split')) for (const set of splitCoversOf(live)) add(set);
+    }
+    covers = next;
+  }
+  return covers;
+}
+
+/**
+ * The states where a control does nothing, found by comparing distributions.
+ *
+ * `CARDS_ACTIONS_VALUE_NEUTRAL` is the check a game author will assume covers
+ * this, and it does not: with `liquidationSpread = 0` **every** action has the
+ * same expected value by construction, so the value-neutrality check passes in
+ * exactly the state where a control is a relabelled hold. Only the distribution
+ * separates them — the amount and the belief weight it lands on, compared leaf
+ * value by leaf value — and this walk reports how many such states a definition
+ * has rather than letting a revision assert there are none.
+ *
+ * Two things make it fail, and both are defects in the module rather than
+ * judgements about a definition. The module's own definition-time walk must
+ * reach the identical set of cells and agree cell for cell — two independent
+ * enumerations of one property disagreeing is a defect in one of them, never a
+ * figure to publish. And a coincidence must have the module's stated cause: two
+ * actions coincide **because their covers carry exactly equal probability**, so
+ * a pair that matches on the distribution while the covers price differently
+ * would mean the claim transformation and the belief had come apart.
+ *
+ * What it deliberately does **not** do is refuse a definition whose control is a
+ * no-op in every state that offers it. `triad/docs/ENGINE.md` §5.6 asks for that
+ * ("a definition that offers such a control without declaring it fails") and it
+ * cannot be honoured here for two reasons: a definition has no field to declare
+ * it in, and `switch` before the first reveal is a **re-back** — it changes which
+ * card is backed and therefore which card the reveal may take — so a control
+ * that is a relabelled hold after every reveal can still be a real control
+ * before the first one. `identicalActionDecoyControls` reports the count instead,
+ * and `docs/modules/sequential-cards.md` §12 states the disclosure obligation
+ * that leaves with the game.
+ */
+const identicalActionsAreEnumerated: Check = {
+  code: 'CARDS_IDENTICAL_ACTIONS_ENUMERATED',
+  description:
+    'States where two offered controls share one return distribution are enumerated by comparing whole distributions, and reported',
+  scope: 'definition',
+  run({ definition, count }) {
+    const failures: ConformanceFailure[] = [];
+    const analysis = analyseDefinition(definition);
+    const beliefs = new Map<string, CardsBelief>();
+    const offeredCount = new Map<string, number>();
+    const noOpCount = new Map<string, number>();
+    const signatures = new Set<string>();
+    let cells = 0;
+    let noOpCells = 0;
+
+    forEachCanonicalState(definition, ({ backed, steps, belief }) => {
+      if (steps.length === 0) return;
+      const key = (revision: number): string =>
+        steps
+          .slice(0, revision)
+          .map((step) => `${step.position}:${step.rank}`)
+          .join('|');
+      const beliefAt = (revision: number): CardsBelief => {
+        const memo = beliefs.get(key(revision));
+        if (memo !== undefined) return memo;
+        const value = cardsBelief(definition, steps.slice(0, revision));
+        beliefs.set(key(revision), value);
+        return value;
+      };
+      const live = livePositions(belief);
+      // One walk per backed position, exactly as the definition-time analysis
+      // starts one claim per backed position: the two enumerations have to
+      // stand on the same reachable set for their counts to be comparable.
+      for (const start of backed) {
+        for (const cover of reachableCovers(definition, start, steps, beliefAt)) {
+          if (isTerminalCover(belief, cover)) continue;
+          const offers = offeredActions(definition, belief, cover, {
+            stepRevision: steps.length,
+            excluded: new Set<number>(),
+          });
+          if (offers.length === 0) continue;
+          cells += 1;
+          const probability = coverProbability(belief, cover);
+          const outcomes: ControlOutcome[] = [
+            { label: 'hold', claim: rational(1n), favourable: coverWeight(belief, cover) },
+          ];
+          if (offers.includes('switch'))
+            for (const target of live) {
+              if (cover.includes(target)) continue;
+              outcomes.push({
+                label: `switch:${target}`,
+                claim: transformedClaim(
+                  definition,
+                  rational(1n),
+                  probability,
+                  coverProbability(belief, [target]),
+                ),
+                favourable: coverWeight(belief, [target]),
+              });
+            }
+          if (offers.includes('split'))
+            for (const set of splitCoversOf(live))
+              outcomes.push({
+                label: `split:${set.join('-')}`,
+                claim: transformedClaim(
+                  definition,
+                  rational(1n),
+                  probability,
+                  coverProbability(belief, set),
+                ),
+                favourable: coverWeight(belief, set),
+              });
+          for (const outcome of outcomes)
+            if (outcome.label !== 'hold') {
+              const control = outcome.label.split(':')[0] as string;
+              offeredCount.set(control, (offeredCount.get(control) ?? 0) + 1);
+            }
+          let identicalHere = false;
+          for (let left = 0; left < outcomes.length; left += 1)
+            for (let right = left + 1; right < outcomes.length; right += 1) {
+              const one = outcomes[left] as ControlOutcome;
+              const other = outcomes[right] as ControlOutcome;
+              if (one.favourable !== other.favourable || !rationalEqual(one.claim, other.claim))
+                continue;
+              identicalHere = true;
+              // The stated cause of every coincidence: equal cover probability
+              // against the shared denominator. A pair that agrees on the
+              // distribution while the covers price differently would mean the
+              // claim transformation and the belief had come apart.
+              if (
+                !rationalEqual(
+                  rational(one.favourable, belief.total),
+                  rational(other.favourable, belief.total),
+                )
+              )
+                failures.push(
+                  failure(
+                    'CARDS_IDENTICAL_ACTIONS_ENUMERATED',
+                    '$.pricing',
+                    `'${one.label}' and '${other.label}' share a return distribution while their covers price differently`,
+                  ),
+                );
+              for (const outcome of [one, other])
+                if (outcome.label !== 'hold') {
+                  const control = outcome.label.split(':')[0] as string;
+                  noOpCount.set(control, (noOpCount.get(control) ?? 0) + 1);
+                }
+              signatures.add(
+                `${belief.positionWeights.join(',')}/${belief.total}|${cover.join('-')}|${one.label}~${other.label}`,
+              );
+            }
+          if (identicalHere) noOpCells += 1;
+        }
+      }
+    });
+
+    let decoys = 0;
+    for (const [control, offered] of offeredCount)
+      if (offered > 0 && (noOpCount.get(control) ?? 0) >= offered) decoys += 1;
+    count('identicalActionCellsExamined', cells);
+    count('identicalActionCells', noOpCells);
+    count('identicalActionSignatures', signatures.size);
+    count('identicalActionDecoyControls', decoys);
+
+    if (noOpCells !== analysis.identicalActionCells)
+      failures.push(
+        failure(
+          'CARDS_IDENTICAL_ACTIONS_ENUMERATED',
+          '$.pricing',
+          `This walk found ${noOpCells} no-op cell(s) and the definition-time walk found ${analysis.identicalActionCells}; two enumerations of the same reachable set disagree`,
+        ),
+      );
+    return failures;
+  },
+};
+
 const policyReturnIsExtremal: Check = {
   code: 'CARDS_POLICY_RETURN_EXTREMAL',
   description:
@@ -764,6 +1015,280 @@ const seedMixesClientEntropy: Check = {
   },
 };
 
+/**
+ * The reveal reads the choice log **only** through the eligibility rule.
+ *
+ * `CARDS_SELECTOR_PRECOMMITTED` establishes that the selector comes from the
+ * seed alone. That is half the property: a selector sealed before the backing
+ * exists is still free to be applied to a set the backing chose, and a
+ * derivation that consulted the log for anything beyond narrowing that set
+ * would let a player move the cut by moving their claim. So this walks every
+ * admissible backing of the declared width, re-derives each reveal by hand as
+ * `eligiblePositions(backed, revealed)[selector]`, and — the part that is the
+ * actual claim — asserts that two different backings inducing the identical
+ * eligible sets produce the identical reveals.
+ */
+const revealIsChoiceBound: Check = {
+  code: 'CARDS_REVEAL_CHOICE_BOUND',
+  description: 'A reveal depends on the choice log only through the declared eligibility rule',
+  scope: 'round',
+  run({ definition, seedHex, roundId, count }) {
+    const failures: ConformanceFailure[] = [];
+    const deal = deriveDeal(seedHex, definition, roundId);
+    const byEligibility = new Map<string, string>();
+    forEachCombination(
+      definition.ladder.dealt,
+      definition.backing.maxOpenBeforeReveal,
+      (chosen) => {
+        count('choiceBoundBackings');
+        const choices = chosen.map((position, index) => ({
+          index,
+          kind: 'back' as const,
+          position,
+        }));
+        const backed = new Set(chosen);
+        const steps = deriveRevealSteps(definition, deal, choices);
+        const revealed = new Set<number>();
+        const eligibility: string[] = [];
+        steps.forEach((step, index) => {
+          const eligible = eligiblePositions(definition, backed, revealed);
+          eligibility.push(eligible.join('.'));
+          const selector = deal.selectors[index] as number;
+          if (step.position !== eligible[selector])
+            failures.push(
+              failure(
+                'CARDS_REVEAL_CHOICE_BOUND',
+                `$.steps[${index}].position`,
+                'A reveal is not the sealed selector indexing the eligible set',
+              ),
+            );
+          revealed.add(step.position);
+        });
+        // The eligible sets are the entire channel the log is allowed to use, so
+        // equal channels must give equal reveals whatever the backing was. The
+        // order the log was written in is not part of that channel either.
+        const value = JSON.stringify(steps);
+        const reordered = [...chosen]
+          .reverse()
+          .map((position, index) => ({ index, kind: 'back' as const, position }));
+        if (JSON.stringify(deriveRevealSteps(definition, deal, reordered)) !== value)
+          failures.push(
+            failure(
+              'CARDS_REVEAL_CHOICE_BOUND',
+              '$.choices',
+              'Reordering the backing log changed the reveal it derives',
+            ),
+          );
+        const key = eligibility.join('|');
+        const seen = byEligibility.get(key);
+        if (seen === undefined) byEligibility.set(key, value);
+        else if (seen !== value)
+          failures.push(
+            failure(
+              'CARDS_REVEAL_CHOICE_BOUND',
+              '$.steps',
+              'Two backings with identical eligible sets derived different reveals',
+            ),
+          );
+      },
+    );
+    return failures;
+  },
+};
+
+/**
+ * At most `maxOpenBeforeReveal` positions are open when a reveal derives.
+ *
+ * The selector was sealed against a set whose size is `dealt − i − width`, so a
+ * log of any other width indexes a set that is not the one the commitment was
+ * made against. That has to be a refusal at the derivation, not a clamp.
+ */
+const backingStaysSingle: Check = {
+  code: 'CARDS_SINGLE_BACKED_POSITION',
+  description: 'A reveal derives only against a backing log of exactly the declared width',
+  scope: 'round',
+  run({ definition, seedHex, roundId, count }) {
+    const failures: ConformanceFailure[] = [];
+    const deal = deriveDeal(seedHex, definition, roundId);
+    const width = definition.backing.maxOpenBeforeReveal;
+    const conforming = conformanceChoices(definition);
+    count('backingWidths');
+    try {
+      deriveRevealSteps(definition, deal, conforming);
+    } catch (error) {
+      failures.push(
+        failure(
+          'CARDS_SINGLE_BACKED_POSITION',
+          '$.choices',
+          `A conforming backing log did not derive: ${String(error)}`,
+        ),
+      );
+    }
+    const refuses = (label: string, choices: readonly unknown[]): void => {
+      count('backingRefusals');
+      try {
+        assertPlayerChoices(definition, choices);
+        deriveRevealSteps(definition, deal, choices);
+        failures.push(
+          failure('CARDS_SINGLE_BACKED_POSITION', '$.choices', `${label} was accepted`),
+        );
+      } catch {
+        // Expected: the log is not the one the selector was sealed against.
+      }
+    };
+    refuses('A backing log wider than the definition admits', [
+      ...conforming,
+      { index: width, kind: 'back', position: (width % definition.ladder.dealt) as number },
+    ]);
+    refuses(
+      'A backing log that backs one position twice',
+      Array.from({ length: width + 1 }, (_value, index) => ({ index, kind: 'back', position: 0 })),
+    );
+    if (definition.reveal.eligibility === 'unbacked' && width > 1)
+      refuses('A backing log narrower than the selector was sealed against', conforming.slice(1));
+    return failures;
+  },
+};
+
+/**
+ * A ticket satisfies the definition's own composition rules.
+ *
+ * `open()` and `restore()` share one rule set precisely so this can be checked
+ * once and hold at both boundaries. The conforming ticket must pass and each
+ * malformed variant must be refused with a reason a host can branch on.
+ */
+const ticketIsWellFormed: Check = {
+  code: 'CARDS_TICKET_WELL_FORMED',
+  description:
+    'A ticket clears the declared stake lattice, backing width and backed-market rule at both boundaries',
+  scope: 'round',
+  run({ definition, count }) {
+    const failures: ConformanceFailure[] = [];
+    const refuse = (message: string, path: string, reason: CardsRejectionReason): never => {
+      throw new RevealEngineError('CLAIM_REJECTED', message, path, { reason });
+    };
+    const rows = conformanceTicket(definition);
+    count('ticketCompositions');
+    try {
+      assertTicketComposition(definition, rows, refuse);
+    } catch (error) {
+      failures.push(
+        failure(
+          'CARDS_TICKET_WELL_FORMED',
+          '$.selections',
+          `The conformance ticket does not clear its own rules: ${String(error)}`,
+        ),
+      );
+    }
+    const step = definition.pricing.stakeStepCredits;
+    const minimum = definition.pricing.minStakeCredits;
+    const variants: readonly [string, readonly TicketSelection[]][] = [
+      ['an empty ticket', []],
+      [
+        'a stake below the declared minimum',
+        rows.map((row, index) => (index === 0 ? { ...row, stake: minimum - step } : row)),
+      ],
+      [
+        'a stake off the declared lattice',
+        rows.map((row, index) => (index === 0 ? { ...row, stake: minimum + 1n } : row)),
+      ],
+      ['a ticket with no backed position', rows.filter((row) => row.kind !== 'position')],
+      ['a ticket that repeats a selection id', rows.map((row) => ({ ...row, id: 'same' }))],
+    ];
+    for (const [label, variant] of variants) {
+      count('ticketRefusals');
+      try {
+        assertTicketComposition(definition, variant, refuse);
+        failures.push(failure('CARDS_TICKET_WELL_FORMED', '$.selections', `${label} was accepted`));
+      } catch {
+        // Expected: the ticket is not one this definition can price.
+      }
+    }
+    return failures;
+  },
+};
+
+/**
+ * The credited integer is never below the whole part of the claim.
+ *
+ * It is a property of the **conversion**, not a promise that a control pays: an
+ * outcome that does not settle credits nothing. What it does mean is that when a
+ * claim settles, the whole part a player was shown is a floor on the credit — so
+ * `settlementTotal` must agree with `floor` on every reachable payout at every
+ * stake on the lattice, and must never be more than one credit short of the
+ * exact rational.
+ */
+const roundingNeverUnderpays: Check = {
+  code: 'CARDS_ROUNDING_NEVER_UNDERPAYS',
+  description: 'The credited integer equals the whole part of the claim on every reachable payout',
+  scope: 'definition',
+  run({ definition, count }) {
+    const failures: ConformanceFailure[] = [];
+    const analysis = analyseDefinition(definition);
+    const step = definition.pricing.stakeStepCredits;
+    const probe = (id: string, stake: bigint, claim: Rational): CardsSelection =>
+      Object.freeze({
+        id,
+        kind: 'position' as const,
+        marketId: null,
+        openedPosition: 0,
+        positions: Object.freeze([0]),
+        stake,
+        claim,
+        decidedAtStepRevision: 0,
+        status: 'live' as const,
+        credited: 0n,
+      });
+    for (const multiple of [analysis.maxPayoutMultiple, analysis.minPositivePayoutMultiple])
+      for (let index = 0n; index < 8n; index += 1n) {
+        count('roundingProbes');
+        const stake = definition.pricing.minStakeCredits + index * step;
+        const claim = multiply(rational(stake), multiple);
+        const whole = floorRational(claim);
+        const credited = settlementTotal(definition, [probe('one', stake, claim)], 0, 0);
+        if (credited.denominator !== 1n || credited.numerator !== whole)
+          failures.push(
+            failure(
+              'CARDS_ROUNDING_NEVER_UNDERPAYS',
+              '$.pricing.rounding',
+              `A settled claim of ${claim.numerator}/${claim.denominator} credited ${credited.numerator}/${credited.denominator}, not its whole part ${whole}`,
+            ),
+          );
+        // The whole part is a floor, never a rounding: it is at most the exact
+        // claim and never more than one credit short of it.
+        if (compare(rational(whole), claim) > 0 || compare(rational(whole + 1n), claim) <= 0)
+          failures.push(
+            failure(
+              'CARDS_ROUNDING_NEVER_UNDERPAYS',
+              '$.pricing.rounding',
+              `${whole} is not the whole part of ${claim.numerator}/${claim.denominator}`,
+            ),
+          );
+        // The part that is not a tautology, and the defect ADR 0005 Decision 6
+        // records: two winning selections must credit the sum of their own
+        // floors, never the floor of their sum. Flooring the aggregate lets one
+        // selection's fractional part finance another's, so settling two rows
+        // together would pay a credit that cashing them one at a time does not.
+        const together = settlementTotal(
+          definition,
+          [probe('one', stake, claim), probe('two', stake, claim)],
+          0,
+          0,
+        );
+        count('roundingPairProbes');
+        if (together.denominator !== 1n || together.numerator !== whole * 2n)
+          failures.push(
+            failure(
+              'CARDS_ROUNDING_NEVER_UNDERPAYS',
+              '$.pricing.rounding',
+              `Two claims of ${claim.numerator}/${claim.denominator} credited ${together.numerator}/${together.denominator} together, not ${whole * 2n} — one row's remainder financed another's`,
+            ),
+          );
+      }
+    return failures;
+  },
+};
+
 const snapshotIsRevalidated: Check = {
   code: 'CARDS_SNAPSHOT_NOT_REVALIDATED',
   description: 'restore() round-trips its own snapshots and rejects re-sealed tampered ones',
@@ -856,14 +1381,19 @@ export const SEQUENTIAL_CARDS_CHECKS: readonly Check[] = Object.freeze([
   eligibleSetIsNonEmpty,
   terminalOffersNothing,
   actionsAreValueNeutral,
+  identicalActionsAreEnumerated,
   policyReturnIsExtremal,
   marketsAreReachable,
   minStakeIsSufficient,
+  roundingNeverUnderpays,
   capNeverBinds,
   beliefIsExhaustive,
   beliefIsNormalised,
   selectorIsPrecommitted,
   revealIsDeterministic,
+  revealIsChoiceBound,
+  backingStaysSingle,
+  ticketIsWellFormed,
   seedMixesClientEntropy,
   snapshotIsRevalidated,
 ]);

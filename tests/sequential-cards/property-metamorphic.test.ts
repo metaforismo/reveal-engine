@@ -54,9 +54,17 @@ describe('sequential-cards: properties and metamorphic relations', () => {
    * would have caught a posterior which read only the most recent published
    * sort and threw away the splits the earlier ones implied — the multi-reveal
    * `cascade-middle-v1` case is included for exactly that reason.
+   *
+   * All three references run it, and `duo-middle-v1` earns its place rather than
+   * padding the table: it is the only one with `backing.maxOpenBeforeReveal: 2`,
+   * so it is the only one whose eligible set is narrowed by **two** backed
+   * positions, and therefore the only one that puts the multi-backed
+   * eligible-set arithmetic in front of a counted frequency. The module exists
+   * to add that shape; its strongest test has to cover it.
    */
   it.each([
     ['triad-middle-v1', triadMiddleReference],
+    ['duo-middle-v1', duoMiddleReference],
     ['cascade-middle-v1', cascadeMiddleReference],
   ])(
     'matches the objective frequency over the whole truth space of %s',

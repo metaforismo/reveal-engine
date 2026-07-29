@@ -65,6 +65,89 @@ export function eligibleSetSize(
     : base;
 }
 
+/**
+ * Fields the module implements, per declaration object.
+ *
+ * A definition is a **contract about how money moves**, and the module's answer
+ * to a field it does not implement has to be a refusal, never silence.
+ * `freezeCardsDefinition` rebuilds a definition field by field and
+ * `cardsFingerprint` seals it field by field, so an unrecognised key would
+ * neither survive into the frozen definition nor enter the fingerprint: a
+ * definition declaring a policy the module ignores would run under a policy it
+ * never agreed to, and two definitions differing only in that policy would share
+ * a fingerprint. That is the same failure `rounding: 'stochastic'` is declarable
+ * to avoid, so it is refused the same way.
+ */
+const DECLARED_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
+  [
+    '$',
+    [
+      'apiVersion',
+      'moduleId',
+      'id',
+      'version',
+      'ladder',
+      'reveal',
+      'backing',
+      'sideMarkets',
+      'ticket',
+      'pricing',
+      'risk',
+      'seed',
+    ],
+  ],
+  ['$.ladder', ['size', 'dealt', 'objective']],
+  ['$.reveal', ['modelVersion', 'count', 'eligibility', 'sortRemaining']],
+  ['$.backing', ['maxOpenBeforeReveal', 'rebackMode']],
+  ['$.ticket', ['requiresBackedMarket', 'stakeScope']],
+  [
+    '$.pricing',
+    [
+      'entryRtp',
+      'liquidationSpread',
+      'rounding',
+      'minStakeCredits',
+      'stakeStepCredits',
+      'actions',
+      'splitMode',
+    ],
+  ],
+  ['$.pricing.entryRtp', ['numerator', 'denominator']],
+  ['$.pricing.liquidationSpread', ['numerator', 'denominator']],
+  ['$.risk', ['maxWinMultiple', 'capMustNotBind']],
+  ['$.seed', ['operatorSeedScope', 'clientEntropy', 'clientSeedBytes']],
+]);
+
+/**
+ * Fields a consumer's specification declares that this version does not
+ * implement, with the reason it does not, so the refusal names the gap instead
+ * of reporting an anonymous typo.
+ */
+const UNIMPLEMENTED_KEYS: ReadonlyMap<string, string> = new Map([
+  [
+    '$.dormancy',
+    'this module owns no clock and settles no round on a schedule; the host owns the dormancy window and calls cash() itself',
+  ],
+]);
+
+/** Refuses any key the module does not implement, at one declaration object. */
+function assertDeclaredKeys(value: Record<string, unknown>, path: string): void {
+  const declared = DECLARED_KEYS.get(path);
+  if (declared === undefined) return;
+  for (const key of Object.keys(value)) {
+    if (declared.includes(key)) continue;
+    const child = path === '$' ? `$.${key}` : `${path}.${key}`;
+    const why = UNIMPLEMENTED_KEYS.get(child);
+    rejectDefinition(
+      why === undefined
+        ? `Field '${key}' is not part of a ${SEQUENTIAL_CARDS_MODULE_ID} definition; this version would neither honour it nor seal it into the fingerprint`
+        : `Field '${key}' is declared by a consumer's specification and not implemented here: ${why}`,
+      child,
+      'UNDECLARED_FIELD',
+    );
+  }
+}
+
 function assertPositiveRationalIn(
   value: unknown,
   path: string,
@@ -403,6 +486,26 @@ export function assertCardsDefinition(
   assertSideMarkets(definition);
   assertPricing(definition);
   assertTicketRiskAndSeed(definition);
+  // Last, so a definition with both a real fault and an unknown field reports
+  // the fault. Every nested object is known to be a record by now.
+  assertDeclaredKeys(value, '$');
+  for (const nested of ['ladder', 'reveal', 'backing', 'ticket', 'pricing', 'risk', 'seed'])
+    assertDeclaredKeys(value[nested] as Record<string, unknown>, `$.${nested}`);
+  for (const nested of ['entryRtp', 'liquidationSpread'])
+    assertDeclaredKeys(
+      definition.pricing[nested as 'entryRtp'] as unknown as Record<string, unknown>,
+      `$.pricing.${nested}`,
+    );
+  definition.sideMarkets.forEach((market, index) => {
+    const marketPath = `$.sideMarkets[${index}]`;
+    for (const key of Object.keys(market))
+      if (key !== 'id' && key !== 'winningRanks')
+        rejectDefinition(
+          `Field '${key}' is not part of a side market declaration`,
+          `${marketPath}.${key}`,
+          'UNDECLARED_FIELD',
+        );
+  });
 }
 
 /** Validates a deal against the definition it claims to belong to. */
