@@ -2,16 +2,28 @@
 
 ## Package surfaces
 
-| Export                                      | Purpose                                                          |
-| ------------------------------------------- | ---------------------------------------------------------------- |
-| `@axiom-games/reveal-engine`                | supported convenience API (core essentials + progressive market) |
-| `/api`                                      | versions, limits, typed errors                                   |
-| `/core`                                     | game-agnostic primitives and the lifecycle-module contract       |
-| `/modules`                                  | module registry: `listModules`, `findModule`, `requireModule`    |
-| `/modules/progressive-market`               | the progressive-market lifecycle module in full                  |
-| `/conformance`                              | module conformance runner and reports                            |
-| `/integration`                              | illustrative, non-durable RGS boundary                           |
-| `/protocol`, `/serialization`, `/reference` | **deprecated** aliases into `/modules/progressive-market`        |
+| Export                                      | Purpose                                                              |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| `@axiom-games/reveal-engine`                | engine essentials, plus **deprecated** progressive-market re-exports |
+| `/api`                                      | versions, limits, typed errors                                       |
+| `/core`                                     | game-agnostic primitives and the lifecycle-module contract           |
+| `/modules`                                  | module registry: `listModules`, `findModule`, `requireModule`        |
+| `/modules/progressive-market`               | the progressive-market lifecycle module in full                      |
+| `/conformance`                              | module conformance runner and reports                                |
+| `/integration`                              | illustrative, non-durable RGS boundary                               |
+| `/protocol`, `/serialization`, `/reference` | **deprecated** aliases into `/modules/progressive-market`            |
+
+The root barrel carries two kinds of symbol and marks the difference. Versions,
+limits, the error taxonomy, exact rational money, `payable`/`payableWithinCap`,
+`deriveMaxContinuations`, `defineLifecycleModule`, the module registry, and
+`checkModuleConformance`/`assertModuleConformance` are engine surface: a second
+lifecycle module gets all of them. Everything else at the root —
+`RoundBook`, `makeTranscript`, `deriveTruth`, `initialPosterior`, `quote`,
+`defineGame`, `adapterFingerprint`, the transcript codec, the adapter
+conformance view, `progressiveMarket`, and the three reference definitions —
+belongs to **one lifecycle module** and is re-exported only for hosts written
+against 0.2. Each of those is marked `@deprecated` with the subpath that owns
+it, on the same retirement schedule as the three alias subpaths (`TODO.md`).
 
 No `internal` subpath is exported, and no subpath exposes proof-construction
 internals (`commitment`, `canonicalTranscriptBytes`, `encodeFields`). Every

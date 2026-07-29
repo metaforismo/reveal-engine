@@ -92,12 +92,16 @@ npm run verify   # format, lint, typecheck, tests, conformance, build, package, 
 Run one round end to end:
 
 ```ts
+// These four belong to the progressive-market lifecycle module, so they are
+// imported from its subpath. The package root re-exports them for 0.2 hosts,
+// but every one of those re-exports is marked `@deprecated`: the engine is not
+// the progressive market, and a root import would hide which is which.
 import {
   binaryBeaconReference,
   initialPosterior,
   makeTranscript,
   RoundBook,
-} from '@axiom-games/reveal-engine';
+} from '@axiom-games/reveal-engine/modules/progressive-market';
 
 const seed = '01'.padStart(64, '0'); // in production: 32 CSPRNG bytes, committed before play
 const transcript = makeTranscript(seed, binaryBeaconReference, 'round-42');
