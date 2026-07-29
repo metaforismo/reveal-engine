@@ -28,9 +28,11 @@ import {
   reachableObjectiveRanks,
   type CardsBelief,
 } from './deck.js';
+import { payableWithinCap } from '../../core/payments.js';
 import {
   coverProbability,
   entryMultiplier,
+  fairValue,
   isTerminalCover,
   livePositions,
   offeredActions,
@@ -1289,9 +1291,139 @@ const roundingNeverUnderpays: Check = {
   },
 };
 
+interface WireEntry {
+  readonly fingerprint: string;
+  readonly receipt: Record<string, unknown>;
+}
+
+/**
+ * The reveal receipt, re-fenced one revision forward and re-fingerprinted.
+ *
+ * Every other tamper in the table rewrites a **value** — a stake, a claim, a
+ * rank, the checksum — and the receipt algebra alone catches all of them. This
+ * one rewrites a **pairing**: the receipt is minted over the digest of the frame
+ * it claims, so it is internally impeccable, and the only thing wrong with it is
+ * that no command was ever standing at that revision when it ran. That is the
+ * shape a forged liquidation needs, so the table has to contain it.
+ */
+function refenceReveal(staked: CardsBookSnapshot): WireEntry {
+  const steps = staked.steps as unknown as RevealStep[];
+  const frame = steps.length;
+  const fingerprint = commandFingerprint('reveal', [
+    stepDigest(steps.slice(0, frame)),
+    ...encodeRevealStep(steps[0] as RevealStep),
+  ]);
+  const entry = (staked.receipts as unknown as WireEntry[]).find(
+    (candidate) => candidate.receipt.action === 'reveal',
+  ) as WireEntry;
+  return {
+    fingerprint,
+    receipt: { ...entry.receipt, commandFingerprint: fingerprint, frameRevision: frame },
+  };
+}
+
+/**
+ * A liquidation appended to a snapshot, priced at the belief its frame implies.
+ *
+ * One builder produces both the legal case and the illegal ones, which is the
+ * point: the credited integer, the `capped` flag, the liquid balance and the
+ * selection's own record are re-derived from the frame every time, so the only
+ * thing that separates the snapshot that must restore from the ones that must
+ * not is whether a round could have issued the command.
+ */
+function forgeCash(
+  definition: SequentialCardsDefinition,
+  staked: CardsBookSnapshot,
+  selectionId: string,
+  frame: number,
+  reseal: (value: Record<string, unknown>) => string,
+): string {
+  const rows = staked.selections as unknown as Record<string, unknown>[];
+  const row = rows.find((candidate) => candidate.id === selectionId) as Record<string, unknown>;
+  const wire = row.claim as { numerator: string; denominator: string };
+  const steps = (staked.steps as unknown as RevealStep[]).slice(0, frame);
+  const belief = cardsBelief(definition, steps);
+  const value = fairValue(
+    definition,
+    rational(BigInt(wire.numerator), BigInt(wire.denominator)),
+    coverProbability(belief, row.positions as number[]),
+  );
+  const liquid = BigInt(staked.liquidBalance);
+  const payable = payableWithinCap(
+    value,
+    BigInt(staked.capBasisStake as string),
+    definition.risk.maxWinMultiple,
+    liquid,
+  );
+  const fingerprint = commandFingerprint('cash', [stepDigest(steps), selectionId]);
+  const receipts = [
+    ...(staked.receipts as unknown as WireEntry[]),
+    {
+      fingerprint,
+      receipt: toWireReceipt({
+        schema: RECEIPT_SCHEMA,
+        idempotencyKey: 'conformance-cash',
+        commandFingerprint: fingerprint,
+        action: 'cash',
+        ledgerRevision: staked.receipts.length + 1,
+        frameRevision: frame,
+        debited: 0n,
+        credited: payable.credited,
+        balanceDelta: payable.credited,
+        capped: payable.capped,
+      }),
+    },
+  ];
+  return reseal({
+    ...staked,
+    receipts,
+    ledgerRevision: receipts.length,
+    liquidBalance: String(liquid + payable.credited),
+    selections: rows.map((candidate) =>
+      candidate.id === selectionId
+        ? {
+            ...candidate,
+            status: 'cashed',
+            credited: String(payable.credited),
+            decidedAtStepRevision: frame,
+          }
+        : candidate,
+    ),
+  });
+}
+
+/** The first backed row of a snapshot's ticket; every reference opens one. */
+function backedRowOf(staked: CardsBookSnapshot): Record<string, unknown> | undefined {
+  return (staked.selections as unknown as Record<string, unknown>[]).find(
+    (row) => row.kind === 'position',
+  );
+}
+
+/**
+ * Whether the state a staked snapshot stands in really offers a cash-out.
+ *
+ * The positive control needs it — a check that only ever forges is a check that
+ * would still pass if `restore()` refused every liquidation ever written.
+ */
+function offersCashAt(
+  definition: SequentialCardsDefinition,
+  staked: CardsBookSnapshot,
+  row: Record<string, unknown>,
+): boolean {
+  const belief = cardsBelief(definition, staked.steps as unknown as RevealStep[]);
+  const excluded = new Set<number>();
+  for (const other of staked.selections)
+    if (other.id !== row.id) for (const position of other.positions) excluded.add(position);
+  return offeredActions(definition, belief, row.positions as number[], {
+    stepRevision: staked.stepRevision,
+    excluded,
+  }).includes('cash');
+}
+
 const snapshotIsRevalidated: Check = {
   code: 'CARDS_SNAPSHOT_NOT_REVALIDATED',
-  description: 'restore() round-trips its own snapshots and rejects re-sealed tampered ones',
+  description:
+    'restore() round-trips its own snapshots and a legal cash-out, and rejects re-sealed tampered ones',
   scope: 'round',
   run({ definition, seedHex, roundId, count }) {
     const failures: ConformanceFailure[] = [];
@@ -1318,6 +1450,35 @@ const snapshotIsRevalidated: Check = {
         ...value,
         snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
       });
+    const backed = backedRowOf(staked);
+    const market = (staked.selections as unknown as Record<string, unknown>[]).find(
+      (row) => row.kind === 'market',
+    );
+
+    // The positive control for the whole liquidation half of this check. The
+    // same builder that writes the forgeries below writes this one, so a
+    // `restore()` that refused every cash-out ever minted would fail here rather
+    // than pass the table by being uniformly suspicious.
+    if (backed !== undefined && offersCashAt(definition, staked, backed)) {
+      count('snapshots');
+      const honest = forgeCash(
+        definition,
+        staked,
+        backed.id as string,
+        staked.stepRevision,
+        reseal,
+      );
+      try {
+        const restored = CardsBook.restore(definition, honest);
+        if (JSON.stringify(restored.snapshot()) !== honest)
+          reject('A restored cash-out does not re-serialize identically');
+        if (restored.liquidBalance <= 0n)
+          reject('A restored cash-out credited nothing at the declared minimum stake');
+      } catch (error) {
+        reject(`Restore rejected a legal cash-out: ${String(error)}`);
+      }
+    }
+
     const selections = staked.selections as unknown as Record<string, unknown>[];
     const tampers: readonly string[] = [
       reseal({ ...staked, liquidBalance: '999999' }),
@@ -1360,6 +1521,29 @@ const snapshotIsRevalidated: Check = {
           rank: ((step.rank as number) % definition.ladder.size) + 1,
         })),
       }),
+      // A receipt re-fenced to a revision the round was not standing at, with
+      // its fingerprint recomputed over the digest of that frame so the receipt
+      // algebra has nothing to object to. Every case above is a rewritten
+      // *value*; this is a rewritten *pairing*, and a pairing is what turns an
+      // honest claim into a credit no reachable state produces.
+      reseal({
+        ...staked,
+        receipts: (staked.receipts as unknown as WireEntry[]).map((entry) =>
+          entry.receipt.action === 'reveal' ? refenceReveal(staked) : entry,
+        ),
+      }),
+      // The liquidation branch, which is the only one that carries money out.
+      // A cash fenced back to the pre-reveal belief prices a claim the reveal
+      // already grew at the belief that existed before it: every receipt
+      // re-derives, and the state is one no command sequence reaches.
+      ...(backed === undefined
+        ? []
+        : [forgeCash(definition, staked, backed.id as string, 0, reseal)]),
+      // A side market settles from the deal and has no in-round action at all,
+      // so its liquidation credits exactly zero and only the rule refuses it.
+      ...(market === undefined
+        ? []
+        : [forgeCash(definition, staked, market.id as string, staked.stepRevision, reseal)]),
       // Not re-sealed: the checksum still has to catch plain corruption.
       JSON.stringify({ ...staked, snapshotHash: '0'.repeat(64) }),
     ];

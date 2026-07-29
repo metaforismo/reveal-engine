@@ -132,6 +132,22 @@ total              = number of consistent completions          (a shared denomin
 exact BigInt over exact BigInt, never a float, never normalised through a
 division that could round.
 
+**The record is validated before it is counted.** `cardsBelief` runs the
+structural rules of §6.2 on the step list itself, so every money-carrying entry
+point the module declares — `steps.price`, `steps.belief`, and every book command
+— reaches the counting through one check rather than through a convention each
+caller has to remember. The failure this closes is silent rather than loud: under
+`sortRemaining: true` a step list whose last `sorted` is empty is not rejected by
+the counting, it is _reinterpreted_ — `revealRecordOf` takes the exchangeable
+branch of §4.2, discards the published order and the cumulative bounds with it,
+and returns a perfectly well-formed posterior belonging to a different game. On
+`cascade-middle-v1` the honest posterior over the hidden positions is
+`(0, 0, 35)/35` and the reinterpreted one is `(70, 70, 70)/210`, so `price()`
+would put `1/3` on two outcomes the reveals eliminated to exactly zero and `1/3`
+on the certain winner. Putting a finite price on an impossible outcome is the
+defect this module exists to prevent, so the check is inside the counting and not
+beside it.
+
 ### 4.1 What "consistent" means, and the trap in it
 
 When `sortRemaining` is on, a completion has to respect **every order relation
@@ -327,39 +343,78 @@ distinction is load-bearing: a decision the round would have refused is neither
 an inconsistency nor the stake, so nothing in the arithmetic notices it. A
 restored ticket therefore clears the same composition rules `open()` applies —
 the stake lattice, one selection per backed position, the declared backing width,
-`ticket.requiresBackedMarket` — and every restored decision clears the same
-guards `switch` and `split` apply: the cover is well-formed for the action, in
-range, unique and in the canonical ascending order a command would have written;
-the action was one `offeredActions` offered in the state the receipt was minted
-in; no target is a card already face up or an outcome of probability exactly
-zero; and no selection acts twice inside one decision window.
+`ticket.requiresBackedMarket` — and every restored command clears the same guards
+its live counterpart applies. For `switch` and `split`: the cover is well-formed
+for the action, in range, unique and in the canonical ascending order a command
+would have written; the action was one `offeredActions` offered in the state the
+receipt was minted in; no target is a card already face up or an outcome of
+probability exactly zero; and no selection acts twice inside one decision window.
+For `cash`, which is the one in-round command that carries money **out**: the row
+is a backed position and not a side market, the state offered a liquidation, and
+the selection has not already acted in that window.
+
+**And the frame is replayed, not read.** A command is minted at the round's live
+step revision, so a receipt's frame is exactly the number of reveals the log has
+already installed. `CommandLedger.install` cannot know that — it only bounds the
+frame by the reveal log's length — so `restore()` asserts it directly. This is
+the invariant that stops a snapshot pairing a claim with a belief the round never
+held it at, and the pairing is worth more than any single rewritten field: on
+`triad-middle-v1` with a 100-credit stake, a legal post-reveal switch fenced to
+revision 1 followed by a cash fenced back to revision 0 credits **4,320** where
+the honest liquidation of that claim in that state is **196**.
 
 **What that establishes, and what it does not.** It defeats every _inconsistent_
 rewrite: a claim that does not match its price, a decision that does not match
 its receipt, a reveal that does not match the digest it was fenced to, a credit
 that does not match the cap chain, a choice log that does not match the ticket,
 and — after settlement — any outcome that does not match the revealed seed. It
-defeats every _illegal_ rewrite too: a state no legal command sequence could have
-produced does not restore, whatever its receipts say. Both matter for the money:
-`analyseDefinition`'s reachable maximum — the figure `CARDS_CAP_NEVER_BINDS` is
-checked against — quantifies over the covers a **round** can hold, so a restore
-path that admitted covers the round cannot hold would be bounded by nothing that
-was ever proved.
+defeats every _illegal command_ too: a command the round's own rules would have
+refused, at the revision the receipt claims for it, does not restore. That
+matters for the money because `analyseDefinition`'s reachable maximum — the
+figure `CARDS_CAP_NEVER_BINDS` is checked against — quantifies over the
+`(state, cover)` pairs a **round** can reach, so a restore path that admitted a
+pair the round cannot reach would be bounded by nothing that was ever proved.
+
+**An earlier version of this section claimed more than that, and was wrong.** It
+said restore "defeats every _illegal_ rewrite: a state no legal command sequence
+could have produced does not restore, whatever its receipts say", and named the
+stake as the one residual. Both halves failed together. The `cash` branch
+replayed none of the guards its `switch`/`split` sibling replayed, and nothing
+constrained a receipt's frame beyond `frameRevision <= stepRevision`, so the
+4,320-credit pairing above restored — with an honest stake, an honest ticket, an
+honest open receipt and an honest cap basis, which is exactly the shape the
+wallet reconciliation named below as the compensating control **cannot see**. The
+guards and the frame rule are now in the code, the forgeries are in
+`tests/sequential-cards/restore-rules.test.ts` — each asserting the specific
+guard that refuses it, so a case cannot keep passing after the guard it is about
+is deleted — and both are in the conformance tamper table with a legal cash-out
+alongside them as the positive control. The claim above is narrower than the one
+it replaces because that is what the code does.
 
 It does **not authenticate the snapshot**, and the difference matters. Receipt
 fingerprints and the checksum are unkeyed and deterministic, so an attacker who
 can rewrite the store can rewrite a field _and_ its receipt _and_ the hash
-together. Before settlement the **stake** is exactly such a field: it enters from
-the wallet and has no cryptographic anchor inside the round, so a coordinated
-rewrite of a stake, its claim, its open receipt and the cap basis is internally
-consistent and will restore. There is no arithmetic that closes that — the round
-has no independent record of what the wallet actually debited.
+together. What survives that is only what the round can **re-derive or replay**,
+so the residual is precisely the inputs it can do neither for. Before settlement
+there are two:
+
+- the **stake**, which enters from the wallet and has no cryptographic anchor
+  inside the round, so a coordinated rewrite of a stake, its claim, its open
+  receipt and the cap basis is internally consistent and will restore;
+- a **reveal**, for the reason §6.2 gives in full — a book holds no seed, so a
+  fabricated step that clears the record rules is a legal input to every rule
+  replayed here, and a snapshot built on one restores exactly as the live round
+  accepted it.
+
+Neither is closed by arithmetic: the round has no independent record of what the
+wallet debited, and no seed to check a reveal against until `settle`.
 
 So snapshot integrity is a **deployment obligation**, not something this module
 provides: persist snapshots in storage the host trusts, or authenticate them with
-a key the host owns, and reconcile the ticket debit against the wallet ledger
-rather than against the snapshot. `progressive-market` has the same boundary with
-its evidence log; it is stated here rather than papered over with a re-derivation
+a key the host owns, reconcile the ticket debit against the wallet ledger rather
+than against the snapshot, and derive every reveal with `deriveRevealSteps()`
+against the sealed truth. `progressive-market` has the same boundary with its
+evidence log; it is stated here rather than papered over with a re-derivation
 that sounds stronger than it is.
 
 ## 7. What `defineCardsGame()` proves, and how
@@ -443,27 +498,27 @@ triad-specific naming; the `2` is what a player-facing disclosure would say.
 Nineteen checks, all declared on the module and all run by `reveal-conformance`
 against every reference:
 
-| Code                                 | Scope      | Property                                                                                        |
-| ------------------------------------ | ---------- | ----------------------------------------------------------------------------------------------- |
-| `CARDS_DEFINITION_NOT_FROZEN`        | definition | the definition and every declarative field are deeply frozen, and `define()` round-trips        |
-| `CARDS_ELIGIBLE_SET_NONEMPTY`        | definition | every reveal has an eligible card and the objective is defined on every deal                    |
-| `CARDS_TERMINAL_OFFERS_NOTHING`      | definition | nothing offered where a position is decided, something wherever it is not                       |
-| `CARDS_ACTIONS_VALUE_NEUTRAL`        | definition | every liquidating action realises the value it was priced from                                  |
-| `CARDS_IDENTICAL_ACTIONS_ENUMERATED` | definition | states where two offered controls share one **return distribution** are enumerated and reported |
-| `CARDS_POLICY_RETURN_EXTREMAL`       | definition | the argmin and argmax policies over the whole space return what is declared                     |
-| `CARDS_MARKET_REACHABLE`             | definition | every side market can pay, and prices at exactly `entryRtp`                                     |
-| `CARDS_MIN_STAKE_SUFFICIENT`         | definition | the minimum stake clears the threshold, and the threshold is tight                              |
-| `CARDS_ROUNDING_NEVER_UNDERPAYS`     | definition | the credited integer equals the whole part of the claim on every reachable payout               |
-| `CARDS_CAP_NEVER_BINDS`              | definition | the reachable maximum is strictly below the cap                                                 |
-| `CARDS_BELIEF_EXHAUSTIVE`            | round      | belief weights equal a completion count from an independently coded enumeration                 |
-| `CARDS_BELIEF_NORMALISED`            | round      | non-negative, positive total, reduced, summing to one, zero exactly where it is zero            |
-| `CARDS_SELECTOR_PRECOMMITTED`        | round      | selectors derive from the seed alone and drive the reveal through the eligibility rule          |
-| `CARDS_REVEAL_DETERMINISTIC`         | round      | a transcript re-derives, round-trips its wire form, and rejects a tampered deal                 |
-| `CARDS_REVEAL_CHOICE_BOUND`          | round      | a reveal reads the choice log only through the eligibility rule, over every backing             |
-| `CARDS_SINGLE_BACKED_POSITION`       | round      | a reveal derives only against a backing log of exactly the declared width                       |
-| `CARDS_TICKET_WELL_FORMED`           | round      | a ticket clears the stake lattice, the backing width and the backed-market rule                 |
-| `CARDS_SEED_MIXES_CLIENT_ENTROPY`    | round      | the round seed changes when only the client seed changes, and requires one                      |
-| `CARDS_SNAPSHOT_NOT_REVALIDATED`     | round      | `restore()` round-trips its own snapshots and rejects re-sealed tampered ones                   |
+| Code                                 | Scope      | Property                                                                                                                                                             |
+| ------------------------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CARDS_DEFINITION_NOT_FROZEN`        | definition | the definition and every declarative field are deeply frozen, and `define()` round-trips                                                                             |
+| `CARDS_ELIGIBLE_SET_NONEMPTY`        | definition | every reveal has an eligible card and the objective is defined on every deal                                                                                         |
+| `CARDS_TERMINAL_OFFERS_NOTHING`      | definition | nothing offered where a position is decided, something wherever it is not                                                                                            |
+| `CARDS_ACTIONS_VALUE_NEUTRAL`        | definition | every liquidating action realises the value it was priced from                                                                                                       |
+| `CARDS_IDENTICAL_ACTIONS_ENUMERATED` | definition | states where two offered controls share one **return distribution** are enumerated and reported                                                                      |
+| `CARDS_POLICY_RETURN_EXTREMAL`       | definition | the argmin and argmax policies over the whole space return what is declared                                                                                          |
+| `CARDS_MARKET_REACHABLE`             | definition | every side market can pay, and prices at exactly `entryRtp`                                                                                                          |
+| `CARDS_MIN_STAKE_SUFFICIENT`         | definition | the minimum stake clears the threshold, and the threshold is tight                                                                                                   |
+| `CARDS_ROUNDING_NEVER_UNDERPAYS`     | definition | the credited integer equals the whole part of the claim on every reachable payout                                                                                    |
+| `CARDS_CAP_NEVER_BINDS`              | definition | the reachable maximum is strictly below the cap                                                                                                                      |
+| `CARDS_BELIEF_EXHAUSTIVE`            | round      | belief weights equal a completion count from an independently coded enumeration                                                                                      |
+| `CARDS_BELIEF_NORMALISED`            | round      | non-negative, positive total, reduced, summing to one, zero exactly where it is zero                                                                                 |
+| `CARDS_SELECTOR_PRECOMMITTED`        | round      | selectors derive from the seed alone and drive the reveal through the eligibility rule                                                                               |
+| `CARDS_REVEAL_DETERMINISTIC`         | round      | a transcript re-derives, round-trips its wire form, and rejects a tampered deal                                                                                      |
+| `CARDS_REVEAL_CHOICE_BOUND`          | round      | a reveal reads the choice log only through the eligibility rule, over every backing                                                                                  |
+| `CARDS_SINGLE_BACKED_POSITION`       | round      | a reveal derives only against a backing log of exactly the declared width                                                                                            |
+| `CARDS_TICKET_WELL_FORMED`           | round      | a ticket clears the stake lattice, the backing width and the backed-market rule                                                                                      |
+| `CARDS_SEED_MIXES_CLIENT_ENTROPY`    | round      | the round seed changes when only the client seed changes, and requires one                                                                                           |
+| `CARDS_SNAPSHOT_NOT_REVALIDATED`     | round      | `restore()` round-trips its own snapshots and a legal cash-out, and rejects re-sealed tampered ones — rewritten values, a re-fenced receipt, and forged liquidations |
 
 `CARDS_BELIEF_EXHAUSTIVE` is worth a note. `deck.ts` counts by enumerating
 ascending **subsets** of the remaining pool and filtering them against the bounds

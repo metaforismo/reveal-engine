@@ -8,7 +8,6 @@ import {
   type CardsRejectionReason,
   type Deal,
   type PlayerChoice,
-  type RevealStep,
   type SequentialCardsDefinition,
 } from './contracts.js';
 import { CARDS_MAX_SUPPORT, combinationCount, isReachableObjectiveRank } from './deck.js';
@@ -592,100 +591,5 @@ export function assertPlayerChoices(
         'POSITION_ALREADY_BACKED',
       );
     seen.add(entry.position);
-  });
-}
-
-/**
- * Validates a reveal step list as public record.
- *
- * This is what a restored snapshot's steps go through: positions and ranks
- * distinct and in range, the eligibility rule respected, and the published sort
- * a permutation of exactly the positions that are still hidden. It establishes
- * internal consistency, not provenance — only `settle`, which verifies the
- * transcript against the revealed seed, establishes that these are the committed
- * deal's reveals.
- *
- * That gap is a money boundary and it is published, not buried here:
- * `docs/modules/sequential-cards.md` §6.2 works it through with the credit a
- * fabricated reveal earns, §12 lists it among the things this module does not
- * do, `docs/threat-model.md` carries it as an open attack story, and
- * `docs/integration-checklist.md` names the host obligation that closes it —
- * derive every step with `deriveRevealSteps()` against the sealed truth.
- */
-export function assertRevealSteps(
-  definition: SequentialCardsDefinition,
-  choices: readonly PlayerChoice[],
-  value: unknown,
-  path = '$.steps',
-): asserts value is readonly RevealStep[] {
-  if (!Array.isArray(value) || value.length > definition.reveal.count)
-    fail('INVALID_TRANSCRIPT', 'Steps must be a bounded array', path);
-  const backed = new Set(choices.map((choice) => choice.position));
-  const revealedPositions = new Set<number>();
-  const revealedRanks = new Set<number>();
-  value.forEach((step: unknown, index) => {
-    const entry = step as RevealStep;
-    if (!isRecord(step)) fail('INVALID_TRANSCRIPT', 'Step must be an object', `${path}[${index}]`);
-    if (entry.index !== index)
-      fail('INVALID_TRANSCRIPT', 'Steps are not densely indexed', `${path}[${index}].index`);
-    if (
-      !Number.isSafeInteger(entry.position) ||
-      entry.position < 0 ||
-      entry.position >= definition.ladder.dealt ||
-      revealedPositions.has(entry.position)
-    )
-      fail('INVALID_TRANSCRIPT', 'Step position is invalid', `${path}[${index}].position`);
-    if (definition.reveal.eligibility === 'unbacked' && backed.has(entry.position))
-      reject(
-        'INVALID_TRANSCRIPT',
-        'A backed position is never eligible for a reveal',
-        `${path}[${index}].position`,
-        'CHOICE_CONFLICT',
-      );
-    if (
-      !Number.isSafeInteger(entry.rank) ||
-      entry.rank < 1 ||
-      entry.rank > definition.ladder.size ||
-      revealedRanks.has(entry.rank)
-    )
-      fail('INVALID_TRANSCRIPT', 'Step rank is invalid', `${path}[${index}].rank`);
-    assertIdentifier(entry.label, `${path}[${index}].label`, 'INVALID_TRANSCRIPT');
-    revealedPositions.add(entry.position);
-    revealedRanks.add(entry.rank);
-    const hidden: number[] = [];
-    for (let position = 0; position < definition.ladder.dealt; position += 1)
-      if (!revealedPositions.has(position)) hidden.push(position);
-    if (!Array.isArray(entry.sorted))
-      fail('INVALID_TRANSCRIPT', 'Step sort must be an array', `${path}[${index}].sorted`);
-    const expectedLength = definition.reveal.sortRemaining ? hidden.length : 0;
-    if (entry.sorted.length !== expectedLength)
-      fail('INVALID_TRANSCRIPT', 'Step sort has the wrong width', `${path}[${index}].sorted`);
-    const seen = new Set<number>();
-    entry.sorted.forEach((position) => {
-      if (!hidden.includes(position) || seen.has(position))
-        fail(
-          'INVALID_TRANSCRIPT',
-          'Step sort must be a permutation of the hidden positions',
-          `${path}[${index}].sorted`,
-        );
-      seen.add(position);
-    });
-    // The published order is cumulative: turning one card face up removes it
-    // from the order and moves nothing else. A sort that reordered the survivors
-    // would contradict what the board already showed, and the posterior reads
-    // both sorts, so the contradiction has to be refused rather than priced.
-    if (index > 0 && definition.reveal.sortRemaining) {
-      const previous = (value[index - 1] as RevealStep).sorted;
-      const expected = previous.filter((position) => position !== entry.position);
-      if (
-        expected.length !== entry.sorted.length ||
-        expected.some((position, slot) => position !== entry.sorted[slot])
-      )
-        fail(
-          'INVALID_TRANSCRIPT',
-          'Step sort contradicts the order the board already published',
-          `${path}[${index}].sorted`,
-        );
-    }
   });
 }

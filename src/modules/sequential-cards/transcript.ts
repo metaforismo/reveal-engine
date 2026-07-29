@@ -27,12 +27,8 @@ import {
   encodeRevealStep,
   revealStepsEqual,
 } from './steps.js';
-import {
-  assertCardsDefinition,
-  assertDeal,
-  assertPlayerChoices,
-  assertRevealSteps,
-} from './validation.js';
+import { assertRevealSteps } from './record.js';
+import { assertCardsDefinition, assertDeal, assertPlayerChoices } from './validation.js';
 
 /**
  * Transcript schema, codec, and verifier.

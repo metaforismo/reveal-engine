@@ -682,7 +682,9 @@ describe('sequential-cards: the lifecycle contract', () => {
         CARDS_SEED_MIXES_CLIENT_ENTROPY: 3,
         CARDS_SNAPSHOT_NOT_REVALIDATED: 3,
       });
-      expect(report.counters.snapshotTampers).toBe(3 * 11);
+      // Eleven value rewrites, one re-fenced receipt, and two forged
+      // liquidations — the branch that carries money out of the round.
+      expect(report.counters.snapshotTampers).toBe(3 * 14);
     },
   );
 

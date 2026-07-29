@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { RevealEngineError } from '../../src/api/errors.js';
 import { commandFingerprint } from '../../src/core/ledger.js';
+import { payableWithinCap } from '../../src/core/payments.js';
 import { snapshotHash } from '../../src/core/snapshot.js';
 import { rational, type Rational } from '../../src/core/rational.js';
 import { cardsBelief, claimProbability } from '../../src/modules/sequential-cards/deck.js';
 import {
   coverProbability,
   entryClaim,
+  fairValue,
   transformedClaim,
 } from '../../src/modules/sequential-cards/pricing.js';
 import { triadMiddleReference } from '../../src/modules/sequential-cards/references.js';
@@ -328,5 +330,243 @@ describe("sequential-cards: restore() replays the round's own rules", () => {
       switched += 1;
     }
     expect(switched).toBe(3);
+  });
+});
+
+/**
+ * The liquidation half of the same question, which is the half that carries the
+ * money out of the round.
+ *
+ * `switch` and `split` move a claim and credit nothing; `cash` credits. So a
+ * forged receipt log is worth writing on the `cash` branch and nowhere else, and
+ * every case below forges exactly that: a liquidation whose credited integer
+ * **re-derives perfectly** from the belief the receipt was fenced to, whose
+ * stake, ticket, open receipt and cap basis are all honest, and which no legal
+ * command sequence could have produced.
+ *
+ * The strongest of them is the first. A post-reveal switch grows the claim at
+ * the post-reveal belief; a cash fenced back to revision 0 then prices that
+ * claim at the pre-reveal one. Nothing in the receipt algebra objects — the
+ * arithmetic is exact at both revisions — and the pairing is worth 22× the
+ * honest liquidation.
+ */
+describe('sequential-cards: restore() replays the rules of a liquidation too', () => {
+  const CAP_BASIS = 50n;
+
+  async function openedRound(index: number): Promise<{ book: CardsBook; roundId: string }> {
+    const roundId = `cash-rules-${index}`;
+    const book = new CardsBook(definition);
+    await book.open({
+      idempotencyKey: 'open',
+      expectedStepRevision: 0,
+      roundId,
+      selections: [
+        { id: 'a', kind: 'position', position: 0, stake: 25n },
+        { id: 'm', kind: 'market', marketId: 'BAND:CORE', stake: 25n },
+      ],
+    });
+    return { book, roundId };
+  }
+
+  /** A round taken through one reveal, filtered on what the reveal left offered. */
+  async function revealedRound(
+    wants: (book: CardsBook) => boolean,
+  ): Promise<{ book: CardsBook; step: RevealStep }> {
+    for (let index = 0; index < 64; index += 1) {
+      const { book, roundId } = await openedRound(index);
+      const deal = deriveDeal(seed(index), definition, roundId);
+      const step = deriveRevealSteps(definition, deal, book.choices)[0] as RevealStep;
+      await book.advanceReveal({ idempotencyKey: 'reveal', expectedStepRevision: 0, step });
+      if (wants(book)) return { book, step };
+    }
+    throw new Error('no seed in the sweep produced the state this case needs');
+  }
+
+  /**
+   * A cash-out receipt appended to a snapshot, priced at whatever belief the
+   * frame it is fenced to implies.
+   *
+   * Every derived field moves with it: the credited integer is the one
+   * `payableWithinCap` produces at that belief, the `capped` flag is the one the
+   * cap chain produces, the selection is marked cashed for that integer, and the
+   * liquid balance closes. A restore that refuses this refuses it on the rule,
+   * because there is no arithmetic left to refuse it on.
+   */
+  function forgeCash(base: Mutable, selectionId: string, frame: number): string {
+    const rows = base.selections as Mutable[];
+    const row = rows.find((candidate) => candidate.id === selectionId);
+    if (row === undefined) throw new Error(`no selection ${selectionId} in the fixture`);
+    const wire = row.claim as { numerator: string; denominator: string };
+    const claim = rational(BigInt(wire.numerator), BigInt(wire.denominator));
+    const belief = cardsBelief(definition, (base.steps as RevealStep[]).slice(0, frame));
+    const value = fairValue(definition, claim, coverProbability(belief, row.positions as number[]));
+    const liquid = BigInt(base.liquidBalance as string);
+    const payable = payableWithinCap(value, CAP_BASIS, definition.risk.maxWinMultiple, liquid);
+    const fingerprint = commandFingerprint('cash', [
+      stepDigest((base.steps as RevealStep[]).slice(0, frame)),
+      selectionId,
+    ]);
+    const receipts = [
+      ...(base.receipts as WireEntry[]),
+      {
+        fingerprint,
+        receipt: {
+          schema: 'reveal-engine/receipt-v1',
+          idempotencyKey: 'forged-cash',
+          commandFingerprint: fingerprint,
+          action: 'cash',
+          ledgerRevision: (base.receipts as WireEntry[]).length + 1,
+          frameRevision: frame,
+          debited: '0',
+          credited: String(payable.credited),
+          balanceDelta: String(payable.credited),
+          capped: payable.capped,
+        },
+      },
+    ];
+    return reseal({
+      ...base,
+      receipts,
+      ledgerRevision: receipts.length,
+      liquidBalance: String(liquid + payable.credited),
+      selections: rows.map((candidate) =>
+        candidate.id === selectionId
+          ? {
+              ...candidate,
+              status: 'cashed',
+              credited: String(payable.credited),
+              decidedAtStepRevision: frame,
+            }
+          : candidate,
+      ),
+    });
+  }
+
+  /**
+   * Refused, and refused **by the named guard**.
+   *
+   * The message is asserted on purpose. A forged snapshot has many things wrong
+   * with it by the time every derived field has been rewritten, and a case that
+   * passes because some unrelated check fired first is evidence of nothing: it
+   * would keep passing after the guard it is supposed to be about was deleted.
+   */
+  const refuses = (label: string, tampered: string, guard: string): void => {
+    const restore = (): CardsBook => CardsBook.restore(definition, tampered);
+    expect(restore, label).toThrowError(RevealEngineError);
+    expect(restore, label).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT', message: guard }) as unknown as Error,
+    );
+  };
+
+  it('refuses a cash-out priced at a belief the round was not standing at', async () => {
+    const { book } = await revealedRound((candidate) => {
+      const offers = candidate.offers('a');
+      const belief = candidate.belief();
+      return (
+        offers.includes('switch') &&
+        offers.includes('cash') &&
+        belief.record.hidden.some(
+          (position) => position !== 0 && (belief.positionWeights[position] as bigint) > 0n,
+        )
+      );
+    });
+    const belief = book.belief();
+    const target = belief.record.hidden.find(
+      (position) => position !== 0 && (belief.positionWeights[position] as bigint) > 0n,
+    ) as number;
+    await book.switchClaim({
+      idempotencyKey: 'switch',
+      expectedStepRevision: 1,
+      selectionId: 'a',
+      positions: [target],
+    });
+    const base = JSON.parse(book.serialize()) as Mutable;
+
+    // The blocker itself: the switch is priced at the post-reveal belief and the
+    // cash at the pre-reveal one, so the credit is worth strictly more than the
+    // honest liquidation of the same claim in the same state.
+    const forged = forgeCash(base, 'a', 0);
+    const honestValue = fairValue(
+      definition,
+      book.selections[0]?.claim as Rational,
+      coverProbability(belief, [target]),
+    );
+    const forgedCredit = BigInt(
+      (JSON.parse(forged) as { liquidBalance: string }).liquidBalance as string,
+    );
+    expect(forgedCredit).toBeGreaterThan(
+      payableWithinCap(honestValue, CAP_BASIS, definition.risk.maxWinMultiple, 0n).credited,
+    );
+    refuses(
+      'a cash fenced back to the pre-reveal belief',
+      forged,
+      'Receipt is fenced to a step revision the round was not standing at',
+    );
+
+    // Same log, same frames, only the ledger order swapped: the switch is
+    // presented before the reveal that made it legal.
+    const entries = base.receipts as WireEntry[];
+    refuses(
+      'a decision presented before the reveal it was fenced to',
+      reseal({
+        ...base,
+        receipts: entries.map((entry) =>
+          entry.receipt.action === 'reveal'
+            ? { ...entry, receipt: { ...entry.receipt, ledgerRevision: 3 } }
+            : entry.receipt.action === 'switch'
+              ? { ...entry, receipt: { ...entry.receipt, ledgerRevision: 2 } }
+              : entry,
+        ),
+      }),
+      'Receipt is fenced to a step revision the round was not standing at',
+    );
+
+    // The decision window, on the branch that credits: the switch already acted
+    // at revision 1, so nothing else may.
+    refuses(
+      'a cash in the window a switch already used',
+      forgeCash(base, 'a', 1),
+      'Two decisions on one selection inside one decision window',
+    );
+  });
+
+  it('refuses a liquidation of a row the round never offers one on', async () => {
+    const { book } = await revealedRound((candidate) => candidate.offers('a').includes('cash'));
+    const base = JSON.parse(book.serialize()) as Mutable;
+    // A side market settles from the deal; it has no in-round action at all, and
+    // its honest credit here is exactly zero, so only the rule refuses it.
+    refuses(
+      'a cash-out of a side market',
+      forgeCash(base, 'm', 1),
+      'A side market settles from the deal and has no in-round liquidation',
+    );
+
+    const { book: decided } = await revealedRound(
+      (candidate) => candidate.offers('a').length === 0,
+    );
+    // A reveal that decided the backed cover offers nothing, cash included.
+    refuses(
+      'a cash-out in a state the reveal already decided',
+      forgeCash(JSON.parse(decided.serialize()) as Mutable, 'a', 1),
+      'The round did not offer a cash-out in the state the receipt was minted in',
+    );
+
+    const { book: unrevealed } = await openedRound(0);
+    // Before the first reveal the board is symmetric and no liquidating action
+    // is offered; this frame is the one the round really is standing at.
+    refuses(
+      'a cash-out before the first reveal',
+      forgeCash(JSON.parse(unrevealed.serialize()) as Mutable, 'a', 0),
+      'The round did not offer a cash-out in the state the receipt was minted in',
+    );
+  });
+
+  it('still restores a round that really did cash out', async () => {
+    const { book } = await revealedRound((candidate) => candidate.offers('a').includes('cash'));
+    await book.cash({ idempotencyKey: 'cash', expectedStepRevision: 1, selectionId: 'a' });
+    expect(book.liquidBalance).toBeGreaterThan(0n);
+    const restored = CardsBook.restore(definition, book.serialize());
+    expect(restored.snapshot()).toEqual(book.snapshot());
+    expect(restored.liquidBalance).toBe(book.liquidBalance);
   });
 });

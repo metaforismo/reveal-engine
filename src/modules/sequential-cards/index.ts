@@ -44,11 +44,12 @@ export {
   freezeCardsDefinition,
 } from './adapter.js';
 
+export { assertRevealRecord, assertRevealSteps } from './record.js';
+
 export {
   assertCardsDefinition,
   assertDeal,
   assertPlayerChoices,
-  assertRevealSteps,
   eligibleSetSize,
   CARDS_MAX_DEALT,
   CARDS_MAX_OPEN_CLAIMS,

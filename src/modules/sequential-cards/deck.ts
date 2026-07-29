@@ -3,6 +3,7 @@ import { countingProbability, factorial } from '../../core/combinatorics.js';
 import { rational, type Rational } from '../../core/rational.js';
 import { reduceWeights, weightVector, type WeightVector } from '../../core/weights.js';
 import type { CardsClaim, RevealStep, SequentialCardsDefinition } from './contracts.js';
+import { assertRevealRecord } from './record.js';
 
 /**
  * Exact counting over the deck.
@@ -198,6 +199,17 @@ export function cardsBelief(
   definition: SequentialCardsDefinition,
   steps: readonly RevealStep[],
 ): CardsBelief {
+  // **Nothing prices from an unvalidated record.** The posterior is a function
+  // of the published record alone, so a step list that is not well-formed
+  // record does not have a posterior — and the failure is silent rather than
+  // loud: a `sortRemaining` definition whose last sort is the wrong width takes
+  // the exchangeable branch, throws away the published order and the cumulative
+  // bounds with it, and returns a perfectly well-formed belief that prices
+  // eliminated outcomes at `1/3`. Every money-carrying entry point this module
+  // declares — `steps.price`, `steps.belief`, and every book command — reaches
+  // the counting through here, so the check is made once rather than left to
+  // each caller to remember.
+  assertRevealRecord(definition, steps);
   const { size, dealt } = definition.ladder;
   const record = revealRecordOf(definition, steps);
   const hiddenCount = record.hidden.length;

@@ -276,6 +276,7 @@ describe('stable public API snapshot', () => {
       'assertCardsDefinition',
       'assertDeal',
       'assertPlayerChoices',
+      'assertRevealRecord',
       'assertRevealSteps',
       'assertTicketComposition',
       'buildCardsTranscript',

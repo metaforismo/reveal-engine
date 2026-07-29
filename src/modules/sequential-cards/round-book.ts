@@ -62,12 +62,8 @@ import {
   deserializeCardsTranscript,
   verifyCardsTranscript,
 } from './transcript.js';
-import {
-  assertCardsDefinition,
-  assertPlayerChoices,
-  assertRevealSteps,
-  reject,
-} from './validation.js';
+import { assertRevealSteps } from './record.js';
+import { assertCardsDefinition, assertPlayerChoices, reject } from './validation.js';
 
 export type CardsReceipt = LedgerReceipt<CardsAction>;
 
@@ -722,21 +718,32 @@ export class CardsBook {
    * has settled, its revealed seed is public, so the deal, the reveals, the
    * objective, and the sealed commitment are re-derived from it as well.
    *
+   * It also replays the round's **own rules**, command by command, because the
+   * receipt algebra cannot see them: a command the round would have refused is
+   * neither an inconsistency nor the stake. Every restored `switch`, `split` and
+   * `cash` clears the guards its live counterpart clears, and every receipt is
+   * held to the frame the round was actually standing at — the number of reveals
+   * already installed — because a claim grown at one belief and priced at
+   * another is the one rewrite that creates value out of an otherwise honest
+   * log.
+   *
    * **What that does and does not establish, precisely.** It defeats every
    * *inconsistent* rewrite: a claim that does not match its price, a decision
    * that does not match its receipt, a reveal that does not match the digest it
    * was fenced to, a credit that does not match the cap chain, a choice log that
    * does not match the ticket, and — after settlement — any outcome that does not
-   * match the revealed seed. It does **not** authenticate the snapshot. Receipt
-   * fingerprints and the checksum are unkeyed and deterministic, so anyone who
-   * can rewrite the store can rewrite a field *and* its receipt *and* the hash
-   * together. Before settlement the stake is exactly such a field: it enters
-   * from the wallet and has no cryptographic anchor inside the round, so a
-   * coordinated rewrite of a stake, its claim, its open receipt, and the cap
-   * basis is internally consistent and restores. Snapshot integrity is a
-   * deployment obligation — trusted storage, or a MAC the host owns — and
-   * `docs/modules/sequential-cards.md` §6.3 says so rather than implying the
-   * re-derivation covers it.
+   * match the revealed seed. It defeats every *illegal command*: one the round's
+   * rules would have refused at the revision its receipt claims. It does **not**
+   * authenticate the snapshot. Receipt fingerprints and the checksum are unkeyed
+   * and deterministic, so anyone who can rewrite the store can rewrite a field
+   * *and* its receipt *and* the hash together — and what survives that is only
+   * what this method can re-derive or replay. Two inputs are neither: the stake,
+   * which enters from the wallet with no anchor inside the round, and a reveal,
+   * which a book holding no seed cannot place (§6.2). A coordinated rewrite of
+   * either restores. Snapshot integrity is a deployment obligation — trusted
+   * storage, or a MAC the host owns — and
+   * `docs/modules/sequential-cards.md` §6.3 says so, including the claim an
+   * earlier revision of this docstring made that the code did not support.
    */
   static restore(definition: SequentialCardsDefinition, input: string | object): CardsBook {
     assertCardsDefinition(definition);
@@ -858,9 +865,25 @@ export class CardsBook {
     }));
     book.#ledger.install(stored, book.stepRevision, (receipt) => {
       if (settled) fail('INVALID_SNAPSHOT', 'Receipts continue past settlement');
+      // **The frame is not free.** A command is minted at the round's live step
+      // revision, so a receipt's frame is exactly the number of reveals the log
+      // has already installed — never an earlier one, and never a later one.
+      // `CommandLedger.install` cannot know that: it only bounds the frame by
+      // the reveal log's length, which leaves a snapshot free to price a
+      // command at any belief the round ever held. That is the pairing that
+      // creates value: a claim grown at a post-reveal belief, liquidated at the
+      // pre-reveal one, is internally consistent receipt by receipt and is a
+      // state no legal command sequence produces — so no walk this module
+      // performs bounds it, `analyseDefinition`'s reachable maximum included.
+      if (receipt.frameRevision !== reveals)
+        fail(
+          'INVALID_SNAPSHOT',
+          'Receipt is fenced to a step revision the round was not standing at',
+          '$.receipts',
+        );
       const digest = stepDigest(book.#steps.slice(0, receipt.frameRevision));
       if (receipt.action === 'open') {
-        if (opened || receipt.credited !== 0n || receipt.frameRevision !== 0)
+        if (opened || receipt.credited !== 0n)
           fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
         if (book.#roundId === undefined)
           fail(
@@ -886,7 +909,6 @@ export class CardsBook {
           fail('INVALID_SNAPSHOT', 'A reveal must not move money');
         const step = book.#steps[receipt.frameRevision];
         if (
-          reveals !== receipt.frameRevision ||
           step === undefined ||
           receipt.commandFingerprint !==
             commandFingerprint('reveal', [digest, ...encodeRevealStep(step)])
@@ -1015,6 +1037,35 @@ export class CardsBook {
         if (selection === undefined)
           fail('INVALID_SNAPSHOT', 'Cash receipt matches no live selection', '$.receipts');
         const belief = beliefAt(receipt.frameRevision);
+        // The same replay the switch/split branch performs, and for the same
+        // reason — except that this one carries money out of the round, so it
+        // is the branch a forged receipt log is worth writing. `cash()` refuses
+        // a side market, refuses a second decision inside one window, and
+        // refuses an action the state did not offer; a restore that skipped any
+        // of them would credit a liquidation the round would have rejected.
+        if (selection.kind !== 'position')
+          fail(
+            'INVALID_SNAPSHOT',
+            'A side market settles from the deal and has no in-round liquidation',
+            '$.receipts',
+          );
+        if (selection.decidedAtStepRevision === receipt.frameRevision)
+          fail(
+            'INVALID_SNAPSHOT',
+            'Two decisions on one selection inside one decision window',
+            '$.receipts',
+          );
+        if (
+          !offeredActions(definition, belief, selection.positions, {
+            stepRevision: receipt.frameRevision,
+            excluded: book.#coveredByOthers(selection.id),
+          }).includes('cash')
+        )
+          fail(
+            'INVALID_SNAPSHOT',
+            'The round did not offer a cash-out in the state the receipt was minted in',
+            '$.receipts',
+          );
         const payable = payableWithinCap(
           fairValue(definition, selection.claim, coverProbability(belief, selection.positions)),
           capBasis as bigint,
