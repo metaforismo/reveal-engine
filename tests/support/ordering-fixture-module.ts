@@ -707,16 +707,29 @@ const snapshotIsRevalidated: ModuleConformanceCheck<OrderingShape> = {
     } catch (error) {
       reject(`Restore rejected its own snapshot: ${String(error)}`);
     }
-    const tampers: readonly Record<string, unknown>[] = [
-      { ...snapshot, liquidBalance: '999999' },
-      { ...snapshot, ledgerRevision: 7 },
-      { ...snapshot, definition: { ...snapshot.definition, fingerprint: '0'.repeat(64) } },
-      { ...snapshot, snapshotHash: '0'.repeat(64) },
+    // Re-sealed, so each tamper is judged on its merits: a store that can
+    // rewrite a field can recompute the checksum over it, and a case the hash
+    // catches proves nothing about the validation underneath.
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+    const tampers: readonly string[] = [
+      reseal({ ...snapshot, liquidBalance: '999999' }),
+      reseal({ ...snapshot, ledgerRevision: 7 }),
+      reseal({ ...snapshot, terminal: true }),
+      reseal({
+        ...snapshot,
+        definition: { ...snapshot.definition, fingerprint: '0'.repeat(64) },
+      }),
+      // Not re-sealed: the checksum still has to catch plain corruption.
+      JSON.stringify({ ...snapshot, snapshotHash: '0'.repeat(64) }),
     ];
     for (const tampered of tampers) {
       count('snapshotTampers');
       try {
-        OrderingBook.restore(definition, JSON.stringify(tampered));
+        OrderingBook.restore(definition, tampered);
         reject('Restore accepted a tampered snapshot');
       } catch {
         // Expected: a tampered snapshot must not restore.

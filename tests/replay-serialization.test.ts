@@ -6,7 +6,18 @@ import {
   binaryBeaconReference,
   constellationReference,
 } from '../src/modules/progressive-market/references/index.js';
+import { snapshotHash } from '../src/core/snapshot.js';
 import { advanceAll, seed } from './helpers.js';
+
+/**
+ * Recomputes the checksum, so a mutation below is rejected by the validation it
+ * targets rather than by the hash. Anyone who can rewrite a stored snapshot can
+ * recompute the hash over it, so the hash is never the interesting rejection.
+ */
+const reseal = (snapshot: Record<string, unknown>): Record<string, unknown> => {
+  const { snapshotHash: _replaced, ...base } = snapshot;
+  return { ...base, snapshotHash: snapshotHash(base) };
+};
 
 describe('snapshot, reconnect, and deterministic replay', () => {
   it('restores byte-identical state at every frame boundary', async () => {
@@ -48,7 +59,10 @@ describe('snapshot, reconnect, and deterministic replay', () => {
     await advanceAll(book, transcript);
     const snapshot = JSON.parse(book.serialize()) as Record<string, unknown>;
     expect(() =>
-      RoundBook.restore(binaryBeaconReference, { ...snapshot, liquidBalance: '999' } as never),
+      RoundBook.restore(
+        binaryBeaconReference,
+        reseal({ ...snapshot, liquidBalance: '999' }) as never,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
     expect(() => RoundBook.restore(constellationReference, book.serialize())).toThrowError(
       expect.objectContaining({ code: 'ADAPTER_MISMATCH' }),
@@ -73,7 +87,7 @@ describe('snapshot, reconnect, and deterministic replay', () => {
     }>;
     receipts[0]!.receipt.balanceDelta = 'not-an-integer';
     expect(() =>
-      RoundBook.restore(binaryBeaconReference, { ...snapshot, receipts } as never),
+      RoundBook.restore(binaryBeaconReference, reseal({ ...snapshot, receipts }) as never),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 

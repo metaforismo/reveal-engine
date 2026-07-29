@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { fromWireReceipt, RECEIPT_SCHEMA, type WireReceipt } from '../src/core/ledger.js';
+import { snapshotHash } from '../src/core/snapshot.js';
 import { RoundBook, ROUND_ACTIONS } from '../src/modules/progressive-market/round-book.js';
 import { verifyTranscriptDetailed } from '../src/modules/progressive-market/fairness.js';
 import {
@@ -98,16 +99,40 @@ describe('frozen wire fixtures', () => {
     expect(verifyTranscriptDetailed(FROZEN_SEED, frozenGame, round.transcript).ok).toBe(true);
   });
 
-  it('rejects a tampered copy of the committed snapshot', () => {
+  /**
+   * Each mutation is **re-sealed** before it is restored.
+   *
+   * The checksum detects corruption, not tampering: anyone who can rewrite a
+   * field can recompute the hash over it, so a case that keeps the original
+   * `snapshotHash` only proves the hash noticed, which is the weaker claim.
+   * Recomputing it puts the semantic validation in `RoundBook.restore` under
+   * test — the reconstructed balance, the cap basis the first stake fixed, the
+   * terminal flag the settle receipt implies, and the receipt count the ledger
+   * revision has to match.
+   */
+  const reseal = (snapshot: Record<string, unknown>): string => {
+    const { snapshotHash: _replaced, ...base } = snapshot;
+    return JSON.stringify({ ...base, snapshotHash: snapshotHash(base) });
+  };
+
+  it('rejects a re-sealed mutation of the committed snapshot on its merits', () => {
     const snapshot = readFixture('round-book-v1.json').snapshot as Record<string, unknown>;
+    expect(() => RoundBook.restore(frozenGame, reseal(snapshot))).not.toThrow();
     for (const tampered of [
       { ...snapshot, liquidBalance: '999999' },
       { ...snapshot, capBasisStake: '999999' },
       { ...snapshot, terminal: false },
       { ...snapshot, ledgerRevision: 3 },
     ])
-      expect(() => RoundBook.restore(frozenGame, JSON.stringify(tampered))).toThrowError(
+      expect(() => RoundBook.restore(frozenGame, reseal(tampered))).toThrowError(
         expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
       );
+  });
+
+  it('also rejects an unsealed mutation, by the checksum', () => {
+    const snapshot = readFixture('round-book-v1.json').snapshot as Record<string, unknown>;
+    expect(() =>
+      RoundBook.restore(frozenGame, JSON.stringify({ ...snapshot, liquidBalance: '999999' })),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 });
