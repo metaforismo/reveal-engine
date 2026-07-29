@@ -61,6 +61,8 @@ const MODULE_VERSION = '0.0.2';
 const TRANSCRIPT_SCHEMA = 'ordering-fixture/transcript-v1' as const;
 const SNAPSHOT_SCHEMA = 'ordering-fixture/book-v1' as const;
 const ACTIONS = Object.freeze(['stake', 'settle'] as const);
+/** The module's ceiling on simultaneous claims; a definition may be stricter, never looser. */
+const MAX_OPEN_CLAIMS = 16;
 
 export interface OrderingDefinition {
   readonly id: string;
@@ -122,7 +124,9 @@ function assertDefinition(value: unknown, path = '$'): asserts value is Ordering
     !Array.isArray(definition.items) ||
     definition.items.length < 3 ||
     typeof definition.maxWinMultiple !== 'bigint' ||
-    !Number.isSafeInteger(definition.maxOpenBets)
+    !Number.isSafeInteger(definition.maxOpenBets) ||
+    definition.maxOpenBets < 1 ||
+    definition.maxOpenBets > MAX_OPEN_CLAIMS
   )
     fail('INVALID_ADAPTER', 'Invalid ordering definition', path);
 }
@@ -784,7 +788,7 @@ export const orderingFixtureModule: LifecycleModule<OrderingShape> =
       snapshotSchema: SNAPSHOT_SCHEMA,
       positions: 'multi',
       settlement: 'paytable',
-      maxOpenClaims: 16,
+      maxOpenClaims: MAX_OPEN_CLAIMS,
       actions: ACTIONS,
       create: (definition) => new OrderingBook(definition),
       restore: (definition, snapshot) => OrderingBook.restore(definition, snapshot),

@@ -70,6 +70,8 @@ const MODULE_VERSION = '0.0.1';
 const TRANSCRIPT_SCHEMA = 'staged-survival-fixture/transcript-v1' as const;
 const SNAPSHOT_SCHEMA = 'staged-survival-fixture/book-v1' as const;
 const ACTIONS = Object.freeze(['enter', 'choose', 'bank', 'settle'] as const);
+/** The module's ceiling on simultaneous claims; one claim per entity. */
+const MAX_OPEN_CLAIMS = 8;
 
 export interface SurvivalContract {
   readonly id: string;
@@ -150,6 +152,7 @@ function assertDefinition(value: unknown, path = '$'): asserts value is Survival
     typeof definition.version !== 'string' ||
     !Number.isSafeInteger(definition.entities) ||
     definition.entities < 1 ||
+    definition.entities > MAX_OPEN_CLAIMS ||
     !Number.isSafeInteger(definition.stages) ||
     definition.stages < 1 ||
     !Array.isArray(definition.contracts) ||
@@ -1051,7 +1054,7 @@ export const stagedSurvivalFixtureModule: LifecycleModule<SurvivalShape> =
       snapshotSchema: SNAPSHOT_SCHEMA,
       positions: 'multi',
       settlement: 'partial',
-      maxOpenClaims: 8,
+      maxOpenClaims: MAX_OPEN_CLAIMS,
       actions: ACTIONS,
       create: (definition) => new SurvivalBook(definition),
       restore: (definition, snapshot) => SurvivalBook.restore(definition, snapshot),
