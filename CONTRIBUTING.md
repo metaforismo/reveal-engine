@@ -4,7 +4,7 @@ This is a private proprietary repository. Do not add third-party game assets, ti
 
 Any math, adapter, proof, wire, receipt, or snapshot change requires an explicit versioning decision, a regression/compatibility fixture, conformance, and the full `npm run verify` stack. Refresh tracked stress/benchmark baselines only with `npm run artifacts:update` in an evidence-specific commit; ordinary fixes must not churn timing artifacts.
 
-The frozen wire fixtures under `tests/fixtures/` are regenerated only with `npm run fixtures:update`, and only when the wire format is deliberately changing. A diff there in an ordinary pull request means an encoding changed by accident, which is exactly what those files exist to catch. The same applies to the stress `correctnessDigest`: it is compared against `artifacts/stress-v2.json` on every run, and a mismatch means replay-visible behaviour moved.
+The frozen wire fixtures under `tests/fixtures/` are regenerated only with `npm run fixtures:update`, and only when the wire format is deliberately changing. A diff there in an ordinary pull request means an encoding changed by accident, which is exactly what those files exist to catch. The same applies to the stress `moduleDigests`: every module's anchor is compared against `artifacts/stress-v3.json` on every run, and a mismatch — or a module the baseline anchors and the run no longer produces — means replay-visible behaviour moved.
 
 New lifecycle modules follow the checklist in [`docs/lifecycle-modules.md`](docs/lifecycle-modules.md).
 

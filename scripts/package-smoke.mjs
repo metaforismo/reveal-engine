@@ -19,6 +19,7 @@ const subpaths = [
   './modules',
   './modules/progressive-market',
   './modules/sequential-cards',
+  './modules/staged-survival',
   './conformance',
   './integration',
   './protocol',
@@ -40,6 +41,7 @@ try {
   assert(files.includes('dist/cli/verify.js'));
   assert(files.includes('dist/modules/progressive-market/index.js'));
   assert(files.includes('dist/modules/sequential-cards/index.js'));
+  assert(files.includes('dist/modules/staged-survival/index.js'));
   assert(!files.some((path) => path.startsWith('src/') || path.startsWith('tests/')));
 
   const installDirectory = join(directory, 'consumer');
@@ -77,6 +79,7 @@ try {
   const modules = loaded['./modules'];
   const progressiveMarket = loaded['./modules/progressive-market'];
   const sequentialCards = loaded['./modules/sequential-cards'];
+  const stagedSurvival = loaded['./modules/staged-survival'];
   const conformance = loaded['./conformance'];
   const integration = loaded['./integration'];
 
@@ -90,7 +93,7 @@ try {
   assert.equal(core.defineGame, undefined, 'core must stay game-agnostic');
   assert.deepEqual(
     modules.listModules().map((module) => module.id),
-    ['progressive-market', 'sequential-cards'],
+    ['progressive-market', 'sequential-cards', 'staged-survival'],
   );
   assert.equal(progressiveMarket.progressiveMarket.moduleApiVersion, 'reveal-engine/module-v1');
   assert.equal(typeof progressiveMarket.RoundBook, 'function');
@@ -100,6 +103,14 @@ try {
   assert.equal(typeof sequentialCards.CardsBook, 'function');
   assert.equal(sequentialCards.triadMiddleReference.ladder.dealt, 3);
   assert.equal(sequentialCards.cardsCommitmentBody, undefined);
+  assert.equal(stagedSurvival.stagedSurvival.moduleApiVersion, 'reveal-engine/module-v1');
+  assert.equal(typeof stagedSurvival.SurvivalBook, 'function');
+  assert.equal(stagedSurvival.fiveRunnerReference.contracts.length, 3);
+  assert.equal(
+    stagedSurvival.commitmentBody,
+    undefined,
+    'a module must not export its body layout',
+  );
   assert.equal(typeof conformance.checkModuleConformance, 'function');
   assert.equal(typeof integration.RgsExample, 'function');
   assert.equal(loaded['./protocol'].RoundBook, progressiveMarket.RoundBook);
@@ -121,6 +132,13 @@ try {
     2,
   );
   assert.equal(cardsReport.ok, true);
+
+  const survivalReport = conformance.checkModuleConformance(
+    stagedSurvival.stagedSurvival,
+    stagedSurvival.oracleTrialReference,
+    2,
+  );
+  assert.equal(survivalReport.ok, true);
 
   console.log(
     JSON.stringify({

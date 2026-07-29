@@ -5,6 +5,7 @@ import * as core from '../src/core/index.js';
 import * as modules from '../src/modules/index.js';
 import * as progressiveMarket from '../src/modules/progressive-market/index.js';
 import * as sequentialCards from '../src/modules/sequential-cards/index.js';
+import * as stagedSurvival from '../src/modules/staged-survival/index.js';
 import * as conformance from '../src/conformance/index.js';
 import * as integration from '../src/integration/index.js';
 import * as protocol from '../src/protocol/index.js';
@@ -176,14 +177,17 @@ describe('stable public API snapshot', () => {
       'progressiveMarket',
       'requireModule',
       'sequentialCards',
+      'stagedSurvival',
     ]);
     expect(modules.listModules().map((module) => module.id)).toEqual([
       'progressive-market',
       'sequential-cards',
+      'staged-survival',
     ]);
     expect(modules.requireModule('progressive-market').version).toBe('1.0.0');
     expect(modules.requireModule('sequential-cards').version).toBe('1.0.0');
-    expect(() => modules.requireModule('staged-survival')).toThrowError(
+    expect(modules.requireModule('staged-survival').version).toBe('1.0.0');
+    expect(() => modules.requireModule('not-a-shipped-module')).toThrowError(
       expect.objectContaining({ code: 'UNKNOWN_MODULE' }),
     );
     expect(Object.keys(progressiveMarket).sort()).toEqual([
@@ -363,6 +367,70 @@ describe('stable public API snapshot', () => {
       'triadMiddleReference',
     ])
       expect(leaked in root).toBe(false);
+  });
+
+  it('exposes the staged-survival module surface and no proof-construction internals', () => {
+    expect(Object.keys(stagedSurvival).sort()).toEqual([
+      'ACCEPTED_TRANSCRIPT_SCHEMAS',
+      'COMMITMENT_VERSION',
+      'ENGINE_API_VERSION',
+      'LEGACY_COMMITMENT_VERSION',
+      'MAX_ROUND_ID_BYTES',
+      'ROUND_REF_SEPARATOR',
+      'STAGED_SURVIVAL_CHECKS',
+      'STAGED_SURVIVAL_MODULE_ID',
+      'STAGED_SURVIVAL_MODULE_VERSION',
+      'SURVIVAL_ACTIONS',
+      'SURVIVAL_BOOK_SCHEMA',
+      'SURVIVAL_LIMITS',
+      'SurvivalBook',
+      'TRANSCRIPT_SCHEMA',
+      'assertCapIsUnreachable',
+      'assertClientEntropy',
+      'assertOperatorRoundId',
+      'assertRoundRef',
+      'assertSurvivalChoice',
+      'assertSurvivalDefinition',
+      'belief',
+      'binomial',
+      'choicesEqual',
+      'contractFor',
+      'contractMenu',
+      'defineSurvivalGame',
+      'definitionFields',
+      'deriveSteps',
+      'deriveTruth',
+      'deserializeTranscript',
+      'distributionTotal',
+      'expectedSurvivors',
+      'expectedSurvivorsFromDistribution',
+      'fiveRunnerReference',
+      'lanePartition',
+      'laneSizes',
+      'laneSurvivorDistribution',
+      'liveAfter',
+      'makeTranscript',
+      'marginalSurvival',
+      'maxRoundReturn',
+      'oracleTrialReference',
+      'parseRoundRefId',
+      'price',
+      'resolveStage',
+      'roundIdentityOf',
+      'roundRefId',
+      'seedCommitment',
+      'serializeTranscript',
+      'stagedSurvival',
+      'stakedSnapshotFor',
+      'stepsEqual',
+      'survivalFingerprint',
+      'survivalIdentity',
+      'survivorDistribution',
+      'threshold',
+      'transcriptToWire',
+    ]);
+    for (const banned of ['commitmentBody', 'encodeStep', 'encodeTruth', 'encodeFields'])
+      expect(banned in stagedSurvival).toBe(false);
   });
 
   it('keeps every remaining package subpath explicit', () => {

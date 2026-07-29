@@ -2,6 +2,7 @@ import { fail } from '../api/errors.js';
 import type { LifecycleModule } from '../core/module.js';
 import { progressiveMarket } from './progressive-market/module.js';
 import { sequentialCards } from './sequential-cards/module.js';
+import { stagedSurvival } from './staged-survival/module.js';
 
 /**
  * Registry of lifecycle modules shipped in this repository.
@@ -13,6 +14,7 @@ import { sequentialCards } from './sequential-cards/module.js';
 const REGISTRY: readonly LifecycleModule[] = Object.freeze([
   progressiveMarket as unknown as LifecycleModule,
   sequentialCards as unknown as LifecycleModule,
+  stagedSurvival as unknown as LifecycleModule,
 ]);
 
 export function listModules(): readonly LifecycleModule[] {
@@ -29,5 +31,5 @@ export function requireModule(id: string): LifecycleModule {
   return module;
 }
 
-export { progressiveMarket, sequentialCards };
+export { progressiveMarket, sequentialCards, stagedSurvival };
 export type { LifecycleModule };

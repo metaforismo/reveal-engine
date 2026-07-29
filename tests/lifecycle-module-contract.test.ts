@@ -35,6 +35,7 @@ describe('lifecycle module contract', () => {
     expect(listModules().map((module) => module.id)).toEqual([
       'progressive-market',
       'sequential-cards',
+      'staged-survival',
     ]);
     expect(findModule('progressive-market')).toBe(progressiveMarket);
     expect(requireModule('progressive-market').moduleApiVersion).toBe(MODULE_API_VERSION);

@@ -62,7 +62,7 @@ library. See [`docs/threat-model.md`](docs/threat-model.md).
 | **core**             | RNG, commitments, exact math, payments, ledger, limits, wire safety                                                | shipped |
 | `progressive-market` | one hidden truth, a Bayesian evidence stream, a single-position book with fair-value sell and re-entry             | shipped |
 | `sequential-cards`   | committed deck shuffle; reveals that eliminate outcomes to exactly zero; multiple simultaneous positions           | shipped |
-| `staged-survival`    | N entities through S stages; a contract chosen per stage before it resolves; per-entity partial claims and banking | next    |
+| `staged-survival`    | N entities through S stages; a contract chosen per stage before it resolves; per-entity partial claims and banking | shipped |
 | `permutation`        | structured truth (an ordering of n items) with multi-bet paytable settlement                                       | next    |
 | `grid-pattern`       | spatial reveal over a committed grid                                                                               | later   |
 | `graph-propagation`  | reveal that spreads along a committed graph                                                                        | later   |
@@ -72,7 +72,7 @@ The contract every module implements is documented in
 [`docs/lifecycle-modules.md`](docs/lifecycle-modules.md) and typed in
 `src/core/module.ts`.
 
-The two `next` modules are not built yet, but the properties that make them
+The remaining `next` modules are not built yet, but the properties that make them
 hard are already executable. `tests/support/ordering-fixture-module.ts` carries
 the permutation truth, the reveals that drive an outcome to posterior exactly
 zero, the combinatorial paytable, and the several simultaneous positions;
@@ -140,15 +140,18 @@ Four independent layers, all reproducible:
 1. **Re-derivation.** `reveal-verify <transcript.json> <seed>` re-derives truth,
    evidence, and commitment and compares in constant time. It returns a typed
    failure code — never a parser stack trace.
-2. **Frozen wire fixtures.** `transcript-v1`, `transcript-v2`, `receipt-v1`, and
-   `round-book-v1` are committed files under `tests/fixtures/`, and a
+2. **Frozen wire fixtures.** `transcript-v1`, `transcript-v2`, `receipt-v1`,
+   `round-book-v1`, `staged-survival/transcript-v1` and
+   `staged-survival/book-v1` are committed files under `tests/fixtures/`, and a
    known-answer `commit-v2` vector is pinned in the proof-vector tests. Each one
    is rebuilt from its seed on every run and compared field for field against
    the committed bytes, so changing an encoding without changing a version
    breaks the build. (This is a real freeze, not a runtime round trip: a round
    trip moves both sides of the comparison together and would accept the
-   change.) The seeded stress workload's `correctnessDigest` is likewise
-   compared against its committed baseline rather than merely printed.
+   change.) The seeded stress workload carries one correctness digest **per
+   lifecycle module**, and every one is compared against its committed baseline
+   rather than merely printed — including a check that a module the baseline
+   anchors has not silently dropped out of the workload.
 3. **Oracles, not simulations.** Posterior and pricing are cross-checked against
    an independent raw-weight fraction oracle, and the within-round strategy
    theorem is proved by exhaustive enumeration over every two-tick binary path

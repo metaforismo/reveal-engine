@@ -1,6 +1,6 @@
 {
   "name": "@axiom-games/reveal-engine",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Provably-fair casino game engine: exact-arithmetic core plus lifecycle modules",
   "type": "module",
@@ -39,6 +39,10 @@
     "./modules/sequential-cards": {
       "types": "./dist/modules/sequential-cards/index.d.ts",
       "default": "./dist/modules/sequential-cards/index.js"
+    },
+    "./modules/staged-survival": {
+      "types": "./dist/modules/staged-survival/index.d.ts",
+      "default": "./dist/modules/staged-survival/index.js"
     },
     "./protocol": {
       "types": "./dist/protocol/index.d.ts",
@@ -79,7 +83,7 @@
     "test:stress": "node --import tsx scripts/stress.ts --output artifacts/runtime/stress.json",
     "bench": "node --import tsx scripts/benchmark.ts --output artifacts/runtime/benchmark.json",
     "fixtures:update": "node --import tsx scripts/fixtures.ts",
-    "artifacts:update": "node --import tsx scripts/stress.ts --output artifacts/stress-v2.json && node --import tsx scripts/benchmark.ts --output artifacts/benchmark-v2.json",
+    "artifacts:update": "node --import tsx scripts/stress.ts --output artifacts/stress-v3.json && node --import tsx scripts/benchmark.ts --output artifacts/benchmark-v3.json",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run conformance && npm run build && npm run test:package && npm run test:stress && npm run bench"
   },
   "devDependencies": {

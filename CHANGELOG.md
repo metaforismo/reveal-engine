@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-07-29
 
-### Added
+Three lifecycle modules land on the 0.3 platform core, developed independently
+and integrated together: `sequential-cards`, `staged-survival` and
+`permutation`. None of them required a change to the module contract itself.
+
+### `sequential-cards`
+
+#### Added
 
 - **`sequential-cards`, the second shipped lifecycle module**
   (`src/modules/sequential-cards/`, documented in
@@ -59,7 +65,7 @@
 - `composeRoundSeed()`: the operator-seed, client-seed and nonce composition the
   module derives from, written down once with its residual risk stated.
 
-### Fixed
+#### Fixed
 
 - **`CardsBook.restore()` credited a liquidation no round could have issued.**
   The `cash` branch replayed none of the guards its `switch`/`split` sibling
@@ -91,7 +97,7 @@
   the settlement draw. Both are tabled, and with `dormancy` removed the spec's
   own §4.1 definition now constructs — checked by a test that transcribes it.
 
-### Changed
+#### Changed
 
 - `docs/lifecycle-modules.md` records two things `sequential-cards` found while
   being written against the contract: a step that moves no money may still need
@@ -122,7 +128,7 @@
   `docs/integration-checklist.md`, an open row in `docs/threat-model.md`, and
   §6.2 and §12 of the module doc; a test pins the behaviour.
 
-### Reviewed
+#### Reviewed
 
 - A third independent review found two major and three minor issues, all fixed:
   the analysis ceilings above, the undocumented reveal-provenance boundary, four
@@ -147,7 +153,7 @@
   integrity is named as a deployment obligation instead of being implied away.
   See `docs/adr/0005-…` Decision 6.
 
-### Not included, deliberately
+#### Not included, deliberately
 
 - `rounding: 'stochastic'` — the unbiased settlement draw a consuming game
   declares — is **declarable and refused** at definition time with
@@ -155,6 +161,286 @@
   seed and a per-credit-event draw is not derivable from a transcript's inputs,
   so implementing it needs a core change larger than this module. ADR 0005 §4
   records exactly what it would take. Only `rounding: 'floor'` is implemented.
+
+### `staged-survival`
+
+#### Added
+
+- `staged-survival` (`src/modules/staged-survival/`, documented in
+  `docs/modules/staged-survival.md`): N entities through S stages, a stage
+  contract chosen from an adapter-defined menu **before** the stage resolves, and
+  per-entity contingent claims banked in subsets between stages. Registered in
+  `src/modules/index.ts` and exported at `./modules/staged-survival`, so it runs
+  in `reveal-conformance` and in the package smoke test without either being
+  edited for it.
+- **Correlation is a declared property.** A `LaneProfile` is a shared per-lane
+  shock `q` plus an independent per-entity clear `c`: the marginal
+  `p = (1 - q)c` is the same for every geometry while the joint law is a
+  convolution of per-lane binomials mixed with a point mass at zero.
+  `q = 0` is exactly zero, so a contract can declare exact independence.
+- **A counterfactually complete tape.** The seed expands into a draw for every
+  stage, every contract on the menu, every lane slot and every entity —
+  `stages x contracts x entities x 2` — before the round opens. A decision
+  selects which committed draws are read, never which draws exist, and the
+  unchosen routes stay verifiable after the reveal.
+- **Player entropy in every draw.** A round is identified by the pair
+  `(roundId, clientEntropy)`; the seed pre-commitment binds only the operator
+  half, because the entropy does not exist when it is published. See
+  `docs/adr/0008-round-entropy-without-a-core-change.md` for why this rides in
+  the contract's `roundId: string` rather than through a widened core signature,
+  and what that costs.
+- **Two mechanical refusals at define time.**
+  `marginalSurvival * multiplier === pricing.continuationReturn === 1` for every
+  contract, so every route through a round returns the same and the entry margin
+  is the whole edge; and, when `risk.capMustBeUnreachable` is declared, the exact
+  maximum round return `entryReturn * max(mu)^stages` must sit strictly below
+  `risk.maxWinMultiple`.
+- Wire formats `staged-survival/transcript-v1` and `staged-survival/book-v1`,
+  with frozen fixtures in `tests/fixtures/` compared field for field.
+- A mandatory oracle test (`tests/staged-survival-oracle.test.ts`): a
+  three-entity, two-stage instance enumerated **exhaustively** against an
+  independently coded model — every elementary draw pattern of every reachable
+  field, the survivor distribution term for term, the expected value of every
+  contract path under every banking policy, and the round cap held across the
+  whole chain and shown to bind exactly where the arithmetic says it must.
+- Two reference definitions: `fiveRunnerReference` (five runners, three stages,
+  `wide`/`split`/`narrow`) and `oracleTrialReference`.
+
+#### Fixed
+
+- **`restore()` runs the live path's admission test on the _pending_ decision.**
+  Every choice with a resolved step was re-validated through
+  `assertStepGeometry()` -> `contractFor()`. The trailing one — logged by
+  `choose()`, not yet resolved — had no step to be checked against, so it arrived
+  through nothing but the structural wire parse and its contract id was never
+  matched against the menu it faces. A re-sealed, fingerprint-consistent snapshot
+  whose pending decision named an unknown contract, or one the field is too small
+  to be offered, restored with its bank credit already standing and no legal move
+  left: `resolve()` fails on `contractFor`, `settle()` refuses an unresolved
+  decision, and `bank()` refuses a pending one. No value is created and the cap is
+  untouched; the loss is availability on a round holding money — the same shape as
+  `enter -> bank -> enter` and the lane-geometry drift, one field over, and the
+  third time this module has fixed it. `restore()` now calls `contractFor()` on
+  the field the decision faces and holds its banked subset to the entities that
+  were running. `tests/security/staged-survival-hostile-input.test.ts` carries the
+  metamorphic half: what `choose()` refuses, `restore()` refuses.
+- **`laneSizes()` bounds the field size, not only its sign.** The width is the
+  loop's decrement and was bounded; `liveCount` is the _length of the array the
+  loop builds_ and was checked only for being a non-negative safe integer.
+  Measured on the exported helper: `3e7` allocated thirty million elements and
+  returned, `1e9` spent five seconds and died with a bare `RangeError` — an
+  unbounded allocation and an untyped throw out of a public export.
+  `SURVIVAL_LIMITS.maxEntities` is 32, so no legitimate call is affected;
+  `lanePartition()`, `expectedSurvivors()` and `liveAfter()`'s entity count take
+  the same bound for the same reason.
+- **`liveAfter()`, `belief()` and `price()` no longer price a corrupt step
+  prefix.** The guard read `steps[steps.length - 1]` and returned early only on
+  `undefined`, which conflated "no steps yet" with "a hole where the last step
+  should be". Two failures fell out: a nullish element dereferenced null for a
+  bare `TypeError`, and — worse in kind — `price(definition, [undefined], claim)`
+  took the empty branch and returned a live entity's marginal for a round whose
+  prefix is corrupt. A silently wrong price is a worse outcome than a loud
+  refusal. The length now decides the branch, every element of the prefix is
+  checked, and a hole is a malformed prefix: `DERIVATION_FAILED`.
+- **Nothing on the exported surface throws an untyped error.** The claim was
+  unqualified and a systematic sweep found 47 places where it was false. The
+  probability helpers validated `contract.laneWidth` and then dereferenced
+  `profile.laneFailure.numerator`, so `{laneWidth: 2}` came back as a `TypeError`
+  from a pricing call; `resolveStage()` bounded what its draw sources returned but
+  never checked they were callable, and let whatever a throwing callback raised
+  propagate; `distributionTotal`, `expectedSurvivorsFromDistribution`,
+  `threshold`, `stepsEqual`, `choicesEqual`, `transcriptToWire`,
+  `serializeTranscript` and `SurvivalBook.bankableAmount` read `.length` or a
+  field off `null`. None was reachable from an untrusted path — `verify()`,
+  `deserializeTranscript()` and `restore()` were and are total — but the claim was
+  the thing under test, so the helpers moved rather than the claim. A shared
+  `assertLaneProfile()` holds a contract to the same ranges a declared one is held
+  to; `survivorDistribution()` additionally requires the contract to be one its
+  definition declares, since a foreign one's denominators need not divide
+  `drawModulus` and its law is one no round of that game could realise;
+  `resolveStage()` requires callable sources and wraps what they throw in
+  `DERIVATION_FAILED`, passing a typed failure from inside a source through
+  unchanged. Every new validator iterates **by index**, because `forEach`, `map`,
+  `every` and `reduce` all skip holes and a sparse array is exactly the shape that
+  would walk past them. The sweep is kept as a test over every exported entry
+  point, so a new export that forgets its guards fails it.
+  `docs/adr/0009-the-exported-surface-is-held-to-the-command-surface-standard.md`
+  records the decision and the two behaviour changes a consumer could notice.
+- **`npm run fixtures:update` is idempotent against the repo's own format gate.**
+  It wrote raw `JSON.stringify(…, 2)`, which disagrees with prettier over short
+  arrays, so regenerating an unchanged fixture left four files dirty with a
+  pure-whitespace diff and `npm run verify` then failed at `format:check` — while
+  `docs/modules/staged-survival.md` §7.4 points readers at that command as the
+  deliberate regeneration path. The script now formats its output with prettier
+  and the repo's own configuration, and regenerating an unchanged fixture leaves
+  the tree clean.
+- **`bank()` now carries the same full-funding guard as `choose()`.**
+  `enter(0) -> bank([0])` was accepted by the live path and credited real money,
+  after which `enter(1..4)` was still legal — and `restore()` refuses an `enter`
+  receipt that follows a `bank` one, so the round became permanently
+  unreconnectable at that point and at every later point of its life. No value
+  leaked (the cap basis only grows, so an early bank is measured against a
+  strictly smaller ceiling); availability did. An entry after a bank is now
+  impossible as a consequence rather than as a second guard: by the time a bank
+  can run, every entity id is taken.
+- **`restore()` no longer accepts a withdrawal set the live path cannot
+  produce.** The withdrawn entities were reconciled as a _set union_ of every
+  decision's `banked` list plus `pendingBanked`, so an entity present in both
+  collapsed into one element and passed the count check. The two sources are now
+  read as a disjoint union, and a snapshot carrying both an unresolved decision
+  and an uncommitted banked subset is refused outright — `choose()` folds the
+  subset into its own decision and clears it, and `bank()` is closed while a
+  decision is pending. Restored, such a state re-folded the stale entity into the
+  next decision and the round could never produce a valid transcript or be
+  settled. `restore()` also now requires a fully funded entry list whenever the
+  snapshot carries a bank record, not only a logged decision.
+- **`defineSurvivalGame()` refuses a definition it could not price.** Entity
+  count, stage count, draw modulus, menu size and tape size were each bounded,
+  but the quantities derived from them grow as powers — `den(c)^entities` in the
+  field survivor law, `mu^stages` in the maximum round return. A declaration
+  could satisfy every field-level bound, satisfy `p * mu == 1` exactly, and still
+  make `survivorDistribution()` or `maxRoundReturn()` raise `INVALID_RATIONAL`
+  from inside the rational primitives at the first derivation — an adapter defect
+  surfacing as an engine arithmetic failure, and one that aborts a conformance
+  run part way through. Both derived widths are now bounded at define time with
+  an `INVALID_ADAPTER` refusal; the bounds are sufficient rather than tight and
+  `docs/modules/staged-survival.md` §4.8 states them and says so. A test pins the
+  slack from the other side: a 32-entity field in one lane at 60-bit denominators
+  must still define and still derive a law summing to exactly `1`.
+- **`enter()` bounds the stake's width, not only its sign.** A claim value is
+  `stake * entryReturn * prod(mu)`, and the stake was the one input to it that
+  was never bounded. A stake wide enough to overflow that product passed
+  `fundStake()` — which had already moved the cap basis and the entry list — and
+  then raised `INVALID_RATIONAL` while the claim was being constructed, leaving
+  an inflated basis, an entry with no claim and no receipt, in a book `restore()`
+  could not even parse. `SURVIVAL_LIMITS.maxStakeBits` is now 64, reserved inside
+  the define-time pricing bound, so a stake that clears `enter()` cannot overflow
+  anywhere in the round. `restore()` holds a restored entry stake to the same
+  width, because the snapshot codec's own bound is the far wider engine limit.
+- **`resolve()` now runs the same step admission test as `restore()`, from the
+  same function.** The live path checked the resolved set and skipped the lane
+  geometry that `restore()` re-derives, so a step reporting a partition the
+  chosen contract does not produce — lanes re-cut, lanes emptied, one entity in
+  two lanes, or every lane flagged collapsed while reporting survivors — was
+  accepted live and refused by every later `restore()`. The book could take a
+  `bank()` credit in that state and then never reconnect, which is exactly the
+  availability defect recorded two entries above for `enter -> bank -> enter`,
+  reintroduced one field over. Both paths now call one `assertStepGeometry()`, so
+  the set equality, the lane partition and the collapsed-lane rule are checked
+  identically going in and coming back; the duplication that let them drift is
+  gone. `tests/security/staged-survival-hostile-input.test.ts` asserts each shape
+  is refused and carries the metamorphic law — nothing `resolve()` accepts may be
+  something `restore()` refuses — which is the test whose absence let this
+  through.
+- **The tape now moves with the definition fingerprint, not only with its id.**
+  `roundIdentityOf()` put `definition.id` in `definitionId`, which core maps onto
+  the sampler `domain`, so two definitions sharing an id and a version but
+  declaring different `laneFailure`/`entitySurvival` produced byte-identical
+  tapes under one seed. Not exploitable — the seed pre-commitment binds the
+  fingerprint independently, so a substituted definition fails
+  `COMMITMENT_MISMATCH` — but the grid was blind to the fields that decide what a
+  draw means, and SWARM §6.4 requires the opposite. The domain is now
+  `survivalFingerprint(definition)`: used whole rather than appended to the id,
+  because the id is already inside the fingerprint's preimage and because an
+  `id#fingerprint` composite would break the 128-byte identifier bound at a
+  maximal id. `TAPE_NOT_DETERMINISTIC` now checks the binding structurally on
+  every adapter, and the module suite checks it behaviourally on twins.
+  **This changes every derived tape**, so the frozen fixtures were regenerated
+  deliberately; the wire _format_ is unchanged and stays `-v1`, which is
+  defensible only because this module has never shipped — 0.4.0 is its first
+  release. The frozen round was also re-seeded to `0a…` so it rides all three
+  reference contracts and both lane states instead of one contract three times.
+- **`resolve()` fails closed with a typed error on a malformed step.** It is the
+  one entry point that takes a step as a raw object rather than through
+  `parseWireStepList`, and four shapes threw a bare `TypeError` out of a
+  money-bearing command instead of a `RevealEngineError`: `survivors`, `failed`
+  or `banked` undefined, and `failed` as a number. A step assembled with its
+  `lanes` on a prototype was also accepted, where the transcript wire boundary
+  has always refused an inherited key. `assertStepShape()` now runs before any
+  field is read, checks every field as an **own** property, and reports
+  `TRANSCRIPT_MISMATCH` with a path. `restore()` deliberately does not call it —
+  its steps come through the wire parser, which is stricter — and the comment
+  says so rather than leaving the asymmetry to be rediscovered.
+- **`resolveStage()` validates its own arguments.** It is a public export and it
+  is the function that produces the step object `book.resolve()` credits from,
+  yet it accepted duplicate entities, entities outside the definition,
+  non-integer entities, a 500-element field on a 3-entity game, and draws outside
+  `[0, drawModulus)` — where a negative draw collapses every lane and a draw at
+  the modulus collapses none, whatever probability was declared. The live field
+  must now be ascending, distinct and inside the definition (its order is part of
+  the geometry, since `lanePartition()` cuts consecutive slices), and both draw
+  sources are held to the modulus. No internal caller could reach any of it, so
+  this is hardening rather than a live-bug fix, and it makes the function consistent
+  with `laneSizes()` and `laneSurvivorDistribution()`, which already argued that
+  an exported helper checks its own bounds.
+- **`MAX_ROUND_ID_BYTES` and `ROUND_REF_SEPARATOR` are exported.** ADR 0008 names
+  "a host can check the budget rather than discover it" as the one mitigation for
+  the ergonomic cost it accepts, and the constant was not in the subpath, so the
+  mitigation existed only on paper. Both are now exported and pinned by the
+  public-API list and by a boundary test.
+- **`laneSurvivorDistribution()` bounds its lane size by the contract width.** It
+  is an exported helper reachable with an arbitrary size, and `c^j` under it is a
+  power, so a validated contract with a wide denominator overflowed there rather
+  than refusing an out-of-range argument. `lanePartition()` never produces a
+  wider lane, so no internal caller changes.
+- The stress digest gate validates its own baseline with `assertStressArtifact`
+  and fails when it cannot — a gate that quietly stops gating when its input is
+  malformed is not a gate — and compares the **union** of both key sets, so a
+  module the baseline does not anchor is drift too rather than silently ungated.
+  `compareModuleDigests()` is extracted and unit-tested in both directions.
+
+#### Changed
+
+- `docs/lifecycle-modules.md`, `README.md` and `docs/api-reference.md` record
+  that two modules ship. **No core file was modified.**
+- **Stress and benchmark artifacts carry one replay anchor per lifecycle
+  module.** `correctnessDigest` became `moduleDigests`, keyed by module id, and
+  both schemas moved to `reveal-engine/stress-v3` and
+  `reveal-engine/benchmark-v3` (baselines renamed to `artifacts/stress-v3.json`
+  and `artifacts/benchmark-v3.json`). A single digest over a whole run moves
+  whenever a module is _added_ to the workload, which makes a new workload
+  indistinguishable from drift in an existing one. `progressive-market`'s 0.2 and
+  0.3 values are carried forward byte-identical under its own key. The stress
+  run now compares every anchor the baseline carries and fails on a mismatch
+  **or** on a module the baseline anchors and the run no longer produces.
+- Both scripts run `staged-survival` alongside `progressive-market`, so the new
+  module ships with bounded-load and throughput evidence gated by the same
+  `npm run verify` and CI steps as the first one. `docs/evidence-ledger.md` is
+  rewritten for this branch and now carries a per-module section.
+- `docs/modules/staged-survival.md` §10 no longer claims BRANCHFALL's
+  player-chosen lane balance is expressible as one contract per balance. One
+  balance at one field size is; the menu as a whole is not, because the lane
+  count is a function of the field rather than of the contract, a later lane can
+  never be larger than an earlier one, and there is no `maxEntities` to keep a
+  contract off larger fields. The gap is now stated in both the module doc and
+  `TODO.md`.
+- **`docs/modules/staged-survival.md` §10 no longer makes a blanket coverage
+  claim.** It said "everything else in SWARM's §6 conformance list is covered
+  here", which was checkably false for several of the eighteen items — there is
+  no action chain for §6.11, the grid did not move with the fingerprint for §6.4,
+  and `bank([])` is refused where §6.14 wants every `k` in `[0, units]`. §10 is
+  the section a consuming team is entitled to trust as a gap analysis, so it now
+  carries the list item by item with a verdict of provided, analogue, partial,
+  inherited, N/A or not provided, and a reason for each. The missing action chain
+  is named in "Not provided" rather than left to inference.
+- **§10 gained a cap-basis row and §10.2.** BRANCHFALL's main route ticket
+  declares `risk.capBasis: 'per-ticket'` in bold, and this module refuses
+  anything but `round-external-stake`. The divergence was mentioned only inside
+  the side-bets bullet, framed as a per-line concern, so a reader checking
+  BRANCHFALL's main-ticket declaration against the "Provided" table found
+  nothing. It is now a row and a section: no value is at risk while
+  `capMustBeUnreachable: true`, because `assertCapIsUnreachable` forces the exact
+  maximum round return strictly below `maxWinMultiple` and total credit cannot
+  exceed `basis * maxRoundReturn`; under a `false` declaration a shared round
+  ceiling genuinely differs from a per-ticket accumulator, since an early bank
+  consumes headroom the latter would keep separate.
+- **§5 and §9 now state the credit-before-proof ordering.** §7.3 already said
+  `restore()` "holds no seed, so it cannot verify a step against the tape", but
+  §5 presented `bank()` without the equivalent caveat and the residual-risk list
+  omitted it. `bank()` credits against a step checked for shape and not for
+  truth; `settle()` is the only call that verifies and it runs afterwards. Closing
+  the lane-geometry gap narrows this but cannot close it — the survivor bits
+  inside a lane that held are exactly the part that needs the seed.
 
 ## 0.3.0 — 2026-07-29
 

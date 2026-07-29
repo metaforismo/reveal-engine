@@ -4,8 +4,20 @@ export interface LatencySummary {
   readonly p99Ms: number;
   readonly maxMs: number;
 }
+/**
+ * One replay anchor per lifecycle module, keyed by module id.
+ *
+ * This replaced the single `correctnessDigest` of the `-v2` artifacts, which is
+ * why both schemas are now `-v3`. A repository with more than one module needs
+ * one digest per module rather than one digest for the run: a single digest over
+ * everything moves whenever a module is *added* to the workload, which makes it
+ * impossible to tell a new workload from drift in an existing one. Each module's
+ * value here is the same construction the `-v2` digest used, so
+ * `progressive-market` carries its 0.2 value forward unchanged.
+ */
+export type ModuleDigests = Readonly<Record<string, string>>;
 export interface StressArtifact {
-  readonly schema: 'reveal-engine/stress-v2';
+  readonly schema: 'reveal-engine/stress-v3';
   readonly evidenceClass: 'synthetic-local-or-ci';
   readonly workloadSeed: number;
   readonly rounds: number;
@@ -18,7 +30,7 @@ export interface StressArtifact {
   readonly maxTranscriptBytes: number;
   readonly accepted: Readonly<Record<string, number>>;
   readonly rejected: Readonly<Record<string, number>>;
-  readonly correctnessDigest: string;
+  readonly moduleDigests: ModuleDigests;
   readonly thresholds: {
     readonly elapsedMs: number;
     readonly p99Ms: number;
@@ -34,14 +46,14 @@ export interface StressArtifact {
   };
 }
 export interface BenchmarkArtifact {
-  readonly schema: 'reveal-engine/benchmark-v2';
+  readonly schema: 'reveal-engine/benchmark-v3';
   readonly evidenceClass: 'synthetic-local-or-ci';
   readonly samples: number;
   readonly events: number;
   readonly elapsedMs: number;
   readonly eventsPerSecond: number;
   readonly latency: LatencySummary;
-  readonly correctnessDigest: string;
+  readonly moduleDigests: ModuleDigests;
   readonly thresholds: {
     readonly elapsedMs: number;
     readonly p99Ms: number;
@@ -82,7 +94,7 @@ export function assertStressArtifact(value: unknown): asserts value is StressArt
       'maxTranscriptBytes',
       'accepted',
       'rejected',
-      'correctnessDigest',
+      'moduleDigests',
       'thresholds',
       'status',
       'runtime',
@@ -90,7 +102,7 @@ export function assertStressArtifact(value: unknown): asserts value is StressArt
     '$',
   );
   if (
-    artifact.schema !== 'reveal-engine/stress-v2' ||
+    artifact.schema !== 'reveal-engine/stress-v3' ||
     artifact.evidenceClass !== 'synthetic-local-or-ci' ||
     (artifact.status !== 'pass' && artifact.status !== 'fail')
   )
@@ -106,7 +118,7 @@ export function assertStressArtifact(value: unknown): asserts value is StressArt
   latency(artifact.latency, '$.latency');
   counts(artifact.accepted, '$.accepted');
   counts(artifact.rejected, '$.rejected');
-  digest(artifact.correctnessDigest, '$.correctnessDigest');
+  moduleDigests(artifact.moduleDigests, '$.moduleDigests');
   stressThresholds(artifact.thresholds);
   artifactRuntime(artifact.runtime);
 }
@@ -122,7 +134,7 @@ export function assertBenchmarkArtifact(value: unknown): asserts value is Benchm
       'elapsedMs',
       'eventsPerSecond',
       'latency',
-      'correctnessDigest',
+      'moduleDigests',
       'thresholds',
       'status',
       'runtime',
@@ -130,7 +142,7 @@ export function assertBenchmarkArtifact(value: unknown): asserts value is Benchm
     '$',
   );
   if (
-    artifact.schema !== 'reveal-engine/benchmark-v2' ||
+    artifact.schema !== 'reveal-engine/benchmark-v3' ||
     artifact.evidenceClass !== 'synthetic-local-or-ci' ||
     (artifact.status !== 'pass' && artifact.status !== 'fail')
   )
@@ -140,13 +152,37 @@ export function assertBenchmarkArtifact(value: unknown): asserts value is Benchm
   finite(artifact.elapsedMs, '$.elapsedMs', true);
   finite(artifact.eventsPerSecond, '$.eventsPerSecond', true);
   latency(artifact.latency, '$.latency');
-  digest(artifact.correctnessDigest, '$.correctnessDigest');
+  moduleDigests(artifact.moduleDigests, '$.moduleDigests');
   const thresholds = record(artifact.thresholds, '$.thresholds');
   exactKeys(thresholds, ['elapsedMs', 'p99Ms', 'minimumEventsPerSecond'], '$.thresholds');
   finite(thresholds.elapsedMs, '$.thresholds.elapsedMs', true);
   finite(thresholds.p99Ms, '$.thresholds.p99Ms', true);
   finite(thresholds.minimumEventsPerSecond, '$.thresholds.minimumEventsPerSecond', true);
   artifactRuntime(artifact.runtime);
+}
+/**
+ * Compares a run's replay anchors against a baseline's, in both directions.
+ *
+ * Returns one human-readable line per disagreement, empty when they agree
+ * exactly. The comparison is over the **union** of the two key sets on purpose:
+ * a module the baseline anchors and the run no longer produces is drift (the
+ * workload silently lost a module), and a module the run produces and the
+ * baseline does not anchor is also drift (the workload silently gained one, and
+ * nothing is gating it). Both demand the same deliberate `artifacts:update`.
+ */
+export function compareModuleDigests(
+  baseline: ModuleDigests,
+  current: ModuleDigests,
+): readonly string[] {
+  const absent = '(absent from this run)';
+  const unanchored = '(not anchored by the baseline)';
+  return [...new Set([...Object.keys(baseline), ...Object.keys(current)])]
+    .sort()
+    .filter((moduleId) => baseline[moduleId] !== current[moduleId])
+    .map(
+      (moduleId) =>
+        `  ${moduleId}: baseline ${baseline[moduleId] ?? unanchored}, current ${current[moduleId] ?? absent}`,
+    );
 }
 export function runtime(): StressArtifact['runtime'] {
   return {
@@ -200,6 +236,23 @@ function counts(value: unknown, path: string): void {
 function digest(value: unknown, path: string): void {
   if (typeof value !== 'string' || !/^[0-9a-f]{64}$/u.test(value))
     invalid(path, 'expected canonical sha256');
+}
+/**
+ * A non-empty map of module id to replay anchor.
+ *
+ * Empty is rejected: an artifact with no anchors is a run that measured timings
+ * and proved nothing, and it would sail past the baseline comparison because
+ * there would be no shared key left to compare.
+ */
+function moduleDigests(value: unknown, path: string): void {
+  const entries = record(value, path);
+  const keys = Object.keys(entries);
+  if (keys.length === 0) invalid(path, 'expected at least one module digest');
+  for (const key of keys) {
+    if (key.length === 0 || Buffer.byteLength(key, 'utf8') > 128)
+      invalid(path, 'invalid module id');
+    digest(entries[key], `${path}.${key}`);
+  }
 }
 function stressThresholds(value: unknown): void {
   const thresholds = record(value, '$.thresholds');
