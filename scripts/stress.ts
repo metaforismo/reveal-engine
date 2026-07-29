@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { RevealEngineError } from '../src/api/errors.js';
 import {
@@ -195,6 +195,36 @@ const artifact: StressArtifact = {
   runtime: runtime(),
 };
 assertStressArtifact(artifact);
+
+/**
+ * Compares the correctness digest against the committed baseline.
+ *
+ * The digest hashes every receipt and every final snapshot in the workload, so
+ * it is the strongest replay anchor in the repository — and it was previously
+ * printed and never checked. Timings are machine-dependent and stay
+ * informational; the digest is not, and a mismatch on the same workload seed and
+ * round count fails the run.
+ */
+const BASELINE_PATH = 'artifacts/stress-v2.json';
+if (existsSync(BASELINE_PATH)) {
+  const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as StressArtifact;
+  if (baseline.workloadSeed === workloadSeed && baseline.rounds === rounds) {
+    if (baseline.correctnessDigest !== artifact.correctnessDigest) {
+      console.error(
+        `Stress correctness digest drifted from ${BASELINE_PATH}:\n` +
+          `  baseline ${baseline.correctnessDigest}\n` +
+          `  current  ${artifact.correctnessDigest}\n` +
+          'Replay-visible behaviour changed. Make a version decision, then run npm run artifacts:update.',
+      );
+      process.exitCode = 1;
+    }
+  } else {
+    console.error(
+      `Skipped digest comparison: baseline workload is ${baseline.rounds} rounds at seed ${baseline.workloadSeed}.`,
+    );
+  }
+}
+
 const outputFlag = process.argv.indexOf('--output');
 if (outputFlag >= 0 && process.argv[outputFlag + 1]) {
   const path = process.argv[outputFlag + 1]!;

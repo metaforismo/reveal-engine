@@ -6,7 +6,7 @@ import {
   binaryBeaconReference,
   constellationReference,
 } from '../src/modules/progressive-market/references/index.js';
-import { advanceAll, completedBook, seed } from './helpers.js';
+import { completedBook, seed } from './helpers.js';
 
 describe('idempotency, stale frames, races, and atomicity', () => {
   it.each([

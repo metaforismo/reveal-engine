@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { ENGINE_LIMITS } from '../../src/api/limits.js';
-import type { RevealEngineError } from '../../src/api/errors.js';
+import { RevealEngineError } from '../../src/api/errors.js';
+import { CommandLedger, fromWireReceipt } from '../../src/core/ledger.js';
+import { uniformBigInt as coreUniformBigInt } from '../../src/core/random.js';
+import { reduceWeights, weightGcd } from '../../src/core/weights.js';
+import { checkModuleConformance } from '../../src/conformance/module-conformance.js';
 import {
   COMMITMENT_VERSION,
   type RoundContext,
 } from '../../src/modules/progressive-market/contracts.js';
 import {
   makeTranscript,
+  roundIdentityOf,
+  scopeOf,
   uniform,
+  uniformBigInt,
   verifyTranscriptDetailed,
 } from '../../src/modules/progressive-market/fairness.js';
 import { payable } from '../../src/core/payments.js';
@@ -113,3 +120,92 @@ describe('hostile input and failure taxonomy', () => {
     ).rejects.toMatchObject({ code: 'INVALID_SEED' });
   });
 });
+
+/**
+ * Regression suite for the relocation.
+ *
+ * Extracting core out of the progressive market moved the sampler behind a
+ * module wrapper. These are the exact call shapes that used to reach
+ * `assertContext` before anything was dereferenced, and they must still fail
+ * the same way: a typed `RevealEngineError`, never a raw `TypeError`.
+ */
+describe('public sampler entry points reject malformed contexts before dereferencing', () => {
+  const cases: readonly [string, unknown][] = [
+    ['null', null],
+    ['undefined', undefined],
+    ['array', []],
+    ['string', 'x'],
+    ['number', 5],
+    ['empty gameId', { gameId: '', roundId: 'r', proofVersion: COMMITMENT_VERSION }],
+    ['missing roundId', { gameId: 'g', proofVersion: COMMITMENT_VERSION }],
+    ['bad proof version', { gameId: 'g', roundId: 'r', proofVersion: 'reveal-engine/commit-v9' }],
+  ];
+
+  it.each(cases)('uniform rejects a %s context', (_label, context) => {
+    const error = captureError(() => uniform(seed(1), context as RoundContext, 'label', 0, 10));
+    expect(error).toBeInstanceOf(RevealEngineError);
+    expect(error).not.toBeInstanceOf(TypeError);
+  });
+
+  it.each(cases)('uniformBigInt rejects a %s context', (_label, context) => {
+    expect(
+      captureError(() => uniformBigInt(seed(1), context as RoundContext, 'label', 0, 10n)),
+    ).toBeInstanceOf(RevealEngineError);
+  });
+
+  it.each(cases)('scopeOf and roundIdentityOf reject a %s context', (_label, context) => {
+    expect(captureError(() => scopeOf(context as RoundContext))).toBeInstanceOf(RevealEngineError);
+    expect(captureError(() => roundIdentityOf(context as RoundContext))).toBeInstanceOf(
+      RevealEngineError,
+    );
+  });
+
+  it('reports a missing or non-record context as INVALID_CONTEXT, as it always did', () => {
+    for (const context of [null, undefined, [], 'x', 5])
+      expect(() => uniform(seed(1), context as unknown as RoundContext, 'l', 0, 10)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_CONTEXT' }),
+      );
+    // Core's own sampler agrees: a malformed scope is a context failure.
+    for (const scope of [null, {}, { domain: '', roundId: 'r', proofVersion: COMMITMENT_VERSION }])
+      expect(() => coreUniformBigInt(seed(1), scope as never, 'l', 0, 10n)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_CONTEXT' }),
+      );
+  });
+});
+
+describe('core wire helpers fail closed on attacker-shaped input', () => {
+  it.each([null, undefined, 'x', 5, [], {}, { debited: '1' }])(
+    'fromWireReceipt rejects %j without dereferencing it',
+    (input) => {
+      const error = captureError(() => fromWireReceipt(input as never, ['open']));
+      expect(error).toBeInstanceOf(RevealEngineError);
+      expect((error as RevealEngineError).code).toBe('INVALID_SNAPSHOT');
+    },
+  );
+
+  it.each([null, undefined, 'x', 5, [], {}])('CommandLedger rejects options %j', (options) => {
+    const error = captureError(() => new CommandLedger(options as never));
+    expect(error).toBeInstanceOf(RevealEngineError);
+    expect((error as RevealEngineError).code).toBe('INVALID_ADAPTER');
+  });
+
+  it.each([null, undefined, 'x', 5, [], {}])('conformance rejects module %j', (module) => {
+    const report = captureError(() => checkModuleConformance(module as never, {}));
+    expect(report).toBeInstanceOf(RevealEngineError);
+    expect((report as RevealEngineError).code).toBe('INVALID_MODULE');
+  });
+
+  it.each([null, undefined, 'x', 5, [1, 'x'], [{}]])('weight helpers reject %j', (weights) => {
+    expect(captureError(() => weightGcd(weights as never))).toBeInstanceOf(RevealEngineError);
+    expect(captureError(() => reduceWeights(weights as never))).toBeInstanceOf(RevealEngineError);
+  });
+});
+
+function captureError(operation: () => unknown): unknown {
+  try {
+    operation();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}

@@ -74,6 +74,7 @@
     "test:package": "npm run build && node scripts/package-smoke.mjs",
     "test:stress": "node --import tsx scripts/stress.ts --output artifacts/runtime/stress.json",
     "bench": "node --import tsx scripts/benchmark.ts --output artifacts/runtime/benchmark.json",
+    "fixtures:update": "node --import tsx scripts/fixtures.ts",
     "artifacts:update": "node --import tsx scripts/stress.ts --output artifacts/stress-v2.json && node --import tsx scripts/benchmark.ts --output artifacts/benchmark-v2.json",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run conformance && npm run build && npm run test:package && npm run test:stress && npm run bench"
   },

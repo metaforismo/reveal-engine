@@ -6,7 +6,15 @@ import { uniform } from '../fairness.js';
 
 const firstEntryRtp = rational(9550n, 10000n);
 const rtpFloor = rational(8500n, 10000n);
-/** Derived, not hand-tuned: the largest ride count whose worst-case RTP still clears the floor. */
+/**
+ * Derived, not hand-tuned: the largest ride count for which `firstEntryRtp` to
+ * the power of (rides + 1) still clears `rtpFloor`.
+ *
+ * This is a *configuration* bound on how many times a round may be re-entered,
+ * and `RoundBook.open` enforces it. It is not a guarantee that a deployment's
+ * realised RTP clears the floor: that depends on player behaviour, the sell
+ * spread, and the cap, none of which this number models. See `docs/math.md`.
+ */
 const maxRides = deriveMaxContinuations(firstEntryRtp, rtpFloor);
 if (maxRides !== 2) throw new Error('BLACK SIGNAL reference continuation policy drifted');
 

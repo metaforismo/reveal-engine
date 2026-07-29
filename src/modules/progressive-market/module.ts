@@ -2,7 +2,6 @@ import type { CanonicalField } from '../../internal/canonical.js';
 import {
   defineLifecycleModule,
   type LifecycleModule,
-  type LifecycleShape,
   type RoundIdentity,
 } from '../../core/module.js';
 import { MODULE_API_VERSION } from '../../core/versions.js';
