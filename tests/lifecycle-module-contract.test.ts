@@ -134,8 +134,70 @@ describe('lifecycle module contract', () => {
         'SNAPSHOT_NOT_REVALIDATED',
       ]);
       expect(report.counters.snapshotTampers).toBe(4 * 7);
+      // `checks` lists what was declared; `ran` is what actually executed. One
+      // definition-scoped check runs once, the four round-scoped ones once per
+      // seed, so a skipped check shows up as a missing or short entry here.
+      expect(report.ran).toEqual({
+        NOT_DEEP_FROZEN: 1,
+        TRUTH_SWEEP: 4,
+        TRANSCRIPT_ROUND_TRIP: 4,
+        PROBABILITY_NOT_NORMALIZED: 4,
+        SNAPSHOT_NOT_REVALIDATED: 4,
+      });
     },
   );
+
+  /**
+   * A conformance report must never claim evidence it did not produce.
+   *
+   * Two ways it could: a seed count of zero, which skips every round-scoped
+   * check while still listing all five codes and returning `ok: true`; and a
+   * check whose `scope` matches neither branch of the runner, which never
+   * executes at all. Both are now refused — the first at the runner's seed
+   * bound, the second at `defineLifecycleModule()` with the runner as a second
+   * line for a module object that never went through it.
+   */
+  it('refuses to produce a passing report that proves nothing', () => {
+    const zeroSeeds = checkModuleConformance(progressiveMarket, binaryBeaconReference, 0);
+    expect(zeroSeeds.ok).toBe(false);
+    expect(zeroSeeds.failures[0]).toMatchObject({ code: 'INVALID_MODULE', path: '$.seedCount' });
+    expect(zeroSeeds.ran).toEqual({});
+    expect(
+      checkModuleConformance(progressiveMarket, binaryBeaconReference, 1).ok,
+      'one seed is a legitimate run',
+    ).toBe(true);
+    expect(
+      checkModuleConformance(
+        progressiveMarket,
+        binaryBeaconReference,
+        ENGINE_LIMITS.maxConformanceSeeds + 1,
+      ).ok,
+    ).toBe(false);
+
+    const ghost = {
+      ...progressiveMarket,
+      conformance: {
+        ...progressiveMarket.conformance,
+        checks: [
+          {
+            code: 'GHOST',
+            description: 'A check the runner would never reach',
+            scope: 'universe',
+            run: () => [{ code: 'GHOST', path: '$', message: 'would have failed' }],
+          },
+        ],
+      },
+    };
+    expect(() => defineLifecycleModule(ghost as never)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_MODULE', path: '$.conformance.checks[0].scope' }),
+    );
+    // Even reached directly, the runner reports the ghost instead of listing its
+    // code under `ok: true`.
+    const report = checkModuleConformance(ghost as never, binaryBeaconReference, 2);
+    expect(report.ok).toBe(false);
+    expect(report.failures[0]).toMatchObject({ code: 'INVALID_MODULE' });
+    expect(report.ran).toEqual({});
+  });
 
   /**
    * The snapshot conformance check re-derives a staked mid-round snapshot by
@@ -186,6 +248,106 @@ describe('lifecycle module contract', () => {
     expect(() =>
       defineLifecycleModule({ ...orderingFixtureModule, ...mutation } as never),
     ).toThrow();
+  });
+
+  /**
+   * Every declared enum is checked, not a sample of them.
+   *
+   * `positions` and `settlement` are documented as declarations a host branches
+   * on *before* it calls anything, so a typo in either routes a round down the
+   * wrong reserve-maths branch with no error to notice. `truth.kind` selects
+   * which conformance strategies apply, and an unrecognised `choiceTiming` would
+   * be treated as choice-timed by every `!== 'none'` test in the contract while
+   * meaning nothing to the module that declared it.
+   */
+  it.each([
+    ['truth.kind', { truth: { ...orderingFixtureModule.truth, kind: 'scalar' } }],
+    [
+      'steps.choiceTiming',
+      { steps: { ...orderingFixtureModule.steps, choiceTiming: 'befor-step' } },
+    ],
+    ['steps.beliefSpace', { steps: { ...orderingFixtureModule.steps, beliefSpace: 'outcome' } }],
+    ['book.positions', { book: { ...orderingFixtureModule.book, positions: 'multiple' } }],
+    ['book.settlement', { book: { ...orderingFixtureModule.book, settlement: 'jackpot' } }],
+  ])('rejects an unrecognised declaration for %s', (path, mutation) => {
+    expect(() =>
+      defineLifecycleModule({ ...orderingFixtureModule, ...mutation } as never),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_MODULE', path: `$.${path}` }));
+  });
+
+  /**
+   * A missing hook must fail at load, not at call.
+   *
+   * `transcript.fromWire` is the reason this matters most: it is the
+   * untrusted-input boundary, and `tests/security/hostile-input.test.ts` exists
+   * to guarantee a typed `RevealEngineError` there rather than a raw
+   * `TypeError`. A module that simply forgot to declare it would satisfy the
+   * type at compile time under a cast and throw `fromWire is not a function`
+   * from inside a verifier.
+   */
+  it.each([
+    'definitions.define',
+    'definitions.assert',
+    'definitions.fingerprint',
+    'definitions.identity',
+    'truth.derive',
+    'truth.encode',
+    'truth.equal',
+    'steps.count',
+    'steps.derive',
+    'steps.encode',
+    'steps.equal',
+    'transcript.build',
+    'transcript.commitmentBody',
+    'transcript.toWire',
+    'transcript.fromWire',
+    'book.create',
+    'book.restore',
+    'book.snapshot',
+  ])('refuses to define a module missing %s', (hook) => {
+    const [section, name] = hook.split('.') as ['truth', string];
+    expect(() =>
+      defineLifecycleModule({
+        ...orderingFixtureModule,
+        [section]: { ...orderingFixtureModule[section], [name]: undefined },
+      } as never),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_MODULE', path: `$.${hook}` }));
+  });
+
+  it('refuses an optional hook declared as something other than a function', () => {
+    expect(() =>
+      defineLifecycleModule({
+        ...orderingFixtureModule,
+        truth: { ...orderingFixtureModule.truth, enumerate: 'yes' },
+      } as never),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_MODULE', path: '$.truth.enumerate' }));
+  });
+
+  /**
+   * `maxSteps` is a declaration a host sizes storage and UI against, so it is
+   * enforced rather than recorded: without this, a module could declare
+   * `maxSteps: 0` and emit ten thousand steps.
+   */
+  it('holds a derivation to the step budget its module declared', () => {
+    const cramped = defineLifecycleModule({
+      ...orderingFixtureModule,
+      steps: { ...orderingFixtureModule.steps, maxSteps: 1 },
+    } as never) as typeof orderingFixtureModule;
+    const definition = orderingFixtureDefinition;
+    const round = {
+      moduleId: cramped.id,
+      definitionId: definition.id,
+      roundId: 'budget',
+      proofVersion: 'reveal-engine/commit-v2' as const,
+    };
+    const truth = cramped.truth.derive(seed(29), definition, 'budget');
+    // The honest module derives three steps for a four-item field.
+    expect(orderingFixtureModule.steps.derive(seed(29), definition, round, truth, [])).toHaveLength(
+      3,
+    );
+    expect(() => cramped.steps.derive(seed(29), definition, round, truth, [])).toThrowError(
+      expect.objectContaining({ code: 'DERIVATION_FAILED', path: '$.steps.maxSteps' }),
+    );
   });
 
   /**

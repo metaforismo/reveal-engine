@@ -124,14 +124,26 @@ export function assertLoggedChoices(
 /**
  * Bounds simultaneous open claims against the book's declared budget.
  *
- * Call before admitting a new claim. The declared budget is itself bounded by
- * `ENGINE_LIMITS.maxRoundClaims` at module definition time.
+ * Call before admitting a new claim. **Both** arguments are validated here, and
+ * that is deliberate: `defineLifecycleModule()` bounds `module.book.maxOpenClaims`,
+ * but a book is free to call this with a per-definition field instead (a field
+ * count, a paytable's bet limit), and core never sees that field. A budget this
+ * helper could not read as a number would make `openClaims >= maxOpenClaims`
+ * evaluate to `false` and admit every claim, so an unusable budget is rejected
+ * rather than trusted — this is the only core-side bound on the multi-position
+ * property, and it fails closed.
  */
 export function assertClaimBudget(
   openClaims: number,
   maxOpenClaims: number,
   path = '$.claims',
 ): void {
+  if (
+    !Number.isSafeInteger(maxOpenClaims) ||
+    maxOpenClaims < 1 ||
+    maxOpenClaims > ENGINE_LIMITS.maxRoundClaims
+  )
+    fail('CLAIM_REJECTED', 'Declared claim budget is outside limits', `${path}.maxOpenClaims`);
   if (!Number.isSafeInteger(openClaims) || openClaims < 0)
     fail('CLAIM_REJECTED', 'Open claim count is invalid', path);
   if (openClaims >= maxOpenClaims)
@@ -356,6 +368,90 @@ export interface LifecycleModule<S extends LifecycleShape = LifecycleShape> {
 const REQUIRED_SECTIONS = ['definitions', 'truth', 'steps', 'transcript', 'book', 'conformance'];
 
 /**
+ * Every declared enum, and the hooks that must exist for the contract to hold.
+ *
+ * These are the two things `defineLifecycleModule()` can actually establish, so
+ * it establishes all of them rather than a sample. A `positions`/`settlement`
+ * typo routes a host down the wrong reserve-maths branch; a missing
+ * `transcript.fromWire` turns the untrusted-input boundary into a raw
+ * `TypeError` at call time instead of a typed `RevealEngineError`.
+ */
+const DECLARED_ENUMS = Object.freeze({
+  'truth.kind': Object.freeze([
+    'scalar-index',
+    'permutation',
+    'vector',
+    'composite',
+  ] satisfies TruthKind[]),
+  'steps.choiceTiming': Object.freeze([
+    'none',
+    'before-step',
+    'after-step',
+  ] satisfies ChoiceTiming[]),
+  'steps.beliefSpace': Object.freeze(['outcomes', 'marginal'] satisfies BeliefSpace[]),
+  'book.positions': Object.freeze(['single', 'multi'] satisfies BookPositions[]),
+  'book.settlement': Object.freeze([
+    'winner-takes-claim',
+    'paytable',
+    'partial',
+  ] satisfies ClaimSettlement[]),
+});
+
+/** Hooks with no default: absent means the module throws at call time. */
+const REQUIRED_HOOKS = Object.freeze({
+  definitions: Object.freeze(['define', 'assert', 'fingerprint', 'identity']),
+  truth: Object.freeze(['derive', 'encode', 'equal']),
+  steps: Object.freeze(['count', 'derive', 'encode', 'equal']),
+  transcript: Object.freeze(['build', 'commitmentBody', 'toWire', 'fromWire']),
+  book: Object.freeze(['create', 'restore', 'snapshot']),
+});
+
+/** Hooks a module may omit, but may not declare as something other than a function. */
+const OPTIONAL_HOOKS = Object.freeze({
+  truth: Object.freeze(['enumerate']),
+  steps: Object.freeze(['belief', 'price']),
+  transcript: Object.freeze(['seedCommitment', 'choicesOf']),
+});
+
+/** The two scopes `checkModuleConformance` branches on. Anything else never runs. */
+export const CONFORMANCE_CHECK_SCOPES: readonly string[] = Object.freeze([
+  'definition',
+  'round',
+] satisfies ModuleConformanceCheck<LifecycleShape>['scope'][]);
+
+function assertDeclaredEnum(
+  module: Record<string, unknown>,
+  field: keyof typeof DECLARED_ENUMS,
+): void {
+  const [section, key] = field.split('.') as [string, string];
+  const value = (module[section] as Record<string, unknown>)[key];
+  if (typeof value !== 'string' || !(DECLARED_ENUMS[field] as readonly string[]).includes(value))
+    fail(
+      'INVALID_MODULE',
+      `Module must declare ${field} as one of: ${DECLARED_ENUMS[field].join(', ')}`,
+      `$.${field}`,
+    );
+}
+
+function assertHooks(module: Record<string, unknown>, section: string): void {
+  const contract = module[section] as Record<string, unknown>;
+  for (const hook of (REQUIRED_HOOKS as Record<string, readonly string[]>)[section] ?? [])
+    if (typeof contract[hook] !== 'function')
+      fail(
+        'INVALID_MODULE',
+        `Module is missing the ${section}.${hook} hook`,
+        `$.${section}.${hook}`,
+      );
+  for (const hook of (OPTIONAL_HOOKS as Record<string, readonly string[]>)[section] ?? [])
+    if (contract[hook] !== undefined && typeof contract[hook] !== 'function')
+      fail(
+        'INVALID_MODULE',
+        `Module hook ${section}.${hook} is not a function`,
+        `$.${section}.${hook}`,
+      );
+}
+
+/**
  * Validates and freezes a lifecycle module at load time.
  *
  * What this cannot check is stated plainly so nobody mistakes a passing call for
@@ -375,17 +471,19 @@ export function defineLifecycleModule<S extends LifecycleShape>(
   assertIdentifier(module.summary, '$.summary', 'INVALID_MODULE', 512);
   if (typeof module.verify !== 'function')
     fail('INVALID_MODULE', 'Module must expose a verifier', '$.verify');
+  const raw = module as unknown as Record<string, unknown>;
   for (const section of REQUIRED_SECTIONS)
-    if (!isRecord((module as unknown as Record<string, unknown>)[section]))
+    if (!isRecord(raw[section]))
       fail('INVALID_MODULE', `Module is missing the ${section} contract`, `$.${section}`);
+  for (const section of REQUIRED_SECTIONS) assertHooks(raw, section);
+  for (const field of Object.keys(DECLARED_ENUMS) as (keyof typeof DECLARED_ENUMS)[])
+    assertDeclaredEnum(raw, field);
   if (
     !Number.isSafeInteger(module.steps.maxSteps) ||
     module.steps.maxSteps < 0 ||
     module.steps.maxSteps > ENGINE_LIMITS.maxSteps
   )
     fail('INVALID_MODULE', 'Module step budget is outside limits', '$.steps.maxSteps');
-  if (module.steps.beliefSpace !== 'outcomes' && module.steps.beliefSpace !== 'marginal')
-    fail('INVALID_MODULE', 'Module must declare its belief space', '$.steps.beliefSpace');
   if (module.steps.beliefSpace === 'marginal' && typeof module.steps.price !== 'function')
     fail(
       'INVALID_MODULE',
@@ -429,6 +527,9 @@ export function defineLifecycleModule<S extends LifecycleShape>(
     );
   if (!Array.isArray(module.book.actions) || module.book.actions.length === 0)
     fail('INVALID_MODULE', 'Module must declare its receipt actions', '$.book.actions');
+  module.book.actions.forEach((action, index) =>
+    assertIdentifier(action, `$.book.actions[${index}]`, 'INVALID_MODULE'),
+  );
   if (!Array.isArray(module.transcript.acceptedSchemas))
     fail('INVALID_MODULE', 'Module must declare accepted schemas', '$.transcript.acceptedSchemas');
   if (!module.transcript.acceptedSchemas.includes(module.transcript.schema))
@@ -437,8 +538,35 @@ export function defineLifecycleModule<S extends LifecycleShape>(
       'Accepted schemas must include the current schema',
       '$.transcript.acceptedSchemas',
     );
+  if (
+    !Number.isSafeInteger(module.conformance.defaultSeeds) ||
+    module.conformance.defaultSeeds < 1 ||
+    module.conformance.defaultSeeds > ENGINE_LIMITS.maxConformanceSeeds
+  )
+    fail(
+      'INVALID_MODULE',
+      'Module conformance seed budget is outside limits',
+      '$.conformance.defaultSeeds',
+    );
   if (!Array.isArray(module.conformance.checks) || module.conformance.checks.length === 0)
     fail('INVALID_MODULE', 'Module must declare conformance checks', '$.conformance.checks');
+  // A check whose scope matches neither branch of the runner never executes,
+  // yet its code would still be listed in the report — evidence claimed for
+  // work that did not happen. It is rejected here, before it can be reported.
+  module.conformance.checks.forEach((check, index) => {
+    const path = `$.conformance.checks[${index}]`;
+    if (!isRecord(check)) fail('INVALID_MODULE', 'Conformance check must be an object', path);
+    assertIdentifier(check.code, `${path}.code`, 'INVALID_MODULE');
+    assertIdentifier(check.description, `${path}.description`, 'INVALID_MODULE', 512);
+    if (typeof check.scope !== 'string' || !CONFORMANCE_CHECK_SCOPES.includes(check.scope))
+      fail(
+        'INVALID_MODULE',
+        `Conformance check scope must be one of: ${CONFORMANCE_CHECK_SCOPES.join(', ')}`,
+        `${path}.scope`,
+      );
+    if (typeof check.run !== 'function')
+      fail('INVALID_MODULE', 'Conformance check must expose run()', `${path}.run`);
+  });
   if (!Array.isArray(module.conformance.references) || module.conformance.references.length === 0)
     fail(
       'INVALID_MODULE',
@@ -453,6 +581,28 @@ export function defineLifecycleModule<S extends LifecycleShape>(
   const guard = (choices: readonly S['choice'][] | undefined): readonly S['choice'][] =>
     assertLoggedChoices(choices, timing) as readonly S['choice'][];
   const choicesOf = module.transcript.choicesOf;
+
+  /**
+   * Holds `derive()` to the budget the module declared.
+   *
+   * Without this, `maxSteps` is a number nothing ever compares against: a module
+   * could declare `maxSteps: 0` and emit ten thousand steps, and the declaration
+   * a host sized its storage and its UI against would be fiction. The bound is
+   * `DERIVATION_FAILED` rather than `INVALID_MODULE` because it is a property of
+   * one derivation, not of the declaration, and a verifier that hits it must be
+   * able to classify it.
+   */
+  const boundSteps = (steps: readonly S['step'][]): readonly S['step'][] => {
+    if (!Array.isArray(steps))
+      fail('DERIVATION_FAILED', 'Step derivation must return an array', '$.steps');
+    if (steps.length > module.steps.maxSteps)
+      fail(
+        'DERIVATION_FAILED',
+        'Step derivation exceeded the declared step budget',
+        '$.steps.maxSteps',
+      );
+    return steps;
+  };
 
   /**
    * Applies the choice guard on the one path that consumes wire input.
@@ -489,7 +639,7 @@ export function defineLifecycleModule<S extends LifecycleShape>(
     steps: Object.freeze({
       ...module.steps,
       derive: (seedHex, definition, round, truth, choices) =>
-        module.steps.derive(seedHex, definition, round, truth, guard(choices)),
+        boundSteps(module.steps.derive(seedHex, definition, round, truth, guard(choices))),
     } satisfies StepModel<S>),
     transcript: Object.freeze({
       ...module.transcript,

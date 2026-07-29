@@ -485,11 +485,37 @@ describe('contract guards core actually enforces', () => {
 
   it('bounds simultaneous claims against the declared budget', () => {
     expect(() => assertClaimBudget(0, 1)).not.toThrow();
+    expect(() => assertClaimBudget(3, ENGINE_LIMITS.maxRoundClaims)).not.toThrow();
     expect(() => assertClaimBudget(1, 1)).toThrowError(
       expect.objectContaining({ code: 'CLAIM_REJECTED' }),
     );
     expect(() => assertClaimBudget(-1, 4)).toThrowError(
       expect.objectContaining({ code: 'CLAIM_REJECTED' }),
+    );
+  });
+
+  /**
+   * The budget is validated as strictly as the count, and the reason is that
+   * `openClaims >= maxOpenClaims` is `false` for every non-number: an
+   * `undefined`, `NaN`, or `Infinity` budget would admit an unbounded number of
+   * simultaneous claims through a guard that looks like it is guarding. Books
+   * are free to pass a per-definition field here, which core never sees at
+   * definition time, so this helper cannot assume the value was bounded
+   * elsewhere.
+   */
+  it.each([
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a string', '8'],
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 2.5],
+    ['above the engine limit', ENGINE_LIMITS.maxRoundClaims + 1],
+    ['absurd', 1e9],
+  ])('fails closed on an unusable claim budget: %s', (_label, budget) => {
+    expect(() => assertClaimBudget(5, budget as never)).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.claims.maxOpenClaims' }),
     );
   });
 });

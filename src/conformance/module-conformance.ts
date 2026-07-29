@@ -1,9 +1,12 @@
 import { RevealEngineError, asRevealEngineError } from '../api/errors.js';
+import { ENGINE_LIMITS } from '../api/limits.js';
 import { COMMITMENT_VERSION } from '../core/versions.js';
+import { CONFORMANCE_CHECK_SCOPES } from '../core/module.js';
 import type {
   ConformanceFailure,
   LifecycleModule,
   LifecycleShape,
+  ModuleConformanceCheck,
   ModuleConformanceContext,
   RoundIdentity,
 } from '../core/module.js';
@@ -18,7 +21,17 @@ export interface ModuleConformanceReport {
   readonly definitionVersion: string;
   readonly fingerprint: string;
   readonly seeds: number;
+  /** Every declared check code, in declaration order. */
   readonly checks: readonly string[];
+  /**
+   * How many times each declared check actually executed.
+   *
+   * `checks` alone cannot distinguish "ran and passed" from "never ran": a
+   * report that lists a code it did not execute is a report claiming evidence it
+   * did not produce. A definition-scoped check runs once; a round-scoped check
+   * runs once per seed. A zero here is a bug, not a pass.
+   */
+  readonly ran: Readonly<Record<string, number>>;
   readonly counters: Readonly<Record<string, number>>;
   readonly ok: boolean;
   readonly failures: readonly ConformanceFailure[];
@@ -71,8 +84,16 @@ export function checkModuleConformance<S extends LifecycleShape>(
   const seeds = seedCount ?? module.conformance.defaultSeeds;
   const failures: ConformanceFailure[] = [];
   const counters: Record<string, number> = {};
+  const ran: Record<string, number> = {};
   const count = (key: string, delta = 1): void => {
     counters[key] = (counters[key] ?? 0) + delta;
+  };
+  const runCheck = (
+    check: ModuleConformanceCheck<S>,
+    context: ModuleConformanceContext<S>,
+  ): void => {
+    ran[check.code] = (ran[check.code] ?? 0) + 1;
+    failures.push(...check.run(context));
   };
   let identity = {
     definitionId: '<invalid>',
@@ -80,12 +101,22 @@ export function checkModuleConformance<S extends LifecycleShape>(
     fingerprint: '',
   };
   try {
-    if (!Number.isSafeInteger(seeds) || seeds < 0 || seeds > 4096)
+    // The floor is 1. At zero every round-scoped check is skipped while the
+    // report still lists its code and returns `ok: true` — a passing report that
+    // proves nothing, which is exactly the overclaim this runner exists to avoid.
+    if (!Number.isSafeInteger(seeds) || seeds < 1 || seeds > ENGINE_LIMITS.maxConformanceSeeds)
       throw new RevealEngineError(
         'INVALID_MODULE',
         'Conformance seed count is outside limits',
         '$.seedCount',
       );
+    for (const [index, check] of module.conformance.checks.entries())
+      if (!CONFORMANCE_CHECK_SCOPES.includes(check.scope))
+        throw new RevealEngineError(
+          'INVALID_MODULE',
+          `Conformance check scope must be one of: ${CONFORMANCE_CHECK_SCOPES.join(', ')}`,
+          `$.conformance.checks[${index}].scope`,
+        );
     module.definitions.assert(definition);
     const resolved = module.definitions.identity(definition);
     identity = {
@@ -112,11 +143,11 @@ export function checkModuleConformance<S extends LifecycleShape>(
       });
     };
     for (const check of module.conformance.checks)
-      if (check.scope === 'definition') failures.push(...check.run(contextFor(0)));
+      if (check.scope === 'definition') runCheck(check, contextFor(0));
     for (let seedIndex = 0; seedIndex < seeds; seedIndex += 1) {
       const context = contextFor(seedIndex);
       for (const check of module.conformance.checks)
-        if (check.scope === 'round') failures.push(...check.run(context));
+        if (check.scope === 'round') runCheck(check, context);
     }
   } catch (error) {
     const failure =
@@ -134,6 +165,7 @@ export function checkModuleConformance<S extends LifecycleShape>(
     fingerprint: identity.fingerprint,
     seeds,
     checks: Object.freeze(module.conformance.checks.map((check) => check.code)),
+    ran: Object.freeze({ ...ran }),
     counters: Object.freeze({ ...counters }),
     ok: failures.length === 0,
     failures: Object.freeze(failures),
