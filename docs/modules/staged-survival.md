@@ -151,6 +151,32 @@ in the live field. That is what keeps the tape independent of history: whether a
 entity runs in lane 0 or lane 2, and whichever entities died before it, it reads
 the same committed draw.
 
+**The sampler domain is the definition fingerprint**, not the definition id.
+`roundIdentityOf()` puts `survivalFingerprint(definition)` in `definitionId`, and
+core's `samplerScopeOf()` maps that field onto the scope's `domain`, so the whole
+tape moves whenever any replay-visible declarative field moves. Carrying
+`definition.id` there separated games by _label_ only: two definitions sharing an
+id and a version but declaring different `laneFailure`/`entitySurvival` produced
+byte-identical tapes under one seed. That was never exploitable by a player — the
+seed pre-commitment binds the fingerprint independently, so a substituted
+definition fails `COMMITMENT_MISMATCH` at verification — but the grid was blind
+to the very fields that decide what a draw means, which is what SWARM's §6.4
+requires it not to be.
+
+The fingerprint is used whole rather than appended to the id, for two reasons.
+`definition.id` is itself one of the fields inside the fingerprint's preimage, so
+the fingerprint separates strictly more than the id did and nothing is lost; and
+it is exactly 64 bytes, where an `id#fingerprint` composite would reach 129 for a
+maximal 64-byte id and break the 128-byte identifier bound `assertSamplerScope`
+enforces. The human-readable id and version travel in the transcript and in
+`survivalIdentity()`, which is where a reader wants them.
+
+The `TAPE_NOT_DETERMINISTIC` conformance check asserts the binding structurally
+on every adapter — the sampler domain **is** the fingerprint — because it has no
+generic way to synthesise a second valid definition (a twin must still satisfy
+`p * mu == 1`). The behavioural half, two twins producing two digests, is written
+out in `tests/staged-survival-module.test.ts`.
+
 ---
 
 ## 4. Exactness argument
@@ -318,6 +344,35 @@ measured against a strictly smaller ceiling), but availability did. An entry
 after a bank is now impossible as a _consequence_ rather than as a second guard:
 by the time a bank can run, every entity id is taken.
 
+**`bank()` credits before anything has been proved, and that is inherent.** The
+book deliberately holds no seed — it is the live command surface, and the seed is
+not revealed until settlement — so at the moment a bank credits, the step it
+credits against has been checked for _shape_ and not for _truth_.
+`assertStepGeometry()` establishes everything that does not need the seed: that
+the step resolves exactly the running field, that its lanes are the partition the
+chosen contract produces, and that a collapsed lane took every entity in it. What
+it cannot establish is the only thing left — which of the entities in a lane that
+_held_ actually cleared. Those are committed draw bits, and reading them needs the
+seed.
+
+So a host that feeds `resolve()` a step it did not get from `deriveSteps()` can
+be credited on it. Driven end to end on the five-runner reference at a stake of
+`1000` each: the honest step loses one runner and a full bank credits `4547`; the
+same round fed a fabricated all-survive step — correct lanes, correct field, only
+the survivor bits changed — credits `5684`. `settle()` then fails
+`TRANSCRIPT_MISMATCH` with the `5684` already standing and the round left
+non-terminal.
+
+Nothing here is exploitable by a **player**: the step comes from the operator's
+own derivation, and settlement is exactly the check that catches an operator that
+lied to itself. But the ordering is real, it is the commit-reveal trade this
+module makes on purpose, and §9 lists it as a residual risk rather than leaving
+it to be discovered. `tests/security/staged-survival-hostile-input.test.ts` pins
+both halves — that the forged credit lands, and that settlement refuses it — so
+the backstop is a checked property and not a promise. The integration obligation
+is the short one: pass `resolve()` the step `deriveSteps()` returned, never a
+reconstructed one.
+
 ### 5.1 The invariance theorem
 
 > Under `p * mu = 1` for every contract, the expected total claim value of a
@@ -461,6 +516,21 @@ rather than trusting, and a state the live path cannot produce is exactly the
 kind a forged snapshot store would supply. They cost availability rather than
 value, and they are refusals for that reason and not for an arithmetic one.
 
+**The live path runs the same step admission test, from the same function.** The
+last bullet is not a reconnect-only concern. `resolve()` and `restore()` both
+call `assertStepGeometry()`, so the set equality, the lane partition and the
+collapsed-lane rule are checked identically on the way in and on the way back.
+This was a real defect and not a hypothetical one: `resolve()` once checked only
+the resolved set, so a step reporting a geometry the chosen contract does not
+produce — re-cut lanes, empty lanes, an entity in two lanes, a collapsed lane
+reporting survivors — was accepted live and refused by every later `restore()`.
+The book could take a `bank()` credit in that state and then never reconnect,
+which is the same availability defect §5 records for `enter -> bank -> enter`,
+one field over. The two paths now share one function precisely so they cannot
+drift again; `tests/security/staged-survival-hostile-input.test.ts` asserts each
+shape is refused **and** carries the metamorphic form of the law — nothing
+`resolve()` accepts may be something `restore()` refuses.
+
 The checksum is not the control. It detects corruption, not tampering: anyone who
 can rewrite a field can recompute the hash over it. Every tamper case in
 `tests/security/staged-survival-hostile-input.test.ts` and in the
@@ -584,6 +654,14 @@ commitment, settles against the revealed seed, and asserts
 - **Selective non-reveal.** Nothing in commit-reveal forces an operator to
   settle. This module has no expiry or reconciliation path; closing an abandoned
   round is an operator concern and is not modelled here.
+- **Credit precedes proof.** `bank()` credits against a step that has been
+  checked for shape but not against the tape, because the book holds no seed;
+  `settle()` is the only call that verifies, and it runs afterwards (§5). An
+  operator that resolves a round with a step it did not derive can credit a
+  figure its own settlement will then refuse, leaving the credit standing and the
+  round unsettleable. Fixing the lane-geometry gap narrowed this — a forged
+  geometry is now refused at `resolve()` — but it cannot close it: the survivor
+  bits inside a lane that held are exactly the part that needs the seed.
 - **Seed custody and grinding before publication.** Outside this library.
 
 ---
@@ -613,6 +691,37 @@ module provides, stated plainly in both directions.
 | Exact rational money, floor only at a credit boundary                      | §4.4                                               |
 | Frame fence, idempotency, receipts, re-validating restore                  | `SurvivalBook` (§7.3)                              |
 | Stable machine-branchable failure codes                                    | §7.2                                               |
+| Cap accounting                                                             | **round basis only** — diverges, see §10.2         |
+
+### 10.1 SWARM's §6 conformance list, item by item
+
+This section previously said "everything else in SWARM's §6 conformance list is
+covered here". That was checkably false for several of the eighteen items, and
+this is the section a consuming team is entitled to trust as a gap analysis, so
+here is every item with a verdict. **Analogue** means the property holds in this
+module's own vocabulary and is checked; it does not mean SWARM's literal check
+would run.
+
+| #   | SWARM §6 requirement                                     | Verdict          | Where, or why not                                                                                                                                                                                                                                                                                                               |
+| --- | -------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Draw bands tile `[0, drawModulus)` exactly               | **Analogue**     | No band table. `threshold()` refuses unless `drawModulus % denominator == 0`, so each declared probability is an exact integer count of residues (§4.2).                                                                                                                                                                        |
+| 2   | `maxUnits === maxChildren * (settle - 1)`                | **N/A**          | Cohort sizing. No offspring here.                                                                                                                                                                                                                                                                                               |
+| 3   | `assertLadderIsFair`, exactly                            | **Analogue**     | `p * mu == 1` per contract and `entryReturn` as the whole edge, refused at define time (§4.5).                                                                                                                                                                                                                                  |
+| 4   | Grid moves with round, game, entropy **and fingerprint** | **Provided**     | All four. The sampler domain **is** the fingerprint (§3); `TAPE_NOT_DETERMINISTIC` checks it structurally and the module suite checks it behaviourally on twins. This was the round-2 gap and it is closed.                                                                                                                     |
+| 5   | Unbiased sampler; assert the rejection bound             | **Inherited**    | Core's `uniformBigInt` does exact rejection against `2^256 - (2^256 mod modulus)` and never uses floats. It is core's property with core's tests; no staged-survival check re-asserts it, and this row does not claim one does.                                                                                                 |
+| 6   | Exhaustive value check over the state space              | **Analogue**     | The oracle test enumerates a three-entity, two-stage instance exhaustively against an independently coded model; `distributionIsExact` covers every reachable field size on both references (§9).                                                                                                                               |
+| 7   | `assertRiskIsHeadroom`, no reachable cap                 | **Partial**      | The round cap is covered by `assertCapIsUnreachable` (§4.6). Side-bet caps and the operator exposure limit are not modelled.                                                                                                                                                                                                    |
+| 8   | Side bets priced at exactly `targetRtp`                  | **Not provided** | No side bets. See "Not provided" below.                                                                                                                                                                                                                                                                                         |
+| 9   | Two-phase commitment, mandatory                          | **Provided**     | `seedCommitment()` + `commitmentBody()`, both re-derived on the verify path (§6, §7.2).                                                                                                                                                                                                                                         |
+| 10  | The body binds the log                                   | **Provided**     | `COMMITMENT_IGNORES_CHOICES` seals two logs under one seed and requires two bodies, for the contract **and** for the banked subset.                                                                                                                                                                                             |
+| 11  | The chain binds the frames                               | **Not provided** | There is no action chain in this module at all. Nothing returns a `chain(i)`, so there is no prefix relation to bind into the body. A consumer that needs mid-round frames to be provably prefixes of the terminal state does not get it here.                                                                                  |
+| 12  | Client entropy is live                                   | **Provided**     | `RoundRef.clientEntropy`, exactly 32 bytes, in every draw; a round cannot open without it (§6, ADR 0005).                                                                                                                                                                                                                       |
+| 13  | Wild-line / side-bet disclosure                          | **Partial**      | The side-bet half is N/A. The disclosure half holds by construction and is stronger than a check: `SurvivalBook` holds no seed and no tape, so it has nothing to leak about an unresolved stage.                                                                                                                                |
+| 14  | Harvest quantum: every `k` in `[0, units]`               | **Analogue**     | `bank(subset)` takes any **non-empty** subset of the running field, credits exactly the summed claim value floored once, and a full bank still requires `settle()`. `k = 0` is expressed as _not calling_ `bank()`; `bank([])` is `CLAIM_REJECTED`, because a zero credit is a receipt and an idempotency key spent on nothing. |
+| 15  | One commitment per stage                                 | **Analogue**     | `choose()` refuses a second decision for the same stage and mutates nothing; `bank()` is closed while a decision is pending; the log carries at most `stages` decisions and derivation refuses more (§7.3).                                                                                                                     |
+| 16  | `reconcile()` on a timeout                               | **Not provided** | No reconciliation path. Operator protocol, see "Not provided" below.                                                                                                                                                                                                                                                            |
+| 17  | Abandonment covers every unsettled state                 | **Not provided** | No expiry or abandonment model. Named in §9 as a residual risk, not implied to be handled.                                                                                                                                                                                                                                      |
+| 18  | Snapshot round-trips and re-derives                      | **Partial**      | Everything except the two clauses that presuppose SWARM's own shape: there is no action chain to validate the log against (item 11), and cap accounting is one line, not per-line (§10.2). All else holds (§7.3).                                                                                                               |
 
 ### Partly provided: BRANCHFALL's player-chosen lane balance
 
@@ -649,18 +758,54 @@ not do that today. What it does do is fingerprint the enumerated lane **sizes**
 of every reachable field rather than only the widths, so whatever geometry a
 definition declares is bound to its identity.
 
+### 10.2 Diverges: BRANCHFALL declares a per-ticket cap basis
+
+BRANCHFALL's main route ticket declares `risk.capBasis: 'per-ticket'`, and its
+`docs/ENGINE.md` §6 states it in bold — "The cap basis is the ticket, not the
+round. The route ticket accumulates against the route stake" — with `MATH.md` §9
+proving unreachability on **that** basis. This module refuses any other basis
+outright: `assertSurvivalDefinition` fails `INVALID_ADAPTER` with "The only cap
+basis this module proves is round-external-stake". A BRANCHFALL declaration
+therefore does not build here without changing that field, and the change is not
+cosmetic.
+
+**Under `capMustBeUnreachable: true` the difference cannot bind, and that is
+provable rather than hopeful.** `assertCapIsUnreachable` refuses the definition
+unless `maxRoundReturn = entryReturn * max(mu)^stages` is **strictly** below
+`maxWinMultiple`, and total round credit is at most `basis * maxRoundReturn`.
+The shared ceiling is `basis * maxWinMultiple`, so the ceiling is unreachable by
+a strict margin no matter how the credit is split across banks. Both shipped
+references clear it comfortably (`1528/25` and `18/5` against a multiple of 100
+and 1000).
+
+**Under a `false` declaration the two bases genuinely differ.** A round ceiling
+is one accumulator shared by every credit event, so an early bank consumes
+headroom that a per-ticket accumulator would have kept separate: the same
+sequence of credits can be capped here and uncapped under BRANCHFALL's rule. A
+consumer that wants a reachable cap — a design choice this module permits but
+does not recommend — is not getting BRANCHFALL's accounting, and must re-do the
+unreachability proof against the round basis rather than porting `MATH.md` §9.
+
 ### Not provided, and named rather than implied
 
 - **Side bets** (`SideBetSpec`, `SideBetDefinition`). Both games want per-arena
   or per-line tickets priced from the committed geometry, each with its **own**
   cap basis. This module has one cap basis per round — `round-external-stake` —
   and declares it. Per-line caps and side-bet pricing are a separate concern and
-  would need either a second module or an extension with its own proof.
+  would need either a second module or an extension with its own proof. This is
+  SWARM §6.8 and half of §6.7.
+- **An action chain.** SWARM §6.11 wants every mid-round `chain(i)` to be a
+  prefix of the terminal chain bound into the settlement body. There is no chain
+  here: mid-round state is exposed as receipts and a snapshot, and what binds the
+  round is the commitment body over (tape, choices, steps). A consumer that needs
+  the prefix property has to build it above this module or ask for it in one.
 - **SWARM's branching population.** SWARM's organisms _split_: its population
   grows, and its draw consumption per stage is the population. This module
   resolves a shrinking subset of a fixed entity set and cannot express offspring.
-  Everything else in SWARM's §6 conformance list is covered here; the cohort model
-  itself is not, and a `branching-population` module is the honest answer.
+  The cohort model is the largest single gap, and a `branching-population` module
+  is the honest answer. The rest of SWARM's §6 list is accounted for item by item
+  in §10.1 — several rows there are analogues or partials rather than matches,
+  and none of them is a blanket claim.
 - **Speed of play, expiry, seed chains** (`minGameCycleMs`, `expire()`,
   `buildSeedChain`). These are operator-protocol concerns that sit above a
   lifecycle module. Nothing here prevents them; nothing here implements them.

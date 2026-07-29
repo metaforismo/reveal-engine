@@ -17,7 +17,13 @@ import {
  * `tests/fixtures/`; `tests/staged-survival-fixtures.test.ts` compares a fresh
  * build against those committed bytes rather than against another round trip.
  */
-export const FROZEN_SURVIVAL_SEED = '45'.repeat(32);
+/**
+ * Chosen, not arbitrary: under this seed the frozen ride takes **every** contract
+ * on the menu — `wide`, then `split`, then `narrow` — as banking and failure
+ * shrink the field past each `minEntities`. A fixture that rode one contract
+ * three times would freeze a narrower wire format than the module has.
+ */
+export const FROZEN_SURVIVAL_SEED = '0a'.repeat(32);
 export const FROZEN_SURVIVAL_ROUND = 'frozen-survival-round';
 export const FROZEN_SURVIVAL_ENTROPY = '9c'.repeat(32);
 export const FROZEN_SURVIVAL_STAKES: readonly bigint[] = Object.freeze([

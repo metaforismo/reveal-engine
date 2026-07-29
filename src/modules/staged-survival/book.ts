@@ -69,6 +69,124 @@ interface BankRecord {
   readonly entities: readonly number[];
 }
 
+/** Own, non-inherited property, in the shape the wire boundary also insists on. */
+function ownArray(value: object, key: string): readonly unknown[] | undefined {
+  if (!Object.prototype.hasOwnProperty.call(value, key)) return undefined;
+  const held = (value as Record<string, unknown>)[key];
+  return Array.isArray(held) ? held : undefined;
+}
+
+function isEntityList(value: readonly unknown[] | undefined): value is readonly number[] {
+  return value !== undefined && value.every((entity) => Number.isSafeInteger(entity));
+}
+
+/**
+ * The structural shape of a step, before anything reads a field off it.
+ *
+ * `resolve()` is the one entry point that takes a step as a **raw object** from
+ * its caller rather than through `parseWireStepList`, so it is the one place
+ * where a missing or mistyped field would otherwise surface as a bare
+ * `TypeError` from a spread or a `.length` — an untyped throw out of a
+ * money-bearing command, which is exactly what this module promises not to do.
+ * Driven before this existed: `{ ...step, survivors: undefined }`,
+ * `failed: undefined`, `failed: 3` and `banked: undefined` all threw `TypeError`
+ * rather than a typed refusal.
+ *
+ * Every field is read as an **own** property. A step assembled with its `lanes`
+ * on a prototype was accepted before, and while the stored copy is rebuilt field
+ * by field so nothing dangerous survived, the transcript wire boundary already
+ * refuses inherited keys and there is no reason for the command surface to be
+ * laxer than the wire.
+ *
+ * `restore()` does not call this: its steps arrive through `parseWireStepList`,
+ * which enforces this shape and more (entity ranges, ordering, wire bounds). The
+ * asymmetry is deliberate and is stated here rather than left to be rediscovered.
+ */
+function assertStepShape(step: unknown, path: string): asserts step is SurvivalStep {
+  if (typeof step !== 'object' || step === null)
+    fail('TRANSCRIPT_MISMATCH', 'Step must be an object', path);
+  if (typeof (step as { contractId?: unknown }).contractId !== 'string')
+    fail('TRANSCRIPT_MISMATCH', 'Step must name its contract', `${path}.contractId`);
+  for (const key of ['banked', 'survivors', 'failed'] as const)
+    if (!isEntityList(ownArray(step, key)))
+      fail('TRANSCRIPT_MISMATCH', 'Step field must be an entity array', `${path}.${key}`);
+  const lanes = ownArray(step, 'lanes');
+  if (lanes === undefined)
+    fail('TRANSCRIPT_MISMATCH', 'Step must carry its lane partition', `${path}.lanes`);
+  for (const lane of lanes) {
+    if (typeof lane !== 'object' || lane === null)
+      fail('TRANSCRIPT_MISMATCH', 'Each lane must be an object', `${path}.lanes`);
+    if (!isEntityList(ownArray(lane, 'entities')))
+      fail('TRANSCRIPT_MISMATCH', 'Each lane must carry an entity array', `${path}.lanes`);
+    if (typeof (lane as { collapsed?: unknown }).collapsed !== 'boolean')
+      fail('TRANSCRIPT_MISMATCH', 'Each lane must declare whether it collapsed', `${path}.lanes`);
+  }
+}
+
+/**
+ * Everything about a step that can be checked **without the seed**, in one
+ * place, for both callers.
+ *
+ * `resolve()` and `restore()` admit steps into the same money-bearing state, so
+ * they owe the same admission test. Keeping the test in two hand-written copies
+ * is what let them drift once already: `resolve()` checked the resolved set and
+ * skipped the lane geometry that `restore()` re-derives, so the live path
+ * accepted steps whose books could take a `bank()` credit and then never
+ * reconnect. One function, two call sites, one order of checks — the drift is
+ * now a compile-time impossibility rather than a review obligation.
+ *
+ * What is checked here is the whole seed-free part of a step:
+ *
+ * 1. the resolved set is exactly the running field, from both sides;
+ * 2. the lane partition is exactly `lanePartition(contract, field)` — the
+ *    geometry is a function of the contract and the field, never a free
+ *    variable the caller supplies;
+ * 3. a collapsed lane takes every entity in it, which is the lane model's
+ *    defining rule (§2 of the module doc).
+ *
+ * What is **not** checked here is the only thing left: the committed draw bits
+ * that decide which non-collapsed entities cleared. Those need the seed, and
+ * neither caller holds one — `settle()` does, and that is where they are
+ * checked. Both callers are documented as making that trade deliberately.
+ */
+function assertStepGeometry(
+  definition: SurvivalDefinition,
+  step: SurvivalStep,
+  field: readonly number[],
+  code: 'TRANSCRIPT_MISMATCH' | 'INVALID_SNAPSHOT',
+  path: string,
+): void {
+  const running = new Set(field);
+  const survivors = new Set(step.survivors);
+  const failed = new Set(step.failed);
+  // Set equality is established from both sides — the counts match, and every
+  // resolved entity is running — so a step cannot quietly swap a banked entity
+  // in for a live one, and cannot name one entity twice to cover a missing one.
+  if (
+    survivors.size !== step.survivors.length ||
+    failed.size !== step.failed.length ||
+    survivors.size + failed.size !== running.size ||
+    [...survivors, ...failed].some((entity) => !running.has(entity))
+  )
+    fail(code, 'Step does not resolve exactly the running field', path);
+  const contract = contractFor(definition, step.contractId, field.length);
+  const lanes = lanePartition(contract, field);
+  if (
+    step.lanes.length !== lanes.length ||
+    step.lanes.some((lane, laneIndex) => {
+      const expected = lanes[laneIndex] as readonly number[];
+      return (
+        lane.entities.length !== expected.length ||
+        lane.entities.some((entity, position) => entity !== expected[position])
+      );
+    })
+  )
+    fail(code, 'Lane partition does not match the chosen geometry', `${path}.lanes`);
+  for (const lane of step.lanes)
+    if (lane.collapsed && lane.entities.some((entity) => !failed.has(entity)))
+      fail(code, 'A collapsed lane reports a survivor', `${path}.lanes`);
+}
+
 /** Value of every entity after `stageCount` resolved stages. Exact, never floored. */
 function replayValues(
   definition: SurvivalDefinition,
@@ -298,28 +416,23 @@ export class SurvivalBook {
         fail('CLAIM_REJECTED', 'No decision is logged for this stage', '$.step');
       if (step?.index !== this.#stageRevision)
         fail('STALE_FRAME', 'Stage step is out of order', '$.step.index');
+      // Shape before semantics: every later check reads fields off this object,
+      // and a raw object is what this entry point accepts.
+      assertStepShape(step, '$.step');
       if (!choicesEqual([choice], [{ contractId: step.contractId, banked: step.banked }]))
         fail('TRANSCRIPT_MISMATCH', 'Step does not resolve the logged decision', '$.step');
-      const contract = contractFor(
-        this.definition,
-        step.contractId,
-        step.survivors.length + step.failed.length,
-      );
       // Compute before mutate: the whole step is checked against the running
-      // field first, so a step that resolves the wrong set leaves the book
-      // untouched instead of half-applied. Set equality is established from both
-      // sides — the counts match, and every resolved entity is running — so a
-      // step cannot quietly swap a banked entity in for a live one.
-      const running = new Set(this.live);
+      // field first — the resolved set, the lane geometry and the collapsed-lane
+      // rule, exactly what `restore()` re-derives — so a step that resolves the
+      // wrong set, or reports a geometry the chosen contract does not produce,
+      // leaves the book untouched instead of half-applied. Sharing
+      // `assertStepGeometry` with `restore()` is the point: a step this call
+      // accepts is a step a later `restore()` accepts, so a round can never be
+      // credited into a state it cannot be reconnected from.
+      const field = this.live;
+      assertStepGeometry(this.definition, step, field, 'TRANSCRIPT_MISMATCH', '$.step');
+      const contract = contractFor(this.definition, step.contractId, field.length);
       const survivors = new Set(step.survivors);
-      const failed = new Set(step.failed);
-      if (
-        survivors.size !== step.survivors.length ||
-        failed.size !== step.failed.length ||
-        survivors.size + failed.size !== running.size ||
-        [...survivors, ...failed].some((entity) => !running.has(entity))
-      )
-        fail('TRANSCRIPT_MISMATCH', 'Step does not resolve exactly the running field', '$.step');
 
       const multiplier = rational(contract.multiplier.numerator, contract.multiplier.denominator);
       for (const claim of this.claims) {
@@ -582,33 +695,7 @@ export class SurvivalBook {
       }
       field = Object.freeze([...running].sort((left, right) => left - right));
       if (field.length === 0) fail('INVALID_SNAPSHOT', 'A step resolved an empty field', path);
-      const contract = contractFor(definition, step.contractId, field.length);
-      const lanes = lanePartition(contract, field);
-      if (
-        step.lanes.length !== lanes.length ||
-        step.lanes.some((lane, laneIndex) => {
-          const expected = lanes[laneIndex] as readonly number[];
-          return (
-            lane.entities.length !== expected.length ||
-            lane.entities.some((entity, position) => entity !== expected[position])
-          );
-        })
-      )
-        fail(
-          'INVALID_SNAPSHOT',
-          'Lane partition does not match the chosen geometry',
-          `${path}.lanes`,
-        );
-      const failed = new Set(step.failed);
-      for (const lane of step.lanes)
-        if (lane.collapsed && lane.entities.some((entity) => !failed.has(entity)))
-          fail('INVALID_SNAPSHOT', 'A collapsed lane reports a survivor', `${path}.lanes`);
-      const resolved = [...step.survivors, ...step.failed].sort((left, right) => left - right);
-      if (
-        resolved.length !== field.length ||
-        resolved.some((entity, position) => entity !== field[position])
-      )
-        fail('INVALID_SNAPSHOT', 'Step does not resolve exactly the running field', path);
+      assertStepGeometry(definition, step, field, 'INVALID_SNAPSHOT', path);
       book.#choices.push(choice);
       book.#steps.push(step);
       field = step.survivors;

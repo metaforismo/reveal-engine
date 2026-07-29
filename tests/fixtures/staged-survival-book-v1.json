@@ -1,6 +1,6 @@
 {
   "note": "Frozen staged-survival/book-v1 snapshots: one mid-round, one settled.",
-  "seed": "4545454545454545454545454545454545454545454545454545454545454545",
+  "seed": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
   "roundId": "frozen-survival-round",
   "clientEntropy": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
   "midSnapshot": {
@@ -33,11 +33,11 @@
             "collapsed": false
           }
         ],
-        "survivors": [0, 2, 3, 4],
-        "failed": [1]
+        "survivors": [1, 2, 4],
+        "failed": [0, 3]
       }
     ],
-    "pendingBanked": [0],
+    "pendingBanked": [1],
     "entries": [
       {
         "entity": 0,
@@ -63,11 +63,11 @@
     "banks": [
       {
         "stage": 1,
-        "entities": [0]
+        "entities": [1]
       }
     ],
     "settlementCommitment": null,
-    "liquidBalance": "113",
+    "liquidBalance": "227",
     "capBasisStake": "1500",
     "receipts": [
       {
@@ -161,22 +161,22 @@
         }
       },
       {
-        "fingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+        "fingerprint": "7e870a929301a310acff436c7d1921686e6c800f18edeb5076c7532a43846321",
         "receipt": {
           "schema": "reveal-engine/receipt-v1",
           "idempotencyKey": "frozen-bank-1",
-          "commandFingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+          "commandFingerprint": "7e870a929301a310acff436c7d1921686e6c800f18edeb5076c7532a43846321",
           "action": "bank",
           "ledgerRevision": 7,
           "frameRevision": 1,
           "debited": "0",
-          "credited": "113",
-          "balanceDelta": "113",
+          "credited": "227",
+          "balanceDelta": "227",
           "capped": false
         }
       }
     ],
-    "snapshotHash": "c96b8424932ef7b413b3126a138d834f9ac7282a2dfe2fe6ad5ad9d9780b1490"
+    "snapshotHash": "d1b6fc7ab6e3808be53d92efccf06fd3c5b8ea7a420cb409eafc000384da8bd6"
   },
   "snapshot": {
     "schema": "staged-survival/book-v1",
@@ -193,11 +193,11 @@
         "banked": []
       },
       {
-        "contractId": "wide",
-        "banked": [0]
+        "contractId": "split",
+        "banked": [1]
       },
       {
-        "contractId": "split",
+        "contractId": "narrow",
         "banked": [2]
       }
     ],
@@ -216,34 +216,34 @@
             "collapsed": false
           }
         ],
-        "survivors": [0, 2, 3, 4],
-        "failed": [1]
+        "survivors": [1, 2, 4],
+        "failed": [0, 3]
       },
       {
         "index": 1,
-        "contractId": "wide",
-        "banked": [0],
+        "contractId": "split",
+        "banked": [1],
         "lanes": [
           {
-            "entities": [2, 3, 4],
+            "entities": [2, 4],
             "collapsed": false
           }
         ],
-        "survivors": [2, 3, 4],
+        "survivors": [2, 4],
         "failed": []
       },
       {
         "index": 2,
-        "contractId": "split",
+        "contractId": "narrow",
         "banked": [2],
         "lanes": [
           {
-            "entities": [3, 4],
-            "collapsed": false
+            "entities": [4],
+            "collapsed": true
           }
         ],
-        "survivors": [3, 4],
-        "failed": []
+        "survivors": [],
+        "failed": [4]
       }
     ],
     "pendingBanked": [],
@@ -272,15 +272,15 @@
     "banks": [
       {
         "stage": 1,
-        "entities": [0]
+        "entities": [1]
       },
       {
         "stage": 2,
         "entities": [2]
       }
     ],
-    "settlementCommitment": "5e9ba776f01d8191218240d32ab9eef5aea1b6832fd630b74cdad93b12e8c118",
-    "liquidBalance": "2143",
+    "settlementCommitment": "b641327c0628ec98319895fc64cc414e5879f7017e69695ebe27dcde582519ab",
+    "liquidBalance": "681",
     "capBasisStake": "1500",
     "receipts": [
       {
@@ -374,26 +374,26 @@
         }
       },
       {
-        "fingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+        "fingerprint": "7e870a929301a310acff436c7d1921686e6c800f18edeb5076c7532a43846321",
         "receipt": {
           "schema": "reveal-engine/receipt-v1",
           "idempotencyKey": "frozen-bank-1",
-          "commandFingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+          "commandFingerprint": "7e870a929301a310acff436c7d1921686e6c800f18edeb5076c7532a43846321",
           "action": "bank",
           "ledgerRevision": 7,
           "frameRevision": 1,
           "debited": "0",
-          "credited": "113",
-          "balanceDelta": "113",
+          "credited": "227",
+          "balanceDelta": "227",
           "capped": false
         }
       },
       {
-        "fingerprint": "997337ab27d37a4862fa424f775dc7ee312e233a9445e621f6eebd7ba492f11f",
+        "fingerprint": "184ef67a2fc991b4585300fa06c06f27c72d36e02f12ebe28f8d72126c0a3799",
         "receipt": {
           "schema": "reveal-engine/receipt-v1",
           "idempotencyKey": "frozen-choose-1",
-          "commandFingerprint": "997337ab27d37a4862fa424f775dc7ee312e233a9445e621f6eebd7ba492f11f",
+          "commandFingerprint": "184ef67a2fc991b4585300fa06c06f27c72d36e02f12ebe28f8d72126c0a3799",
           "action": "choose",
           "ledgerRevision": 8,
           "frameRevision": 1,
@@ -413,17 +413,17 @@
           "ledgerRevision": 9,
           "frameRevision": 2,
           "debited": "0",
-          "credited": "406",
-          "balanceDelta": "406",
+          "credited": "454",
+          "balanceDelta": "454",
           "capped": false
         }
       },
       {
-        "fingerprint": "1771380e628e75a98733d15d59b9426f5d7ec6f0677bab860a67b547dccd1878",
+        "fingerprint": "0370a43c340a7661c2a7f0ea3ec2a96331dda2d1bdba89e09702416eddb9cbef",
         "receipt": {
           "schema": "reveal-engine/receipt-v1",
           "idempotencyKey": "frozen-choose-2",
-          "commandFingerprint": "1771380e628e75a98733d15d59b9426f5d7ec6f0677bab860a67b547dccd1878",
+          "commandFingerprint": "0370a43c340a7661c2a7f0ea3ec2a96331dda2d1bdba89e09702416eddb9cbef",
           "action": "choose",
           "ledgerRevision": 10,
           "frameRevision": 2,
@@ -434,21 +434,21 @@
         }
       },
       {
-        "fingerprint": "ce9e8458a494739ec3837db92d526d83b527ae9b6efcdebe0b26b53fe1eca6de",
+        "fingerprint": "2a08cb188a0cfbba6d280abc43bffd5277f4ef9e1de0ecee0e03cee79618ca16",
         "receipt": {
           "schema": "reveal-engine/receipt-v1",
           "idempotencyKey": "frozen-settle",
-          "commandFingerprint": "ce9e8458a494739ec3837db92d526d83b527ae9b6efcdebe0b26b53fe1eca6de",
+          "commandFingerprint": "2a08cb188a0cfbba6d280abc43bffd5277f4ef9e1de0ecee0e03cee79618ca16",
           "action": "settle",
           "ledgerRevision": 11,
           "frameRevision": 3,
           "debited": "0",
-          "credited": "1624",
-          "balanceDelta": "1624",
+          "credited": "0",
+          "balanceDelta": "0",
           "capped": false
         }
       }
     ],
-    "snapshotHash": "347641684425f950fca2df43e02c6244ac07d964ca9b2be63e6940e1f8af167a"
+    "snapshotHash": "0d74f5cee5b02ade07d96142e06c5a721d49c50448d1e2337acf0d5eef947f46"
   }
 }

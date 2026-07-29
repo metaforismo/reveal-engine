@@ -55,5 +55,15 @@ indistinguishable from drift in an existing one. The 0.2/0.3 values are carried
 forward unchanged under the `progressive-market` key, so the continuity that
 digest established is intact and still checkable.
 
+The `staged-survival` anchor was **deliberately re-baselined** in this round. The
+sampler domain became the definition fingerprint rather than the definition id
+(`docs/modules/staged-survival.md` §3), which moves every derived tape and
+therefore every replayed round. The gate did its job — it refused the run and
+named the module — and the baseline was regenerated only after that version
+decision was recorded in the changelog. The evidence that the change is scoped is
+in the same artifacts: `moduleDigests['progressive-market']` is byte-identical
+across the re-baseline in both the stress and the benchmark run, so exactly one
+module's replay behaviour moved.
+
 Hosted Actions state must be read from GitHub; infrastructure blocking is neither
 a code pass nor a code failure.

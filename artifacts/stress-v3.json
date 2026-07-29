@@ -3,18 +3,18 @@
   "evidenceClass": "synthetic-local-or-ci",
   "workloadSeed": 1592598566,
   "rounds": 500,
-  "operations": 5546,
-  "elapsedMs": 620.6916249999999,
-  "throughputOpsPerSecond": 8935.193865391691,
+  "operations": 5538,
+  "elapsedMs": 1122.754625,
+  "throughputOpsPerSecond": 4932.511411386971,
   "latency": {
-    "p50Ms": 0.008749999999992042,
-    "p95Ms": 0.13241700000000378,
-    "p99Ms": 0.8824170000000322,
-    "maxMs": 1.6107500000000528
+    "p50Ms": 0.01516700000001947,
+    "p95Ms": 0.21041600000000926,
+    "p99Ms": 1.6568340000001172,
+    "maxMs": 11.933582999999999
   },
-  "heapDeltaBytes": 3851368,
-  "maxSnapshotBytes": 5445,
-  "maxTranscriptBytes": 1297,
+  "heapDeltaBytes": 2369776,
+  "maxSnapshotBytes": 5436,
+  "maxTranscriptBytes": 1262,
   "accepted": {
     "open": 667,
     "duplicate-replay": 1000,
@@ -23,10 +23,10 @@
     "reconnect": 50,
     "settle": 500,
     "survival:enter": 432,
-    "survival:choose": 222,
-    "survival:stage": 222,
+    "survival:choose": 221,
+    "survival:stage": 221,
     "survival:reconnect": 25,
-    "survival:bank": 36,
+    "survival:bank": 30,
     "survival:settle": 100,
     "survival:duplicate-replay": 100
   },
@@ -37,7 +37,7 @@
   },
   "moduleDigests": {
     "progressive-market": "fdb9e9b8ed782e685c9ddcfb74b3418b879db56602cb2c8bcde81b785bfbaef1",
-    "staged-survival": "b4fc71e68f1e006dd8f1a6dc0622c1820f9db5550e0b62c00bd982bd46a80970"
+    "staged-survival": "37bf46bde056e0f318206e3d160b8f5afc0b61d6265ecd118b5f4da66dda824e"
   },
   "thresholds": {
     "elapsedMs": 30000,

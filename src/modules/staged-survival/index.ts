@@ -30,7 +30,17 @@ export {
   survivalFingerprint,
   survivalIdentity,
 } from './adapter.js';
+/**
+ * `MAX_ROUND_ID_BYTES` and `ROUND_REF_SEPARATOR` are part of the subpath because
+ * ADR 0005 promises them. The round pair rides inside the contract's single
+ * `roundId: string`, which costs the operator half some of its width; the ADR's
+ * stated mitigation is that a host can *check* the remaining budget rather than
+ * discover it from a rejected round. That mitigation is only real if the number
+ * and the separator it is computed against are importable.
+ */
 export {
+  MAX_ROUND_ID_BYTES,
+  ROUND_REF_SEPARATOR,
   assertCapIsUnreachable,
   assertClientEntropy,
   assertOperatorRoundId,

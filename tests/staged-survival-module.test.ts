@@ -11,6 +11,8 @@ import {
 } from '../src/core/versions.js';
 import { requireModule } from '../src/modules/index.js';
 import {
+  MAX_ROUND_ID_BYTES,
+  ROUND_REF_SEPARATOR,
   SURVIVAL_LIMITS,
   SurvivalBook,
   belief,
@@ -405,6 +407,72 @@ describe('staged-survival: the adapter surface', () => {
     expect(survivalFingerprint(relabelled)).toBe(base);
   });
 
+  it('moves the whole tape with the fingerprint, not only with the label', () => {
+    // SWARM's §6.4 wants the derived grid to move with the definition
+    // **fingerprint**. Two twins sharing an id, a version and a round — and
+    // differing only in the hazards that decide what a draw *means* — used to
+    // produce byte-identical tapes under one seed, because the sampler domain
+    // was `definition.id`. The seed pre-commitment bound the fingerprint
+    // independently, so no player could exploit it; the grid was still blind to
+    // the fields that price it, and nothing in the repo would have noticed.
+    const shared = {
+      apiVersion: ENGINE_API_VERSION,
+      id: 'twin-trial',
+      version: '1.0.0',
+      entities: 3,
+      stages: 2,
+      drawModulus: 1_200_000n,
+      pricing: {
+        entryReturn: rational(191n, 200n),
+        continuationReturn: rational(1n),
+        rounding: 'floor' as const,
+      },
+      risk: {
+        maxWinMultiple: 1_000n,
+        capBasis: 'round-external-stake' as const,
+        capMustBeUnreachable: true,
+      },
+    };
+    const twin = (
+      laneFailure: Rational,
+      entitySurvival: Rational,
+      mu: Rational,
+    ): SurvivalDefinition =>
+      defineSurvivalGame({
+        ...shared,
+        contracts: [
+          {
+            id: 'only',
+            label: 'Only',
+            laneWidth: 1,
+            minEntities: 1,
+            profile: { laneFailure, entitySurvival },
+            multiplier: mu,
+          },
+        ],
+      });
+    const left = twin(rational(1n, 2n), rational(1n, 2n), rational(4n, 1n));
+    const right = twin(rational(1n, 4n), rational(2n, 3n), rational(2n, 1n));
+    // Same id and version, so the old domain could not tell them apart.
+    expect(left.id).toBe(right.id);
+    expect(left.version).toBe(right.version);
+    expect(survivalFingerprint(left)).not.toBe(survivalFingerprint(right));
+    const roundId = roundIdFor('twin-round');
+    expect(roundIdentityOf(left, roundId).definitionId).toBe(survivalFingerprint(left));
+    expect(deriveTruth(seed(31), left, roundId).digest).not.toBe(
+      deriveTruth(seed(31), right, roundId).digest,
+    );
+    // ...while a cosmetic edit still leaves the round byte-identical, which is
+    // the property the fingerprint had all along and must keep.
+    const relabelled = defineSurvivalGame({
+      ...shared,
+      contracts: left.contracts.map((contract) => ({ ...contract, label: 'Renamed' })),
+    });
+    expect(deriveTruth(seed(31), relabelled, roundId).digest).toBe(
+      deriveTruth(seed(31), left, roundId).digest,
+    );
+  });
+
   it('declares an identity a host can persist in five parts', () => {
     expect(stagedSurvival.definitions.identity(definition)).toEqual({
       moduleId: 'staged-survival',
@@ -439,6 +507,28 @@ describe('staged-survival: the round pair and the publication order', () => {
       );
     // Uppercase entropy is a different string, and the module does not coerce.
     expect(() => parseRoundRefId(`round-9|${ENTROPY.toUpperCase()}`)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CONTEXT' }),
+    );
+  });
+
+  it('exports the round-id budget ADR 0005 tells a host to check', () => {
+    // ADR 0005 accepts a real ergonomic cost — the round pair rides inside the
+    // contract's single `roundId: string`, so the operator half is narrower than
+    // the engine's identifier bound — and names one mitigation: a host can check
+    // the budget rather than discover it from a rejected round. That mitigation
+    // is only real if the number is importable, and if it is the *true* edge.
+    expect(MAX_ROUND_ID_BYTES).toBe(
+      ENGINE_LIMITS.maxIdentifierBytes - SURVIVAL_LIMITS.clientEntropyBytes * 2 - 1,
+    );
+    expect(ROUND_REF_SEPARATOR).toBe('|');
+    const atLimit = 'r'.repeat(MAX_ROUND_ID_BYTES);
+    expect(parseRoundRefId(roundRefId({ roundId: atLimit, clientEntropy: ENTROPY }))).toEqual({
+      roundId: atLimit,
+      clientEntropy: ENTROPY,
+    });
+    // One byte past it fails, so the exported number is the boundary itself and
+    // not an approximation of it.
+    expect(() => roundRefId({ roundId: `${atLimit}r`, clientEntropy: ENTROPY })).toThrowError(
       expect.objectContaining({ code: 'INVALID_CONTEXT' }),
     );
   });
@@ -894,8 +984,6 @@ describe('staged-survival: the round book', () => {
   it('round-trips a snapshot at every point of a full round', async () => {
     const seedHex = seed(81);
     const roundId = roundIdFor('roundtrip');
-    const truth = deriveTruth(seedHex, definition, roundId);
-    const choices = ridePath(definition, truth);
     const book = await openRound();
     const check = (): void => {
       const snapshot = book.snapshot();
@@ -908,16 +996,23 @@ describe('staged-survival: the round book', () => {
       expect(restored.live).toEqual(book.live);
     };
     check();
-    for (const [stage, choice] of choices.entries()) {
+    for (let stage = 0; stage < definition.stages; stage += 1) {
       if (stage > 0 && book.live.length > 1) {
         await book.bank(`bank-${stage}`, [book.live[0] as number]);
         check();
       }
-      await book.choose(`choose-${stage}`, choice.contractId);
+      // The contract is read off the menu the *banked* field offers, at the
+      // moment of the decision. Picking it from a path derived without banking
+      // would be picking from a different round: banking shrinks the field, and
+      // a contract on the menu before the bank need not still be on it after.
+      const menu = book.menu();
+      if (menu.length === 0) break;
+      await book.choose(`choose-${stage}`, menu[0] as string);
       check();
       const transcript = makeTranscript(seedHex, definition, roundId, book.choices);
       await book.resolve(transcript.steps[stage] as SurvivalStep);
       check();
+      if (book.live.length === 0) break;
     }
     const transcript = makeTranscript(seedHex, definition, roundId, book.choices);
     await book.settle('settle', seedHex, transcript);

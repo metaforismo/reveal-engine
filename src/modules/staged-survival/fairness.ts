@@ -55,10 +55,32 @@ function blockIndex(definition: SurvivalDefinition, stage: number, contractIndex
   return (stage * definition.contracts.length + contractIndex) * definition.entities * 2;
 }
 
+/**
+ * The round identity, whose `definitionId` is the definition **fingerprint**.
+ *
+ * `samplerScopeOf()` maps `definitionId` onto the sampler `domain`, so this
+ * field is what separates one game's tape from another's. Carrying
+ * `definition.id` there separated by *label* only: two definitions sharing an id
+ * and a version but declaring different `laneFailure`/`entitySurvival` produced
+ * byte-identical tapes under one seed. The seed pre-commitment binds the
+ * fingerprint independently, so that was never exploitable by a player — but it
+ * left the grid insensitive to the very fields that decide what the grid means,
+ * and SWARM's §6.4 requires the opposite in as many words.
+ *
+ * The fingerprint is used whole rather than appended to the id. `definition.id`
+ * is one of the fields inside the fingerprint's own preimage
+ * (`definitionFields()`), so the fingerprint separates strictly more than the id
+ * did and nothing is lost; and it is exactly 64 bytes, where an `id#fingerprint`
+ * composite could reach 129 and break the 128-byte identifier bound that
+ * `assertSamplerScope` enforces on a maximal id.
+ *
+ * This is a derivation input, not a display field: the human-readable id and
+ * version travel in the transcript and in `survivalIdentity()`.
+ */
 export function roundIdentityOf(definition: SurvivalDefinition, roundId: string): RoundIdentity {
   return Object.freeze({
     moduleId: STAGED_SURVIVAL_MODULE_ID,
-    definitionId: definition.id,
+    definitionId: survivalFingerprint(definition),
     roundId,
     proofVersion: COMMITMENT_VERSION,
   });
@@ -148,6 +170,38 @@ export interface StageResolution {
 }
 
 /**
+ * A running field, validated: strictly ascending, distinct, inside the
+ * definition, and non-empty.
+ *
+ * The ascending requirement is not tidiness. `lanePartition()` cuts the field
+ * into consecutive slices, so the *order* of `live` is part of the geometry: the
+ * same entity set in a different order is a different lane partition and a
+ * different joint law. Fixing the order to ascending is what makes the geometry
+ * a function of the entity **set** and the contract, which is the property
+ * `book.resolve()`, `book.restore()` and `deriveSteps()` all rely on when they
+ * re-derive a partition rather than trusting one.
+ */
+function assertLiveField(
+  definition: SurvivalDefinition,
+  live: readonly number[],
+  path: string,
+): void {
+  if (!Array.isArray(live) || live.length === 0 || live.length > definition.entities)
+    fail('INVALID_CHOICE', 'The live field must be a bounded non-empty array', path);
+  let previous = -1;
+  for (const entity of live) {
+    if (
+      typeof entity !== 'number' ||
+      !Number.isSafeInteger(entity) ||
+      entity <= previous ||
+      entity >= definition.entities
+    )
+      fail('INVALID_CHOICE', 'The live field must be ascending entities of the definition', path);
+    previous = entity;
+  }
+}
+
+/**
  * Resolves one stage from raw draws. Pure, and deliberately tape-free.
  *
  * Taking the two draw sources as functions rather than reading a tape is what
@@ -155,6 +209,15 @@ export interface StageResolution {
  * every combination of lane shocks and entity clears — and compare this
  * resolver against an independently coded model, exhaustively rather than
  * statistically.
+ *
+ * It is also a public export, and it is the function that produces the step
+ * object `book.resolve()` credits from, so it validates its own arguments to the
+ * same standard as `laneSizes()` and `laneSurvivorDistribution()` rather than
+ * trusting whichever caller reached it first. Both draw sources are held to
+ * `[0, drawModulus)` as well: a draw outside the modulus is not a rare value, it
+ * is a comparison against a threshold that means nothing — a negative lane draw
+ * would collapse every lane and a draw at or above the modulus would collapse
+ * none, whatever the declared probability said.
  */
 export function resolveStage(
   definition: SurvivalDefinition,
@@ -164,17 +227,26 @@ export function resolveStage(
   entityDraw: (entity: number) => bigint,
 ): StageResolution {
   assertSurvivalDefinition(definition);
+  assertLiveField(definition, live, '$.live');
   const contract = contractFor(definition, contractId, live.length);
   const laneThreshold = threshold(definition, contract.profile.laneFailure);
   const entityThreshold = threshold(definition, contract.profile.entitySurvival);
+  const bounded = (value: unknown, path: string): bigint => {
+    if (typeof value !== 'bigint' || value < 0n || value >= definition.drawModulus)
+      fail('DERIVATION_FAILED', 'Draw is outside the declared modulus', path);
+    return value;
+  };
   const lanes: SurvivalLane[] = [];
   const survivors: number[] = [];
   const failed: number[] = [];
   lanePartition(contract, live).forEach((entities, laneIndex) => {
-    const collapsed = laneDraw(laneIndex) < laneThreshold;
+    const collapsed = bounded(laneDraw(laneIndex), '$.laneDraw') < laneThreshold;
     lanes.push(Object.freeze({ entities: Object.freeze([...entities]), collapsed }));
     for (const entity of entities)
-      (!collapsed && entityDraw(entity) < entityThreshold ? survivors : failed).push(entity);
+      (!collapsed && bounded(entityDraw(entity), '$.entityDraw') < entityThreshold
+        ? survivors
+        : failed
+      ).push(entity);
   });
   return Object.freeze({
     lanes: Object.freeze(lanes),

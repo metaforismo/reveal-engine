@@ -303,6 +303,23 @@ const tapeIsDeterministic: Check = {
           'Two different rounds produced the same tape',
         ),
       );
+    // The grid must move with the definition **fingerprint**, not merely with
+    // its label: two definitions sharing an id and a version but declaring
+    // different hazards must not share a tape under one seed. The sampler domain
+    // *is* the fingerprint, so the property is structural and checkable on any
+    // adapter without synthesising a second valid definition — which this check
+    // has no generic way to do, since a twin must still satisfy `p * mu == 1`.
+    // The behavioural half of the same property (two twins, two digests) is in
+    // the module's own suite, where the twin can be written out.
+    count('samplerScopes', 1);
+    if (roundIdentityOf(definition, canonical).definitionId !== survivalFingerprint(definition))
+      failures.push(
+        failure(
+          'TAPE_NOT_DETERMINISTIC',
+          '$.definitionFingerprint',
+          'The sampler scope is not bound to the definition fingerprint, so two definitions sharing an id can share a tape',
+        ),
+      );
     return failures;
   },
 };

@@ -62,16 +62,27 @@ describe('frozen staged-survival wire fixtures', () => {
       'steps',
       'tapeDigest',
     ]);
-    // The frozen round is not a degenerate one: it rides three stages, changes
-    // contract as the menu shrinks, and banks twice on the way.
+    // The frozen round is not a degenerate one: it rides three stages, takes a
+    // different contract at each one as the menu shrinks past each
+    // `minEntities`, and banks twice on the way. Every contract the reference
+    // declares appears in the frozen wire, so the fixture freezes the whole
+    // shape of the format rather than one contract's corner of it.
     expect(
       (transcript.choices as { contractId: string }[]).map((choice) => choice.contractId),
-    ).toEqual(['wide', 'wide', 'split']);
+    ).toEqual(['wide', 'split', 'narrow']);
     expect((transcript.choices as { banked: number[] }[]).map((choice) => choice.banked)).toEqual([
       [],
-      [0],
+      [1],
       [2],
     ]);
+    // Both lane states are in the frozen bytes, so the `collapsed` flag is
+    // frozen in each of its two forms rather than only in whichever one this
+    // seed happened to produce everywhere.
+    const lanes = (transcript.steps as { lanes: { collapsed: boolean }[] }[]).flatMap(
+      (step) => step.lanes,
+    );
+    expect(lanes.some((lane) => lane.collapsed)).toBe(true);
+    expect(lanes.some((lane) => !lane.collapsed)).toBe(true);
   });
 
   it('verifies the committed transcript by pure re-derivation from the seed', () => {

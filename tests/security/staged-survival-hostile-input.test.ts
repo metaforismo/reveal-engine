@@ -14,6 +14,7 @@ import {
   laneSizes,
   makeTranscript,
   price,
+  resolveStage,
   roundRefId,
   serializeTranscript,
   stagedSurvival,
@@ -638,5 +639,285 @@ describe('staged-survival: hostile arguments to the pricing surface', () => {
     await expect(book.enter('again', 0, 100n)).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
     await expect(book.bank('nothing', [])).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
     await expect(book.bank('unknown', [4])).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
+  });
+
+  it('refuses a live field resolveStage() cannot give a meaning to', () => {
+    // `resolveStage()` is exported and it is the function that produces the step
+    // object `book.resolve()` credits from, so it validates its own arguments
+    // rather than trusting whichever caller reached it first. The order of
+    // `live` is part of the geometry — `lanePartition()` cuts consecutive
+    // slices — so a descending or duplicated field is not a tidiness problem,
+    // it is a different joint law.
+    for (const live of [
+      [0, 0, 1],
+      [0, 99],
+      [0.5, 1],
+      [2, 1, 0],
+      Array.from({ length: 500 }, (_value, index) => index),
+      [],
+      'field',
+    ])
+      expect(() =>
+        resolveStage(
+          definition,
+          'narrow',
+          live as readonly number[],
+          () => 0n,
+          () => 0n,
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'INVALID_CHOICE' }));
+  });
+
+  it('refuses a draw outside the declared modulus rather than comparing it anyway', () => {
+    // A draw outside `[0, drawModulus)` is not a rare value: it is a comparison
+    // against a threshold that has stopped meaning anything. A negative lane
+    // draw collapses every lane and a draw at the modulus collapses none,
+    // whatever probability the contract declared.
+    for (const draw of [-1n, definition.drawModulus, definition.drawModulus + 1n])
+      expect(() =>
+        resolveStage(
+          definition,
+          'narrow',
+          [0, 1, 2, 3, 4],
+          () => draw,
+          () => 0n,
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'DERIVATION_FAILED' }));
+    // The entity draw is only read when the lane held, so the lane draw has to
+    // miss the collapse threshold for this arm to reach the entity source at all.
+    for (const entityDraw of [-1n, definition.drawModulus, 5 as never, undefined as never])
+      expect(() =>
+        resolveStage(
+          definition,
+          'narrow',
+          [0, 1, 2, 3, 4],
+          () => definition.drawModulus - 1n,
+          () => entityDraw,
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'DERIVATION_FAILED' }));
+  });
+});
+
+/**
+ * The live path and the reconnect path must admit exactly the same steps.
+ *
+ * `resolve()` once checked the resolved set and skipped the lane geometry that
+ * `restore()` re-derives. The consequence was not a mispriced round: it was a
+ * book that could take a `bank()` credit and then never reconnect — the same
+ * availability defect the changelog records for `enter -> bank -> enter`, one
+ * field over. These tests are the ones whose absence let it through.
+ */
+describe('staged-survival: resolve() and restore() admit the same steps', () => {
+  async function atDecision(): Promise<{ book: SurvivalBook; honest: SurvivalStep }> {
+    const book = new SurvivalBook(definition);
+    for (let entity = 0; entity < definition.entities; entity += 1)
+      await book.enter(`e-${entity}`, entity, 1_000n);
+    await book.choose('c-0', 'wide');
+    return { book, honest: goodTranscript.steps[0] as SurvivalStep };
+  }
+
+  const forgeries: readonly [string, (step: SurvivalStep) => SurvivalStep][] = [
+    [
+      'lanes re-cut into singletons',
+      (step) => ({
+        ...step,
+        lanes: [...step.survivors, ...step.failed]
+          .sort((left, right) => left - right)
+          .map((entity) => ({ entities: [entity], collapsed: false })),
+      }),
+    ],
+    ['lanes emptied', (step) => ({ ...step, lanes: [] })],
+    [
+      'lane entities duplicated across two lanes',
+      (step) => ({
+        ...step,
+        lanes: step.lanes.map(() => ({
+          entities: [...step.survivors, ...step.failed].sort((left, right) => left - right),
+          collapsed: false,
+        })),
+      }),
+    ],
+    [
+      'a lane widened past the contract geometry',
+      (step) => ({
+        ...step,
+        lanes: [
+          {
+            entities: [...step.survivors, ...step.failed].sort((left, right) => left - right),
+            collapsed: false,
+          },
+        ],
+      }),
+    ],
+    ['lanes dropped entirely', (step) => ({ ...step, lanes: undefined as never })],
+  ];
+
+  it.each(forgeries)('rejects a step whose %s', async (_label, forge) => {
+    const { book, honest } = await atDecision();
+    await expect(book.resolve(forge(honest))).rejects.toMatchObject({
+      code: 'TRANSCRIPT_MISMATCH',
+    });
+    // Rejected before any mutation: the stage is still open and the book is
+    // still exactly where it was.
+    expect(book.stageRevision).toBe(0);
+    expect(book.steps).toEqual([]);
+    expect(book.live).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('fails closed with a typed error on a structurally hostile step', async () => {
+    // `resolve()` is the one entry point that takes a step as a raw object
+    // rather than through `parseWireStepList`, so it is the one place a missing
+    // or mistyped field could surface as a bare `TypeError` out of a
+    // money-bearing command. Four of these did exactly that before the shape
+    // check existed: `survivors`, `failed` and `banked` undefined, and `failed`
+    // as a number.
+    const { honest } = await atDecision();
+    const cases: readonly [string, unknown][] = [
+      ['survivors undefined', { ...honest, survivors: undefined }],
+      ['failed undefined', { ...honest, failed: undefined }],
+      ['banked undefined', { ...honest, banked: undefined }],
+      ['failed a number', { ...honest, failed: 3 }],
+      ['survivors a string', { ...honest, survivors: 'x' }],
+      ['fractional entity', { ...honest, survivors: [0.5] }],
+      ['contractId missing', { ...honest, contractId: undefined }],
+      ['lanes a string', { ...honest, lanes: 'x' }],
+      ['a null lane', { ...honest, lanes: [null] }],
+      ['a lane without entities', { ...honest, lanes: [{ collapsed: false }] }],
+      ['a lane without a collapse flag', { ...honest, lanes: [{ entities: [0] }] }],
+      [
+        // Read as an own property or not at all, exactly as the wire boundary
+        // treats an inherited key.
+        'lanes inherited from a prototype',
+        Object.assign(Object.create({ lanes: honest.lanes }), {
+          index: 0,
+          contractId: honest.contractId,
+          banked: [...honest.banked],
+          survivors: [...honest.survivors],
+          failed: [...honest.failed],
+        }),
+      ],
+    ];
+    for (const [label, step] of cases) {
+      const book = await atDecision();
+      let thrown: unknown;
+      try {
+        await book.book.resolve(step as SurvivalStep);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, label).toBeInstanceOf(RevealEngineError);
+      expect((thrown as RevealEngineError).code, label).toBe('TRANSCRIPT_MISMATCH');
+      expect((thrown as RevealEngineError).path, label).toMatch(/^\$/u);
+      expect(book.book.stageRevision, label).toBe(0);
+    }
+  });
+
+  it('rejects a collapsed lane that reports a survivor', async () => {
+    const { book, honest } = await atDecision();
+    // Only meaningful when the honest step actually has one; the reference and
+    // this seed do, and the assertion says so rather than passing vacuously.
+    expect(honest.survivors.length).toBeGreaterThan(0);
+    await expect(
+      book.resolve({
+        ...honest,
+        lanes: honest.lanes.map((lane) => ({ ...lane, collapsed: true })),
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSCRIPT_MISMATCH' });
+    expect(book.stageRevision).toBe(0);
+  });
+
+  it('leaves no accepted step that a later restore() would refuse', async () => {
+    // The metamorphic form of the same law, which is the one that keeps holding
+    // when someone adds a sixth forgery: whatever the live path admits, the
+    // reconnect path must admit too, or the round is credited into a state it
+    // can never be resumed from.
+    const shapes: ((step: SurvivalStep) => SurvivalStep)[] = [
+      (step) => step,
+      ...forgeries.map(([, forge]) => forge),
+      (step) => ({ ...step, survivors: [...step.failed], failed: [...step.survivors] }),
+      (step) => ({ ...step, survivors: [...step.survivors, ...step.failed], failed: [] }),
+      (step) => ({ ...step, contractId: 'narrow' }),
+    ];
+    let accepted = 0;
+    for (const [index, shape] of shapes.entries()) {
+      const { book, honest } = await atDecision();
+      let step: SurvivalStep;
+      try {
+        step = shape(honest);
+      } catch {
+        continue;
+      }
+      try {
+        await book.resolve(step);
+      } catch {
+        continue;
+      }
+      accepted += 1;
+      // Accepted live, so it must reconnect — and reconnect to the same book.
+      const restored = SurvivalBook.restore(definition, book.snapshot());
+      expect({ shape: index, live: restored.live }).toEqual({ shape: index, live: book.live });
+      expect(restored.steps).toEqual(book.steps);
+    }
+    // The honest step is in the list, so a run in which nothing was accepted
+    // would mean the test proved its law by refusing everything.
+    expect(accepted).toBeGreaterThan(0);
+  });
+
+  it('credits a forged survivor set and then refuses it at settlement', async () => {
+    // The residual §9 names, pinned from both sides rather than asserted in
+    // prose. `assertStepGeometry()` cannot check *which* entities in a lane that
+    // held actually cleared — those are committed draw bits and the book holds
+    // no seed — so a host that resolves with a step it did not derive is
+    // credited on it. `settle()` is the backstop, and this is the test that the
+    // backstop actually closes.
+    const seedHex = seed(3);
+    const roundId = roundRefId({ roundId: 'credit-order', clientEntropy: 'a1'.repeat(32) });
+    const truth = deriveTruth(seedHex, definition, roundId);
+    const honest = deriveSteps(definition, truth, [
+      { contractId: 'wide', banked: [] },
+    ])[0] as SurvivalStep;
+    // The scenario is only meaningful when the honest step kills something.
+    expect(honest.failed.length).toBeGreaterThan(0);
+    const field = [...honest.survivors, ...honest.failed].sort((left, right) => left - right);
+
+    const open = async (): Promise<SurvivalBook> => {
+      const book = new SurvivalBook(definition);
+      for (let entity = 0; entity < definition.entities; entity += 1)
+        await book.enter(`e-${entity}`, entity, 1_000n);
+      await book.choose('c', 'wide');
+      return book;
+    };
+
+    const honestBook = await open();
+    await honestBook.resolve(honest);
+    await honestBook.bank('b', [...honest.survivors]);
+
+    // Same lanes, same field, same contract — only the survivor bits differ,
+    // which is exactly the part no seed-free check can reach.
+    const forgedBook = await open();
+    await forgedBook.resolve({
+      index: 0,
+      contractId: 'wide',
+      banked: [],
+      lanes: honest.lanes.map((lane) => ({ ...lane, collapsed: false })),
+      survivors: field,
+      failed: [],
+    });
+    await forgedBook.bank('b', field);
+    expect(forgedBook.liquidBalance).toBeGreaterThan(honestBook.liquidBalance);
+
+    // Settlement re-derives from the revealed seed and refuses — with the
+    // forged credit still standing and the round not terminal, which is the
+    // shape of the residual and the reason it is documented rather than closed.
+    const credited = forgedBook.liquidBalance;
+    await expect(
+      forgedBook.settle(
+        's',
+        seedHex,
+        makeTranscript(seedHex, definition, roundId, forgedBook.choices),
+      ),
+    ).rejects.toMatchObject({ code: 'TRANSCRIPT_MISMATCH' });
+    expect(forgedBook.liquidBalance).toBe(credited);
+    expect(forgedBook.terminal).toBe(false);
   });
 });

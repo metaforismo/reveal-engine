@@ -1,6 +1,6 @@
 {
   "note": "Frozen staged-survival/transcript-v1 proof. Regenerate with npm run fixtures:update.",
-  "seed": "4545454545454545454545454545454545454545454545454545454545454545",
+  "seed": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
   "roundId": "frozen-survival-round",
   "clientEntropy": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
   "transcript": {
@@ -10,19 +10,19 @@
     "definitionFingerprint": "f2390641bd8254e89510c7eb63a5b23f6e013d25b1a4d29d9af3c3769f5950d1",
     "roundId": "frozen-survival-round",
     "clientEntropy": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
-    "seedCommitment": "7aefeb4994fb101678165ab4264b878e8eca1506974176eac2128e830d00bd92",
-    "tapeDigest": "67b1b73ee0688fe127c1d0b7d1c813fa5fb50a4da029c4136543a051766b3266",
+    "seedCommitment": "46cc6c0dea3dd41cde53ea693dac466e9e1dcc20b6ae76ae7e673d6c5f319bfa",
+    "tapeDigest": "8bb1b6093b5563fb4ec9d47e22ee7ba7a19df15a6ba42904ec4fbb67b231e842",
     "choices": [
       {
         "contractId": "wide",
         "banked": []
       },
       {
-        "contractId": "wide",
-        "banked": [0]
+        "contractId": "split",
+        "banked": [1]
       },
       {
-        "contractId": "split",
+        "contractId": "narrow",
         "banked": [2]
       }
     ],
@@ -41,36 +41,36 @@
             "collapsed": false
           }
         ],
-        "survivors": [0, 2, 3, 4],
-        "failed": [1]
+        "survivors": [1, 2, 4],
+        "failed": [0, 3]
       },
       {
         "index": 1,
-        "contractId": "wide",
-        "banked": [0],
+        "contractId": "split",
+        "banked": [1],
         "lanes": [
           {
-            "entities": [2, 3, 4],
+            "entities": [2, 4],
             "collapsed": false
           }
         ],
-        "survivors": [2, 3, 4],
+        "survivors": [2, 4],
         "failed": []
       },
       {
         "index": 2,
-        "contractId": "split",
+        "contractId": "narrow",
         "banked": [2],
         "lanes": [
           {
-            "entities": [3, 4],
-            "collapsed": false
+            "entities": [4],
+            "collapsed": true
           }
         ],
-        "survivors": [3, 4],
-        "failed": []
+        "survivors": [],
+        "failed": [4]
       }
     ],
-    "commitment": "5e9ba776f01d8191218240d32ab9eef5aea1b6832fd630b74cdad93b12e8c118"
+    "commitment": "b641327c0628ec98319895fc64cc414e5879f7017e69695ebe27dcde582519ab"
   }
 }

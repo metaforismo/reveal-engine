@@ -96,8 +96,15 @@ first call, and it fails closed. A host that could silently omit the entropy
 would be a host that silently loses the control.
 
 The 128-byte identifier budget is split 63 / 1 / 64, so an operator round id
-longer than 63 bytes is rejected. `MAX_ROUND_ID_BYTES` is exported so a host can
-check it rather than discover it.
+longer than 63 bytes is rejected. `MAX_ROUND_ID_BYTES` and `ROUND_REF_SEPARATOR`
+are exported from `@axiom-games/reveal-engine/modules/staged-survival` so a host
+can check the budget rather than discover it from a rejected round. That is this
+ADR's one stated mitigation for the cost above, so it is pinned by
+`tests/public-api.test.ts` (the constant is in the subpath's export list) and by
+a boundary test in `tests/staged-survival-module.test.ts` (an id of exactly
+`MAX_ROUND_ID_BYTES` is accepted, one byte more is refused). An unexported
+constant would have left the mitigation on paper and the discovery-by-failure
+outcome in place, which is what this paragraph claims to have avoided.
 
 **What this does not do.** It does not enforce the publication ordering. Nothing
 in a library can: wall-clock ordering is not a property of the arguments. The

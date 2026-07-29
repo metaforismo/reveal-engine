@@ -91,6 +91,67 @@ The second lifecycle module: `staged-survival`.
   the define-time pricing bound, so a stake that clears `enter()` cannot overflow
   anywhere in the round. `restore()` holds a restored entry stake to the same
   width, because the snapshot codec's own bound is the far wider engine limit.
+- **`resolve()` now runs the same step admission test as `restore()`, from the
+  same function.** The live path checked the resolved set and skipped the lane
+  geometry that `restore()` re-derives, so a step reporting a partition the
+  chosen contract does not produce — lanes re-cut, lanes emptied, one entity in
+  two lanes, or every lane flagged collapsed while reporting survivors — was
+  accepted live and refused by every later `restore()`. The book could take a
+  `bank()` credit in that state and then never reconnect, which is exactly the
+  availability defect recorded two entries above for `enter -> bank -> enter`,
+  reintroduced one field over. Both paths now call one `assertStepGeometry()`, so
+  the set equality, the lane partition and the collapsed-lane rule are checked
+  identically going in and coming back; the duplication that let them drift is
+  gone. `tests/security/staged-survival-hostile-input.test.ts` asserts each shape
+  is refused and carries the metamorphic law — nothing `resolve()` accepts may be
+  something `restore()` refuses — which is the test whose absence let this
+  through.
+- **The tape now moves with the definition fingerprint, not only with its id.**
+  `roundIdentityOf()` put `definition.id` in `definitionId`, which core maps onto
+  the sampler `domain`, so two definitions sharing an id and a version but
+  declaring different `laneFailure`/`entitySurvival` produced byte-identical
+  tapes under one seed. Not exploitable — the seed pre-commitment binds the
+  fingerprint independently, so a substituted definition fails
+  `COMMITMENT_MISMATCH` — but the grid was blind to the fields that decide what a
+  draw means, and SWARM §6.4 requires the opposite. The domain is now
+  `survivalFingerprint(definition)`: used whole rather than appended to the id,
+  because the id is already inside the fingerprint's preimage and because an
+  `id#fingerprint` composite would break the 128-byte identifier bound at a
+  maximal id. `TAPE_NOT_DETERMINISTIC` now checks the binding structurally on
+  every adapter, and the module suite checks it behaviourally on twins.
+  **This changes every derived tape**, so the frozen fixtures were regenerated
+  deliberately; the wire _format_ is unchanged and stays `-v1`, which is
+  defensible only because this module has never shipped — 0.4.0 is its first
+  release. The frozen round was also re-seeded to `0a…` so it rides all three
+  reference contracts and both lane states instead of one contract three times.
+- **`resolve()` fails closed with a typed error on a malformed step.** It is the
+  one entry point that takes a step as a raw object rather than through
+  `parseWireStepList`, and four shapes threw a bare `TypeError` out of a
+  money-bearing command instead of a `RevealEngineError`: `survivors`, `failed`
+  or `banked` undefined, and `failed` as a number. A step assembled with its
+  `lanes` on a prototype was also accepted, where the transcript wire boundary
+  has always refused an inherited key. `assertStepShape()` now runs before any
+  field is read, checks every field as an **own** property, and reports
+  `TRANSCRIPT_MISMATCH` with a path. `restore()` deliberately does not call it —
+  its steps come through the wire parser, which is stricter — and the comment
+  says so rather than leaving the asymmetry to be rediscovered.
+- **`resolveStage()` validates its own arguments.** It is a public export and it
+  is the function that produces the step object `book.resolve()` credits from,
+  yet it accepted duplicate entities, entities outside the definition,
+  non-integer entities, a 500-element field on a 3-entity game, and draws outside
+  `[0, drawModulus)` — where a negative draw collapses every lane and a draw at
+  the modulus collapses none, whatever probability was declared. The live field
+  must now be ascending, distinct and inside the definition (its order is part of
+  the geometry, since `lanePartition()` cuts consecutive slices), and both draw
+  sources are held to the modulus. No internal caller could reach any of it, so
+  this is hardening rather than a live-bug fix, and it makes the function consistent
+  with `laneSizes()` and `laneSurvivorDistribution()`, which already argued that
+  an exported helper checks its own bounds.
+- **`MAX_ROUND_ID_BYTES` and `ROUND_REF_SEPARATOR` are exported.** ADR 0005 names
+  "a host can check the budget rather than discover it" as the one mitigation for
+  the ergonomic cost it accepts, and the constant was not in the subpath, so the
+  mitigation existed only on paper. Both are now exported and pinned by the
+  public-API list and by a boundary test.
 - **`laneSurvivorDistribution()` bounds its lane size by the contract width.** It
   is an exported helper reachable with an arbitrary size, and `c^j` under it is a
   power, so a validated contract with a wide denominator overflowed there rather
@@ -127,6 +188,33 @@ The second lifecycle module: `staged-survival`.
   never be larger than an earlier one, and there is no `maxEntities` to keep a
   contract off larger fields. The gap is now stated in both the module doc and
   `TODO.md`.
+- **`docs/modules/staged-survival.md` §10 no longer makes a blanket coverage
+  claim.** It said "everything else in SWARM's §6 conformance list is covered
+  here", which was checkably false for several of the eighteen items — there is
+  no action chain for §6.11, the grid did not move with the fingerprint for §6.4,
+  and `bank([])` is refused where §6.14 wants every `k` in `[0, units]`. §10 is
+  the section a consuming team is entitled to trust as a gap analysis, so it now
+  carries the list item by item with a verdict of provided, analogue, partial,
+  inherited, N/A or not provided, and a reason for each. The missing action chain
+  is named in "Not provided" rather than left to inference.
+- **§10 gained a cap-basis row and §10.2.** BRANCHFALL's main route ticket
+  declares `risk.capBasis: 'per-ticket'` in bold, and this module refuses
+  anything but `round-external-stake`. The divergence was mentioned only inside
+  the side-bets bullet, framed as a per-line concern, so a reader checking
+  BRANCHFALL's main-ticket declaration against the "Provided" table found
+  nothing. It is now a row and a section: no value is at risk while
+  `capMustBeUnreachable: true`, because `assertCapIsUnreachable` forces the exact
+  maximum round return strictly below `maxWinMultiple` and total credit cannot
+  exceed `basis * maxRoundReturn`; under a `false` declaration a shared round
+  ceiling genuinely differs from a per-ticket accumulator, since an early bank
+  consumes headroom the latter would keep separate.
+- **§5 and §9 now state the credit-before-proof ordering.** §7.3 already said
+  `restore()` "holds no seed, so it cannot verify a step against the tape", but
+  §5 presented `bank()` without the equivalent caveat and the residual-risk list
+  omitted it. `bank()` credits against a step checked for shape and not for
+  truth; `settle()` is the only call that verifies and it runs afterwards. Closing
+  the lane-geometry gap narrows this but cannot close it — the survivor bits
+  inside a lane that held are exactly the part that needs the seed.
 
 ## 0.3.0 — 2026-07-29
 
