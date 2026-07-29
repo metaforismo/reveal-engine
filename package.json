@@ -36,6 +36,10 @@
       "types": "./dist/modules/progressive-market/index.d.ts",
       "default": "./dist/modules/progressive-market/index.js"
     },
+    "./modules/sequential-cards": {
+      "types": "./dist/modules/sequential-cards/index.d.ts",
+      "default": "./dist/modules/sequential-cards/index.js"
+    },
     "./protocol": {
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"

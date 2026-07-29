@@ -4,6 +4,7 @@ import * as api from '../src/api/index.js';
 import * as core from '../src/core/index.js';
 import * as modules from '../src/modules/index.js';
 import * as progressiveMarket from '../src/modules/progressive-market/index.js';
+import * as sequentialCards from '../src/modules/sequential-cards/index.js';
 import * as conformance from '../src/conformance/index.js';
 import * as integration from '../src/integration/index.js';
 import * as protocol from '../src/protocol/index.js';
@@ -174,10 +175,15 @@ describe('stable public API snapshot', () => {
       'listModules',
       'progressiveMarket',
       'requireModule',
+      'sequentialCards',
     ]);
-    expect(modules.listModules().map((module) => module.id)).toEqual(['progressive-market']);
+    expect(modules.listModules().map((module) => module.id)).toEqual([
+      'progressive-market',
+      'sequential-cards',
+    ]);
     expect(modules.requireModule('progressive-market').version).toBe('1.0.0');
-    expect(() => modules.requireModule('sequential-cards')).toThrowError(
+    expect(modules.requireModule('sequential-cards').version).toBe('1.0.0');
+    expect(() => modules.requireModule('staged-survival')).toThrowError(
       expect.objectContaining({ code: 'UNKNOWN_MODULE' }),
     );
     expect(Object.keys(progressiveMarket).sort()).toEqual([
@@ -233,6 +239,108 @@ describe('stable public API snapshot', () => {
     ]);
     for (const banned of ['commitment', 'canonicalTranscriptBytes', 'legacyCommitment'])
       expect(banned in progressiveMarket).toBe(false);
+  });
+
+  /**
+   * A second module's surface is a contract too.
+   *
+   * The root barrel deliberately does **not** re-export it: the engine is not a
+   * game, and `progressive-market` is only at the root because hosts written
+   * against 0.2 import it from there. A sequential-cards host reaches it through
+   * `requireModule('sequential-cards')` or the `./modules/sequential-cards`
+   * subpath, and nothing else.
+   */
+  it('exposes the sequential-cards module surface without widening the root', () => {
+    expect(Object.keys(sequentialCards).sort()).toEqual([
+      'ACCEPTED_CARDS_TRANSCRIPT_SCHEMAS',
+      'CARDS_ACTIONS',
+      'CARDS_BOOK_SCHEMA',
+      'CARDS_MAX_ANALYSIS_CELLS',
+      'CARDS_MAX_DEALT',
+      'CARDS_MAX_ENUMERATED_TRUTHS',
+      'CARDS_MAX_OPEN_CLAIMS',
+      'CARDS_MAX_SIDE_MARKETS',
+      'CARDS_MAX_STEPS',
+      'CARDS_MAX_SUPPORT',
+      'CARDS_REJECTION_REASONS',
+      'CARDS_TRANSCRIPT_SCHEMA',
+      'COMMITMENT_VERSION',
+      'CardsBook',
+      'ENGINE_API_VERSION',
+      'SEQUENTIAL_CARDS_CHECKS',
+      'SEQUENTIAL_CARDS_MODULE_ID',
+      'SEQUENTIAL_CARDS_MODULE_VERSION',
+      'SEQUENTIAL_CARDS_REFERENCES',
+      'analyseDefinition',
+      'assertCardsDefinition',
+      'assertDeal',
+      'assertPlayerChoices',
+      'assertRevealSteps',
+      'buildCardsTranscript',
+      'cardsBelief',
+      'cardsBeliefVector',
+      'cardsChoicesOf',
+      'cardsFingerprint',
+      'cardsIdentity',
+      'cardsRoundOf',
+      'cardsSeedCommitment',
+      'cardsTranscriptToWire',
+      'cascadeMiddleReference',
+      'claimProbability',
+      'combinationCount',
+      'composeRoundSeed',
+      'coverProbability',
+      'dealEqual',
+      'defineCardsGame',
+      'deriveDeal',
+      'deriveRanks',
+      'deriveRevealSteps',
+      'deriveSelectors',
+      'deserializeCardsTranscript',
+      'duoMiddleReference',
+      'eligiblePositions',
+      'eligibleSetSize',
+      'encodeDeal',
+      'encodePlayerChoice',
+      'encodeRevealStep',
+      'entryClaim',
+      'entryMultiplier',
+      'enumerateDeals',
+      'enumerateSelectorTuples',
+      'fairValue',
+      'forEachCanonicalState',
+      'freezeCardsDefinition',
+      'isReachableObjectiveRank',
+      'isTerminalCover',
+      'liquidationFactor',
+      'livePositions',
+      'objectiveIndex',
+      'objectivePositionOf',
+      'objectiveRankOf',
+      'offeredActions',
+      'openFingerprint',
+      'reachableObjectiveRanks',
+      'revealRecordOf',
+      'revealStepsEqual',
+      'sequentialCards',
+      'serializeCardsTranscript',
+      'settlementTotal',
+      'stakedCardsSnapshot',
+      'stepDigest',
+      'ticketRowFields',
+      'transformedClaim',
+      'triadMiddleReference',
+      'verifyCardsTranscript',
+    ]);
+    for (const banned of ['cardsCommitmentBody', 'sealCommitment', 'encodeFields'])
+      expect(banned in sequentialCards).toBe(false);
+    for (const leaked of [
+      'CardsBook',
+      'sequentialCards',
+      'defineCardsGame',
+      'triadMiddleReference',
+    ])
+      expect(leaked in root).toBe(false);
   });
 
   it('keeps every remaining package subpath explicit', () => {

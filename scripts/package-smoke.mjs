@@ -18,6 +18,7 @@ const subpaths = [
   './core',
   './modules',
   './modules/progressive-market',
+  './modules/sequential-cards',
   './conformance',
   './integration',
   './protocol',
@@ -38,6 +39,7 @@ try {
   assert(files.includes('dist/index.js'));
   assert(files.includes('dist/cli/verify.js'));
   assert(files.includes('dist/modules/progressive-market/index.js'));
+  assert(files.includes('dist/modules/sequential-cards/index.js'));
   assert(!files.some((path) => path.startsWith('src/') || path.startsWith('tests/')));
 
   const installDirectory = join(directory, 'consumer');
@@ -74,6 +76,7 @@ try {
   const core = loaded['./core'];
   const modules = loaded['./modules'];
   const progressiveMarket = loaded['./modules/progressive-market'];
+  const sequentialCards = loaded['./modules/sequential-cards'];
   const conformance = loaded['./conformance'];
   const integration = loaded['./integration'];
 
@@ -87,12 +90,16 @@ try {
   assert.equal(core.defineGame, undefined, 'core must stay game-agnostic');
   assert.deepEqual(
     modules.listModules().map((module) => module.id),
-    ['progressive-market'],
+    ['progressive-market', 'sequential-cards'],
   );
   assert.equal(progressiveMarket.progressiveMarket.moduleApiVersion, 'reveal-engine/module-v1');
   assert.equal(typeof progressiveMarket.RoundBook, 'function');
   assert.equal(progressiveMarket.blackSignalReference.outcomes.length, 4);
   assert.equal(progressiveMarket.commitment, undefined);
+  assert.equal(sequentialCards.sequentialCards.moduleApiVersion, 'reveal-engine/module-v1');
+  assert.equal(typeof sequentialCards.CardsBook, 'function');
+  assert.equal(sequentialCards.triadMiddleReference.ladder.dealt, 3);
+  assert.equal(sequentialCards.cardsCommitmentBody, undefined);
   assert.equal(typeof conformance.checkModuleConformance, 'function');
   assert.equal(typeof integration.RgsExample, 'function');
   assert.equal(loaded['./protocol'].RoundBook, progressiveMarket.RoundBook);
@@ -108,6 +115,12 @@ try {
     2,
   );
   assert.equal(report.ok, true);
+  const cardsReport = conformance.checkModuleConformance(
+    sequentialCards.sequentialCards,
+    sequentialCards.triadMiddleReference,
+    2,
+  );
+  assert.equal(cardsReport.ok, true);
 
   console.log(
     JSON.stringify({

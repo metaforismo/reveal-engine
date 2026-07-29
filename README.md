@@ -61,7 +61,7 @@ library. See [`docs/threat-model.md`](docs/threat-model.md).
 | -------------------- | ------------------------------------------------------------------------------------------------------------------ | ------- |
 | **core**             | RNG, commitments, exact math, payments, ledger, limits, wire safety                                                | shipped |
 | `progressive-market` | one hidden truth, a Bayesian evidence stream, a single-position book with fair-value sell and re-entry             | shipped |
-| `sequential-cards`   | committed deck shuffle; reveals that eliminate outcomes to exactly zero; multiple simultaneous positions           | next    |
+| `sequential-cards`   | committed deck shuffle; reveals that eliminate outcomes to exactly zero; multiple simultaneous positions           | shipped |
 | `staged-survival`    | N entities through S stages; a contract chosen per stage before it resolves; per-entity partial claims and banking | next    |
 | `permutation`        | structured truth (an ordering of n items) with multi-bet paytable settlement                                       | next    |
 | `grid-pattern`       | spatial reveal over a committed grid                                                                               | later   |
@@ -72,7 +72,7 @@ The contract every module implements is documented in
 [`docs/lifecycle-modules.md`](docs/lifecycle-modules.md) and typed in
 `src/core/module.ts`.
 
-The three `next` modules are not built yet, but the properties that make them
+The two `next` modules are not built yet, but the properties that make them
 hard are already executable. `tests/support/ordering-fixture-module.ts` carries
 the permutation truth, the reveals that drive an outcome to posterior exactly
 zero, the combinatorial paytable, and the several simultaneous positions;
@@ -184,6 +184,7 @@ Latest local evidence, including test counts and synthetic throughput, is in
 | ------------------------------------------------------------------------------- | --------------------------------------- |
 | [architecture](docs/architecture.md)                                            | layer boundaries                        |
 | [lifecycle modules](docs/lifecycle-modules.md)                                  | the module contract                     |
+| [sequential-cards](docs/modules/sequential-cards.md)                            | the deck module's exact math and limits |
 | [API reference](docs/api-reference.md)                                          | package surfaces and lifecycle          |
 | [API and adapter contract](docs/api-contract.md)                                | what a definition must guarantee        |
 | [math](docs/math.md)                                                            | the theorem and its stated assumptions  |

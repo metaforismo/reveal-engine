@@ -479,15 +479,31 @@ than a nicety.
 
 The contract was designed against four shapes, not one.
 
-| Module               | Truth                       | Steps                          | Choices     | Belief                                                   | Book                                           |
-| -------------------- | --------------------------- | ------------------------------ | ----------- | -------------------------------------------------------- | ---------------------------------------------- |
-| `progressive-market` | `scalar-index`              | Bayesian evidence stream       | none        | `outcomes`; `belief()` is the price, ≤ 64 outcomes       | single position, winner-takes-claim            |
-| `sequential-cards`   | `permutation` (deck order)  | reveals that zero out outcomes | none        | `marginal`; omit `belief()` if the shoe exceeds 64 cards | multi position, independent sells and switches |
-| `staged-survival`    | `composite` (a random tape) | stage resolutions              | before-step | `marginal`; `price()` over surviving entities            | multi claim, partial banking                   |
-| `permutation`        | `permutation` of n items    | ordering reveals               | none        | `marginal`; `price()` by exact counting                  | multi bet, paytable settlement                 |
+| Module               | Truth                              | Steps                          | Choices     | Belief                                                                 | Book                                           |
+| -------------------- | ---------------------------------- | ------------------------------ | ----------- | ---------------------------------------------------------------------- | ---------------------------------------------- |
+| `progressive-market` | `scalar-index`                     | Bayesian evidence stream       | none        | `outcomes`; `belief()` is the price, ≤ 64 outcomes                     | single position, winner-takes-claim            |
+| `sequential-cards`   | `vector` (deal + sealed selectors) | reveals that zero out outcomes | before-step | `marginal`; the vector is the elimination view, `price()` is the money | multi position, independent sells and switches |
+| `staged-survival`    | `composite` (a random tape)        | stage resolutions              | before-step | `marginal`; `price()` over surviving entities                          | multi claim, partial banking                   |
+| `permutation`        | `permutation` of n items           | ordering reveals               | none        | `marginal`; `price()` by exact counting                                | multi bet, paytable settlement                 |
 
-Only `progressive-market` ships today. The other three are the immediate next
-modules and are named here so the contract is judged against them.
+`progressive-market` and `sequential-cards` ship today; the other two are the
+immediate next modules and are named here so the contract is judged against them.
+
+Two things `sequential-cards` found while being written against this contract are
+worth reading back as guidance rather than as core code, and
+[`adr/0005-sequential-cards-scope-and-the-credit-boundary.md`](adr/0005-sequential-cards-scope-and-the-credit-boundary.md)
+records both:
+
+- **A step that moves no money may still be a ledger command.** A snapshot taken
+  between a reveal and the decision it prices carries a step log nothing has
+  signed, and every receipt in it still looks canonical. Minting a zero-money
+  receipt per step is what makes a rewritten step die on its own log — the same
+  reason `staged-survival-fixture-module.ts` logs its `choose` decisions.
+- **A book with no round identity can settle somebody else's round.** Comparing
+  a settlement proof's steps against the book's own is not enough when a step
+  discloses less than the truth: two rounds routinely publish the identical step.
+  `BookModel.create(definition)` cannot carry a round id, so the identity has to
+  arrive with the first command and be bound into its fingerprint.
 
 Two **test-only** modules under `tests/support/` — not registered, not games —
 exercise the parts of the contract the progressive market does not use, so the

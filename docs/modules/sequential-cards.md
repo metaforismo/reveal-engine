@@ -1,0 +1,502 @@
+# `sequential-cards`
+
+A lifecycle module for games whose truth is a **committed deal from a declared
+finite deck**, whose steps turn cards face up, and whose round can hold several
+independently priced positions at once.
+
+It exists because of one thing the progressive market cannot express. Turning a
+card over does not shade a belief — it can make an outcome **impossible**, and
+an impossible outcome has to price at exactly `0`, not at an epsilon. Core
+already reserved that affordance: `WeightVector` documents that "zero is a legal
+weight: a step that eliminates an outcome sets its weight to exactly zero, never
+to an epsilon." This is the module that uses it.
+
+- Module id: `sequential-cards`, version `1.0.0`
+- Transcript schema: `reveal-engine/cards-transcript-v1`
+- Book snapshot schema: `reveal-engine/cards-book-v1`
+- Reference definitions: `triad-middle-v1`, `duo-middle-v1`, `cascade-middle-v1`
+
+| Contract slot        | Value                                                                        |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `truth.kind`         | `vector` — dealt ranks, plus the reveal selectors sealed with them           |
+| `steps.choiceTiming` | `before-step` — the backing is an input to reveal derivation                 |
+| `steps.beliefSpace`  | `marginal` — `price()` carries the money; the vector is the elimination view |
+| `steps.maxSteps`     | `8`                                                                          |
+| `book.positions`     | `multi`                                                                      |
+| `book.settlement`    | `paytable`                                                                   |
+| `book.actions`       | `open`, `reveal`, `switch`, `split`, `cash`, `settle`                        |
+
+---
+
+## 1. The deck, and why the objective is a total function
+
+A definition declares a **ladder** of `size` ranks with one card each, deals
+`dealt` of them without replacement, and scores the hand by one order
+statistic: `middle`, `highest`, or `lowest`.
+
+Cards drawn without replacement from distinct ranks are pairwise distinct, so
+the hand admits a strict total order and the named order statistic exists and is
+unique. **There is therefore no tie rule anywhere in this module, because there
+can be no ties.** That is a construction guarantee rather than a convention:
+`assertCardsDefinition` refuses a `middle` objective on an even hand, so a
+missing middle is a definition-time failure and never a runtime branch.
+
+A rank is **reachable** as the objective only when the hand can be completed
+around it. With order-statistic index `j`,
+
+```
+reachable(r)  ⟺  r - 1 ≥ j   and   size - r ≥ dealt - 1 - j
+```
+
+For the three-card middle game that is ranks `2 … 12`: nothing sits below a 1 and
+nothing above a 13, so neither can ever be the middle. A side market on an
+unreachable rank is refused rather than offered at a price that can never pay.
+
+## 2. The truth: a committed shuffle and a sealed selector
+
+`truth.derive(seed, definition, roundId)` produces
+
+```ts
+interface Deal {
+  ranks: readonly number[]; // uniformPermutation of the ladder, first `dealt`
+  selectors: readonly number[]; // one per reveal, from a RandomTape
+}
+```
+
+Both halves are pure functions of `(seed, definition, roundId)` and of nothing
+else. In particular **no player decision is an input**, and that is what lets the
+selector be covered by a commitment published before the player has backed
+anything: `selectors[i]` is an index into the eligible set at reveal `i` **in
+ascending board order**, and that set's _size_ is a declared constant,
+
+```
+|eligible(i)| = dealt - i - maxOpenBeforeReveal      (eligibility: 'unbacked')
+|eligible(i)| = dealt - i                            (eligibility: 'any')
+```
+
+even though its _membership_ is not known until the backing is logged.
+`defineCardsGame` refuses any definition where that size drops below 1 at any
+reveal, so an over-wide backing is a definition-time failure rather than an
+out-of-range index at settlement.
+
+The two sampler labels are disjoint (`cards:deal`, `cards:selector`), so the
+shuffle and the selectors never share a draw.
+
+**What this buys.** An operator who chooses the reveal with knowledge of the
+hidden cards is not merely detectable after the fact — the choice was made
+before there was a pick to adapt it to. **What it does not buy**: it says nothing
+about seed _grinding_ before publication. `composeRoundSeed()` is the module's
+answer to that, and its limits are stated in §9.
+
+## 3. Reveals
+
+```ts
+interface RevealStep {
+  index: number;
+  position: number; // the board position that turned face up
+  rank: number; // its face value
+  sorted: readonly number[]; // hidden positions in ascending rank order, or []
+  label: string; // modelVersion + index — never a function of the deal
+}
+```
+
+Reveal `i` takes `eligible[selectors[i]]`. No sampling happens at this point:
+every draw was sealed with the deal, so a reveal is a deterministic replay of
+committed randomness against a public decision log. The label is a function of
+the definition and the index only, so the schedule's _shape_ is identical
+whichever deal was drawn; only the targets differ, which is what a reveal is
+allowed to disclose.
+
+Under `eligibility: 'unbacked'` the choice log must be exactly
+`maxOpenBeforeReveal` entries wide before the first reveal. A narrower log is not
+the round the selector was sealed against, so it is refused
+(`CHOICE_REQUIRED`) rather than derived against a set of a different size.
+
+## 4. The posterior, counted exactly
+
+After a step prefix, write `R` for the revealed ranks, `H` for the hidden board
+positions in the order the board published, `m = |H|`, and `P` for the ranks
+still in the deck (`|P| = size - |R|`).
+
+A **completion** assigns `m` distinct ranks from `P` to the hidden positions.
+Every completion consistent with the public record is equally likely, because the
+reveal rule does not look at ranks. So the posterior is a **count**:
+
+```
+positionWeights[i] = number of consistent completions whose objective card sits at i
+rankWeights[r]     = number of consistent completions whose objective card has value r
+total              = number of consistent completions          (a shared denominator)
+```
+
+`price(definition, steps, claim)` is `countingProbability(favourable, total)` —
+exact BigInt over exact BigInt, never a float, never normalised through a
+division that could round.
+
+### 4.1 What "consistent" means, and the trap in it
+
+When `sortRemaining` is on, a completion has to respect **every order relation
+the board has published, not merely the most recent sort.**
+
+The most recent `sorted` fixes the order of the cards that are still down. But an
+_earlier_ sort ordered a set that included cards which have since turned face up,
+and each of those, once its value is known, **splits** that order: everything
+that sat before it is now known to be lower, everything after it higher.
+`revealRecordOf` accumulates those splits into per-position bounds and
+`cardsBelief` filters completions against them.
+
+This is not a refinement. A posterior that reads only the latest sort is
+**wrong** for any definition with more than one reveal — and wrong in a way that
+hides: every state still looks internally consistent and every action inside a
+state is still value-neutral, so nothing local notices. What notices is the
+aggregate: the return of a legal policy stops equalling the declared entry RTP.
+That is exactly how it was caught here, by the definition-time walk in §7, and
+`cascade-middle-v1` and the frequency test in
+`tests/sequential-cards/property-metamorphic.test.ts` are what keep it caught.
+
+### 4.2 Unsorted boards
+
+With `sortRemaining: false` the hidden cards stay exchangeable, so a completion
+is an ordered tuple rather than a set. Each subset then contributes `m!` in
+total: `m!` to a revealed position when the objective is already face up, and
+`(m-1)!` to each hidden position otherwise. Both branches leave the total at
+`W · (consistent subsets)`, which is what keeps the position view and the rank
+view commensurable over one denominator.
+
+### 4.3 The three-card middle game, in closed form
+
+For the reference adapter the count has a closed form, and it is the one
+`tests/sequential-cards/oracle-three-card.test.ts` checks the module against.
+With a cut of value `v`, `b = v - 1` ranks below it and `t = 13 - v` above:
+
+| Configuration                 | Objective card         | Completions |
+| ----------------------------- | ---------------------- | ----------- |
+| both hidden ranks above `v`   | the lower hidden card  | `C(t,2)`    |
+| the hidden ranks straddle `v` | the cut card itself    | `b·t`       |
+| both hidden ranks below `v`   | the higher hidden card | `C(b,2)`    |
+
+and `C(t,2) + b·t + C(b,2) = C(12,2) = 66`, so the three are exhaustive and
+disjoint. When `v ∈ {1, 2, 12, 13}` one of `C(t,2)` and `C(b,2)` is zero, and the
+socket it belongs to prices at **exactly zero** — 8 of the 26 information states.
+
+## 5. Pricing
+
+| Rule             | Formula         | Where it applies                                 |
+| ---------------- | --------------- | ------------------------------------------------ |
+| Entry multiplier | `r / p`         | the one and only margin, on fresh external stake |
+| Fair value       | `p · K · (1−σ)` | every in-round liquidation                       |
+| Switch           | `V / q`         | move the whole claim onto one other position     |
+| Split (`even`)   | `V / Σ q`       | hedge the claim evenly across a set              |
+| Cash             | `V`             | credit the fair value and close the selection    |
+
+with `r = entryRtp` and `σ = liquidationSpread`, **which this version requires to
+be exactly zero**. The field is declared, fingerprinted and validated so a
+definition that wants a second margin says so explicitly and is refused
+explicitly — see §12. **A switch and a split are claim
+transformations, not money movements**: the rational claim is recomputed exactly
+and never converted to credits, so a selection crosses the credit boundary
+exactly once — at its cash-out or at settlement. Both still mint a receipt with
+`debited: 0n, credited: 0n`, so the ledger records the decision, the step
+revision it was taken at, and its idempotency key.
+
+That is what "self-financed" means here, in its strongest available form: the new
+claim is financed entirely by the fair value of the old one, and no rounding, cap
+arithmetic, or wallet movement happens in between. With `σ = 0` the transform is
+an exact isomorphism, `q · K' = p · K`, so a switch out and back is the identity.
+
+### 5.1 Terminal states offer nothing
+
+When the covered set's probability is exactly `0` or exactly `1`, no action is
+offered — not even a cash-out. At `0` every action is worth exactly zero; at `1`
+holding and cashing pay the identical certain amount. Rendering controls in
+either case is several ways of receiving the same thing, and at `p = 0` it would
+put a posted price on an impossible outcome. The round settles at `p · K`.
+
+`CARDS_TERMINAL_OFFERS_NOTHING` sweeps every reachable state and checks both
+directions: nothing offered where the position is decided, and something offered
+wherever it is not.
+
+### 5.2 One action per decision window
+
+A selection may take at most one in-round action per step revision. Without that
+bound a definition with `σ > 0` would have no worst policy at all — each
+liquidation multiplies expected value by `(1−σ)`, so an unbounded chain of them
+converges to zero and "the argmin over every legal policy" would not exist.
+
+### 5.3 The re-back
+
+Before any reveal the prior over board positions is uniform (asserted, not
+assumed — see §7), so moving a claim to another position moves no value:
+`p = q`, hence `K' = K`. `rebackMode: 'move'` admits that move and updates the
+choice log with it, which is legitimate precisely because it happens before the
+first reveal, when the sealed selector still indexes an eligible set of exactly
+the size it was sealed against. `rebackMode: 'reject'` refuses it.
+
+## 6. The book
+
+One round, one ticket, one ledger.
+
+| Action   | Effect                                                              | Credit boundary |
+| -------- | ------------------------------------------------------------------- | --------------- |
+| `open`   | debit the ticket total; price every row at `r / p`; log the backing | debit only      |
+| `reveal` | apply one derived reveal, fenced and idempotent                     | none            |
+| `switch` | move a claim onto one other position at true odds                   | **none**        |
+| `split`  | hedge a claim evenly across a set at true odds                      | **none**        |
+| `cash`   | credit `floor(V)` for one selection and close it                    | credit          |
+| `settle` | verify the proof, then credit every selection on its own outcome    | credit          |
+
+A ticket may hold up to `backing.maxOpenBeforeReveal` backed positions plus any
+declared side markets. **Every row is `external` stake**, so the round's ceiling
+is `maxWinMultiple` times the whole ticket rather than times whichever row came
+first — the difference between paying a legitimate 38,800 claim and capping it at
+10 because a 1-credit loser was staked first. Every credit goes through
+`creditClaim`, which prices, mints, and applies as one call, so a repeated-credit
+shape like this one cannot half-perform the cap chain.
+
+A reveal is a ledger command even though it moves no money. Without that, a
+reconnect snapshot taken between a reveal and the player's decision would carry a
+reveal log nothing had signed: every receipt would still look canonical while the
+board said something the round never showed.
+
+### 6.1 The round identity
+
+`open` names the round it belongs to, and `settle` refuses a proof from any
+other. That is not belt-and-braces: a reveal discloses one rank and an order
+relation, not the hidden cards, so **two different rounds routinely publish the
+same reveal**. Without the round identity a book would accept a transcript that
+verifies perfectly and settle on somebody else's deal.
+
+### 6.2 Restore re-derives; it does not read
+
+`CardsBook.restore` takes nothing money-bearing from the snapshot. Every claim is
+recomputed from the entry price at the pre-reveal belief and replayed through the
+transformation log; every credited integer is recomputed against the cap chain as
+it stood at that receipt; the choice log is rebuilt from the ticket and the
+transforms; every command's fingerprint is recomputed — over a digest of the
+reveals it was fenced to — and compared. Once a round has settled its seed is
+public, so the deal, the reveals, the objective card, and the sealed commitment
+are re-derived from that seed too. The snapshot's own copies of all of it are
+only ever compared against the re-derivation.
+
+**What that establishes, and what it does not.** It defeats every _inconsistent_
+rewrite: a claim that does not match its price, a decision that does not match
+its receipt, a reveal that does not match the digest it was fenced to, a credit
+that does not match the cap chain, a choice log that does not match the ticket,
+and — after settlement — any outcome that does not match the revealed seed.
+
+It does **not authenticate the snapshot**, and the difference matters. Receipt
+fingerprints and the checksum are unkeyed and deterministic, so an attacker who
+can rewrite the store can rewrite a field _and_ its receipt _and_ the hash
+together. Before settlement the **stake** is exactly such a field: it enters from
+the wallet and has no cryptographic anchor inside the round, so a coordinated
+rewrite of a stake, its claim, its open receipt and the cap basis is internally
+consistent and will restore. There is no arithmetic that closes that — the round
+has no independent record of what the wallet actually debited.
+
+So snapshot integrity is a **deployment obligation**, not something this module
+provides: persist snapshots in storage the host trusts, or authenticate them with
+a key the host owns, and reconcile the ticket debit against the wallet ledger
+rather than against the snapshot. `progressive-market` has the same boundary with
+its evidence log; it is stated here rather than papered over with a re-derivation
+that sounds stronger than it is.
+
+## 7. What `defineCardsGame()` proves, and how
+
+`assertCardsDefinition` is the cheap half — shapes, ranges, enums, the stake
+lattice. Everything after it is an **economic** assertion no field check could
+make, and each is settled by walking the definition's whole reachable space in
+exact rationals:
+
+1. **The prior is uniform** over board positions, which is what makes every entry
+   price equal and a pre-reveal re-back free.
+2. **Every liquidating action realises exactly `p · K · (1−σ)`.** Expected value
+   is linear in the claim, so verifying this at `K = 1` in a state establishes it
+   for every claim in that state; the walk checks it at every reachable state.
+3. **`minStakeCredits` is at least the non-zero-credit threshold**, so no live
+   claim can settle at zero credits under the declared flooring rule.
+4. **When `capMustNotBind`, the largest reachable payout is strictly below the
+   cap**, so the rail can never truncate a legitimate win or silently reduce the
+   published return.
+
+### 7.1 The canonical board
+
+The walk enumerates hands as ascending rank sets and identifies board position
+`i` with the `i`-th smallest rank of the hand. That is a **relabelling, not an
+approximation**: a real board is a uniform permutation of this one, the sealed
+selector picks uniformly from the eligible set in board order, and every quantity
+depends on a position only through its rank order, which positions are backed,
+and which have been revealed — all of which the walk enumerates. It removes a
+factor of `dealt!` and changes no number it produces. The oracle test re-derives
+the same figures in real board space from an independently coded model.
+
+### 7.2 Three arguments, each checked rather than assumed
+
+- **Action neutrality is an identity in the claim**, so one evaluation per state
+  proves it for every claim in that state (checked; reported as
+  `pricingIdentityHolds`).
+- **A re-back is a scalar.** On a uniform prior it multiplies the claim by
+  exactly `(1−σ)` and leaves the reachable state tree unchanged, so it cannot
+  raise the maximum and lowers the minimum by exactly that factor. Applied as a
+  scalar rather than by doubling the search.
+- **The worst policy liquidates whenever it can**, because each liquidation
+  multiplies expected value by `(1−σ) ≤ 1`. With `σ = 0` every policy coincides
+  and the distinction is empty, which is what the shipped references declare.
+
+### 7.3 A named shortlist is not a bound
+
+Every extremal figure this module reports is an argmin or an argmax over the
+whole admissible set — every hand, every backed set, every reveal outcome, every
+reachable `(state, covered set)` pair, and every offered action at each of them.
+Where the space is too large to walk, the definition is **refused**
+(`ANALYSIS_SPACE_TOO_LARGE`) rather than bounded by a sample.
+
+### 7.4 What the reference adapter comes out at
+
+Every figure below is produced by the walk and independently reproduced by
+`tests/sequential-cards/oracle-three-card.test.ts` from the closed form:
+
+| Quantity                           | `triad-middle-v1`                       |
+| ---------------------------------- | --------------------------------------- |
+| Opening claim on the backed card   | `72/25` = 2.88× stake                   |
+| Largest reachable payout           | `648/5` = 129.6× (a switch in `3:LOW`)  |
+| Smallest reachable positive payout | `12/275` (a cash-out in `3:HIGH`)       |
+| Non-zero-credit threshold          | 23 credits (25 on the step lattice)     |
+| Best legal policy, exact           | `24/25`                                 |
+| Worst legal policy, exact          | `24/25`                                 |
+| Information states                 | 26 (20 decision, 6 terminal)            |
+| States where a control is a no-op  | 2 — `7:LOW` and `7:HIGH`, where `p = q` |
+| Max-win cap                        | `200×`, strictly above `129.6×`         |
+
+## 8. Conformance
+
+Fourteen checks, all declared on the module and all run by `reveal-conformance`
+against every reference:
+
+| Code                              | Scope      | Property                                                                                 |
+| --------------------------------- | ---------- | ---------------------------------------------------------------------------------------- |
+| `CARDS_DEFINITION_NOT_FROZEN`     | definition | the definition and every declarative field are deeply frozen, and `define()` round-trips |
+| `CARDS_ELIGIBLE_SET_NONEMPTY`     | definition | every reveal has an eligible card and the objective is defined on every deal             |
+| `CARDS_TERMINAL_OFFERS_NOTHING`   | definition | nothing offered where a position is decided, something wherever it is not                |
+| `CARDS_ACTIONS_VALUE_NEUTRAL`     | definition | every liquidating action realises the value it was priced from                           |
+| `CARDS_POLICY_RETURN_EXTREMAL`    | definition | the argmin and argmax policies over the whole space return what is declared              |
+| `CARDS_MARKET_REACHABLE`          | definition | every side market can pay, and prices at exactly `entryRtp`                              |
+| `CARDS_MIN_STAKE_SUFFICIENT`      | definition | the minimum stake clears the threshold, and the threshold is tight                       |
+| `CARDS_CAP_NEVER_BINDS`           | definition | the reachable maximum is strictly below the cap                                          |
+| `CARDS_BELIEF_EXHAUSTIVE`         | round      | belief weights equal a completion count from an independently coded enumeration          |
+| `CARDS_BELIEF_NORMALISED`         | round      | non-negative, positive total, reduced, summing to one, zero exactly where it is zero     |
+| `CARDS_SELECTOR_PRECOMMITTED`     | round      | selectors derive from the seed alone and drive the reveal through the eligibility rule   |
+| `CARDS_REVEAL_DETERMINISTIC`      | round      | a transcript re-derives, round-trips its wire form, and rejects a tampered deal          |
+| `CARDS_SEED_MIXES_CLIENT_ENTROPY` | round      | the round seed changes when only the client seed changes, and requires one               |
+| `CARDS_SNAPSHOT_NOT_REVALIDATED`  | round      | `restore()` round-trips its own snapshots and rejects re-sealed tampered ones            |
+
+`CARDS_BELIEF_EXHAUSTIVE` is worth a note. `deck.ts` counts by enumerating
+ascending **subsets** of the remaining pool and filtering them against the bounds
+the published sorts imply; the check counts by enumerating ordered
+**assignments** and filtering them by rebuilding every published sort from the
+assignment itself. The two share no code path, so agreeing on every reachable
+state is evidence rather than a tautology.
+
+## 9. Seed composition
+
+The lifecycle contract hands a module one 32-byte `seedHex`, so composition
+happens **before** the module is called and is a host obligation.
+`composeRoundSeed()` exists so the composition is written down once, in the
+module that depends on it:
+
+```
+seedHex = H( 'cards-round-seed' ‖ commitmentVersion ‖ definitionFingerprint
+             ‖ roundId ‖ operatorSeed ‖ clientSeed ‖ nonce )
+```
+
+Deterministic seed-derived truth stops an operator choosing the outcome _after_
+the seed is committed. It does **not** stop an operator generating many seeds
+before publishing one. Mixing entropy the operator does not control into every
+round seed is what makes grinding pointless — there is no target to grind toward
+— and that argument is only as strong as the deployment's client-seed custody,
+which this module cannot see. An operator who controls the client build controls
+the client seed. See [`../threat-model.md`](../threat-model.md).
+
+## 10. Errors
+
+`src/api/errors.ts` owns the engine-wide code list and this module **does not
+extend it**. Every failure is raised with an existing public code and carries a
+machine-readable reason in `RevealEngineError.details.reason`, so a host branches
+on `(code, details.reason)` and never on message text.
+
+| `details.reason`            | Code                                                       | Meaning                                                                        |
+| --------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `INVALID_LADDER`            | `INVALID_ADAPTER`                                          | ladder or objective is unsatisfiable                                           |
+| `INVALID_REVEAL_SPEC`       | `INVALID_ADAPTER`                                          | reveal count, eligibility, or backing width leaves an empty eligible set       |
+| `INVALID_SIDE_MARKET`       | `INVALID_ADAPTER`                                          | empty, unsorted, duplicated, out-of-range, or unreachable selection            |
+| `INVALID_STAKE_LATTICE`     | `INVALID_ADAPTER`                                          | the minimum stake is not a multiple of the step, or either is non-positive     |
+| `INVALID_ROUNDING_POLICY`   | `INVALID_ADAPTER`                                          | a rounding rule this version does not implement, or an out-of-range RTP/spread |
+| `CAP_WOULD_BIND`            | `INVALID_ADAPTER`                                          | `capMustNotBind` is set and a reachable payout reaches the cap                 |
+| `ANALYSIS_SPACE_TOO_LARGE`  | `INVALID_ADAPTER`                                          | the reachable space is too large to prove the economics by exhaustion          |
+| `MISSING_CLIENT_ENTROPY`    | `INVALID_ADAPTER` / `INVALID_SEED`                         | a required client seed is absent or too short                                  |
+| `STAKE_BELOW_MINIMUM`       | `INVALID_ADAPTER` / `CLAIM_REJECTED`                       | a stake below the minimum or off the step lattice                              |
+| `BACKED_SELECTION_REQUIRED` | `CLAIM_REJECTED`                                           | a ticket of side markets alone, with no round to derive                        |
+| `CHOICE_REQUIRED`           | `CLAIM_REJECTED` / `INVALID_CHOICE`                        | the backing log is not the width the selector was sealed against               |
+| `POSITION_ALREADY_BACKED`   | `CLAIM_REJECTED` / `INVALID_CHOICE`                        | a second selection on one position, or more than the definition admits         |
+| `POSITION_SETTLED`          | `CLAIM_REJECTED`                                           | an action in a state the reveal already decided                                |
+| `UNPRICEABLE_OUTCOME`       | `CLAIM_REJECTED`                                           | an action targeting an outcome of probability exactly zero                     |
+| `DECISION_ALREADY_TAKEN`    | `CLAIM_REJECTED`                                           | a second action in one decision window                                         |
+| `ACTION_NOT_OFFERED`        | `CLAIM_REJECTED`                                           | an action the definition does not offer here                                   |
+| `REBACK_REJECTED`           | `CLAIM_REJECTED`                                           | a pre-reveal switch under `rebackMode: 'reject'`                               |
+| `ROUND_ALREADY_OPEN`        | `CLAIM_REJECTED`                                           | a second ticket, or a ticket after the first reveal                            |
+| `ROUND_NOT_OPEN`            | `CLAIM_REJECTED`                                           | a reveal before a ticket, or an empty ticket                                   |
+| `SELECTION_NOT_LIVE`        | `CLAIM_REJECTED`                                           | an action on a cashed or settled selection                                     |
+| `UNKNOWN_SELECTION`         | `CLAIM_REJECTED`                                           | no such selection in this round                                                |
+| `UNKNOWN_MARKET`            | `UNKNOWN_OUTCOME`                                          | no such side market in this definition                                         |
+| `DUPLICATE_SELECTION`       | `CLAIM_REJECTED`                                           | a repeated selection id on one ticket                                          |
+| `CHOICE_CONFLICT`           | `CLAIM_REJECTED` / `INVALID_CHOICE` / `INVALID_TRANSCRIPT` | a decision or reveal that contradicts the log                                  |
+
+## 11. Limits
+
+| Limit                         | Value     | Why                                                                             |
+| ----------------------------- | --------- | ------------------------------------------------------------------------------- |
+| `CARDS_MAX_STEPS`             | 8         | the module's step budget; a definition declares its own count inside it         |
+| `CARDS_MAX_DEALT`             | 16        | bounds the subset enumeration every price rests on                              |
+| `CARDS_MAX_SIDE_MARKETS`      | 48        | with the backing width, stays inside `ENGINE_LIMITS.maxRoundClaims`             |
+| `CARDS_MAX_SUPPORT`           | 200,000   | completions one belief may enumerate; bounds `C(size, dealt)`                   |
+| `CARDS_MAX_ANALYSIS_CELLS`    | 3,000,000 | reachable `(state, covered set)` pairs the definition-time walk may visit       |
+| `CARDS_MAX_ENUMERATED_TRUTHS` | 20,000    | above this, `truth.enumerate()` returns `undefined` rather than a partial sweep |
+
+## 12. What this module does not do
+
+Stated plainly, because a module that only lists what it handles is not a
+specification.
+
+- **It implements `rounding: 'floor'` only.** `'ceiling'` and `'stochastic'` are
+  declarable — so a definition written against them fails at
+  `defineCardsGame()` with a reason a host can branch on, rather than in
+  somebody else's type-checker — and neither is implemented. Under `'floor'` the
+  realised return in credits is strictly below `entryRtp` at every finite stake;
+  the exact-rational return is exactly `entryRtp` for every legal policy. The
+  reason the unbiased settlement draw is not here is a contract limitation, not
+  an oversight, and it is written up in
+  [`../adr/0005-sequential-cards-scope-and-the-credit-boundary.md`](../adr/0005-sequential-cards-scope-and-the-credit-boundary.md).
+- **It charges no liquidation spread.** `liquidationSpread` must be exactly
+  zero. That is not a simplification for its own sake: at a zero spread every
+  offered action has the identical exact value, so **every** legal policy returns
+  `entryRtp` and the extremal claims in §7 need no search to be true. Above zero
+  the extremes diverge, and the true argmin is a policy over _information
+  states_, which the canonical per-hand walk cannot express — it would report an
+  arbitrary policy's return as the minimum. Refusing the definition is the honest
+  option; implementing the search is a larger piece of work than this module.
+- **It owns no clock.** There is no dormancy window, no expiry, and no timer on a
+  decision. A host that wants a round to auto-settle calls `cash` itself; the
+  module has nothing to schedule it with and does not pretend otherwise.
+- **It holds no player identity, wallet, or persistence.** `CardsBook` is an
+  in-memory reference for the state machine and the reconnect format. A
+  production RGS still owns idempotency lookup, authorisation, the wallet
+  transaction, receipt append, and snapshot persistence inside one database
+  transaction.
+- **It cannot enforce what it cannot see.** Whether the client seed is really
+  generated on the player's device, whether unplayed commitments are really
+  published, and whether operator seeds are really per-round and really unreused
+  are integration properties. The module can check that a transcript is
+  consistent with them; it cannot check that the operator did them.
+- **It makes no certification claim.** Conformance checks are mechanical evidence
+  that a definition satisfies stated properties. They are not a fairness
+  certificate, an RNG certificate, or a regulatory approval, and they say nothing
+  about seed custody or about a build that has not been checked against them. See
+  [`../certification-boundary.md`](../certification-boundary.md).

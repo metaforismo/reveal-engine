@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`sequential-cards`, the second shipped lifecycle module**
+  (`src/modules/sequential-cards/`, documented in
+  [`docs/modules/sequential-cards.md`](docs/modules/sequential-cards.md)). A
+  committed deterministic shuffle of a declared finite deck; reveals whose
+  posterior is an exact **count of surviving completions**, so an eliminated
+  position weighs exactly `0n`; and a multi-position book holding several
+  independently funded selections with independent fair-value liquidations,
+  self-financed switches and splits that cross no credit boundary, and
+  per-selection settlement. Registered in `src/modules/index.ts`, exported at
+  `@axiom-games/reveal-engine/modules/sequential-cards`.
+- Three reference definitions, all proved by exhaustion at
+  `defineCardsGame()` and all run by `reveal-conformance`: `triad-middle-v1`
+  (the 3-card middle-pick adapter with a 14-market paytable), `duo-middle-v1`
+  (two simultaneously backed positions), and `cascade-middle-v1` (two reveals,
+  where the second has to read the order the first published).
+- Fourteen module conformance checks, including `CARDS_POLICY_RETURN_EXTREMAL`
+  (argmin and argmax over the **whole** policy space, never a shortlist),
+  `CARDS_CAP_NEVER_BINDS`, `CARDS_MIN_STAKE_SUFFICIENT`, and
+  `CARDS_BELIEF_EXHAUSTIVE`, which cross-checks the posterior against a second
+  enumeration that shares no code path with it.
+- Frozen wire fixtures `tests/fixtures/cards-transcript-v1.json` and
+  `tests/fixtures/cards-book-v1.json`, cut from one round covering a two-row
+  ticket, a reveal, a switch, and a settlement.
+- An exhaustive oracle test
+  (`tests/sequential-cards/oracle-three-card.test.ts`): all 1,716 ordered deals
+  times both sealed selectors times all three backed positions, checked against
+  an independently coded closed-form model — every posterior, all 26 published
+  prices, the expected value of every offered action in every state, the argmin
+  and argmax over all `2^38` legal policies, both variance extremes, the whole
+  side-market paytable, and the reachable maximum and minimum payouts.
+- `composeRoundSeed()`: the operator-seed, client-seed and nonce composition the
+  module derives from, written down once with its residual risk stated.
+
+### Changed
+
+- `docs/lifecycle-modules.md` records two things `sequential-cards` found while
+  being written against the contract: a step that moves no money may still need
+  to be a ledger command, and a book with no round identity can settle another
+  round's proof. Both are closed inside the module; see
+  [`docs/adr/0005-sequential-cards-scope-and-the-credit-boundary.md`](docs/adr/0005-sequential-cards-scope-and-the-credit-boundary.md).
+- The public-API snapshot test now pins the `sequential-cards` surface, and the
+  package export map and smoke test carry `./modules/sequential-cards`.
+
+### Reviewed
+
+- An independent correctness review (GPT-5.6, read-only) found five issues.
+  Three are fixed: settlement flooring the aggregate instead of each selection
+  (a one-credit cross-selection carry), a settled snapshot trusting its own
+  recorded outcome instead of re-deriving it from the seed it reveals, and the
+  ticket claim bound being enforced after an unbounded validation pass. One is
+  fixed by narrowing: `liquidationSpread` is now required to be exactly zero,
+  because above zero the reported worst-policy return was an arbitrary policy's
+  and not an argmin. One is documented rather than fixed: a deterministic,
+  unkeyed snapshot cannot be authenticated by re-derivation, so snapshot
+  integrity is named as a deployment obligation instead of being implied away.
+  See `docs/adr/0005-…` Decision 6.
+
+### Not included, deliberately
+
+- `rounding: 'stochastic'` — the unbiased settlement draw a consuming game
+  declares — is **declarable and refused** at definition time with
+  `INVALID_ROUNDING_POLICY`. `BookModel.create(definition)` cannot carry a round
+  seed and a per-credit-event draw is not derivable from a transcript's inputs,
+  so implementing it needs a core change larger than this module. ADR 0005 §4
+  records exactly what it would take. Only `rounding: 'floor'` is implemented.
+
 ## 0.3.0 — 2026-07-29
 
 Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.

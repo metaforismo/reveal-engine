@@ -1,0 +1,34 @@
+{
+  "note": "Frozen reveal-engine/cards-transcript-v1 proof. Regenerate with npm run fixtures:update.",
+  "seed": "000000000000000000000000000000000000000000000000000000000000002a",
+  "roundId": "frozen-cards-round-1",
+  "transcript": {
+    "schema": "reveal-engine/cards-transcript-v1",
+    "definitionId": "triad-middle-v1",
+    "definitionVersion": "1.0.0",
+    "definitionFingerprint": "6ee7dec88ed53ed0196e8b9431f9c71a9ef2e18ad71422a0070a6dbc85625d26",
+    "roundId": "frozen-cards-round-1",
+    "seedCommitment": "6eb049a130ccceae91a34bea080b03d0117bc518e58bda0b70e4500896a8983d",
+    "deal": {
+      "ranks": [7, 9, 4],
+      "selectors": [0]
+    },
+    "choices": [
+      {
+        "index": 0,
+        "kind": "back",
+        "position": 0
+      }
+    ],
+    "steps": [
+      {
+        "index": 0,
+        "position": 1,
+        "rank": 9,
+        "sorted": [2, 0],
+        "label": "triad-cut/v1:0"
+      }
+    ],
+    "commitment": "1122bf4e3bf83ded57c29d29ef44e1fe369727da044bdbffc215a893eea3bb47"
+  }
+}
