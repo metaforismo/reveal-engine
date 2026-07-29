@@ -487,6 +487,20 @@ export class OrderingBook {
       if (receipt.action === 'stake') {
         if (settled || receipt.debited <= 0n || receipt.credited !== 0n)
           fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
+        // The receipt fingerprint pins the bet and the stake, so a rewritten
+        // claim list cannot survive its own receipt log.
+        const claim = raw.claims[stakes];
+        if (
+          claim === undefined ||
+          receipt.idempotencyKey !== claim.key ||
+          receipt.commandFingerprint !==
+            commandFingerprint('stake', [
+              claim.kind,
+              ...claim.items,
+              parseWireBigInt(claim.stake, '$.claims[].stake'),
+            ])
+        )
+          fail('INVALID_SNAPSHOT', 'Receipt does not match the restored claim', '$.claims');
         stakedTotal += receipt.debited;
         stakes += 1;
       } else {

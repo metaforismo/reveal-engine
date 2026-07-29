@@ -295,6 +295,12 @@ describe('shape (a)/(c): permutation truth, zero elimination, combinatorial payt
       { terminal: false },
       { claims: [] },
       { ledgerRevision: 9 },
+      // A rewritten bet must not survive the receipt that recorded it.
+      {
+        claims: (snapshot.claims as Record<string, unknown>[]).map((claim, index) =>
+          index === 0 ? { ...claim, stake: '999999' } : claim,
+        ),
+      },
     ]) {
       const tampered = {
         ...snapshot,
