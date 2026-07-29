@@ -5,7 +5,10 @@ import { snapshotHash } from '../../src/core/snapshot.js';
 import { cardsFingerprint } from '../../src/modules/sequential-cards/adapter.js';
 import { cardsBelief, claimProbability } from '../../src/modules/sequential-cards/deck.js';
 import { sequentialCards } from '../../src/modules/sequential-cards/module.js';
-import { triadMiddleReference } from '../../src/modules/sequential-cards/references.js';
+import {
+  triadDormantReference,
+  triadMiddleReference,
+} from '../../src/modules/sequential-cards/references.js';
 import { CardsBook } from '../../src/modules/sequential-cards/round-book.js';
 import {
   buildCardsTranscript,
@@ -17,6 +20,8 @@ import { assertCardsDefinition } from '../../src/modules/sequential-cards/valida
 import { seed } from '../helpers.js';
 
 const definition = triadMiddleReference;
+/** A fresh book of the one reference that declares a dormancy policy. */
+const dormantBook = (): CardsBook => new CardsBook(triadDormantReference);
 const choices = [{ index: 0, kind: 'back' as const, position: 0 }];
 const wire = cardsTranscriptToWire(
   buildCardsTranscript(seed(41), definition, 'hostile-round', choices),
@@ -209,7 +214,38 @@ describe('sequential-cards: hostile input', () => {
       await expect(book.switchClaim(value as never)).rejects.toThrowError(RevealEngineError);
       await expect(book.settle(value as never)).rejects.toThrowError(RevealEngineError);
       await expect(book.advanceReveal(value as never)).rejects.toThrowError(RevealEngineError);
+      await expect(dormantBook().settleDormant(value as never)).rejects.toThrowError(
+        RevealEngineError,
+      );
     }
+    // The two fields the dormant path takes that nothing else does, each on its
+    // own: a window that is not a number of seconds, and a reason that is not a
+    // reason. Neither may reach the ledger.
+    const dormant = dormantBook();
+    // Each asserts the **named** reason, so a case cannot survive the deletion
+    // of the guard it is about: a bare `toThrowError` would still pass on the
+    // unparseable transcript further down the command.
+    for (const elapsed of hostileValues.concat([-1, 1.5, Number.NaN, Number.MAX_VALUE, 2n]))
+      await expect(
+        dormant.settleDormant({
+          idempotencyKey: 'k',
+          expectedStepRevision: 0,
+          revealedSeed: seed(41),
+          transcript: {},
+          elapsedSeconds: elapsed as never,
+        }),
+      ).rejects.toMatchObject({ details: { reason: 'ROUND_NOT_DORMANT' } });
+    for (const reason of hostileValues.filter((value) => value !== undefined))
+      await expect(
+        dormant.settleDormant({
+          idempotencyKey: 'k',
+          expectedStepRevision: 0,
+          revealedSeed: seed(41),
+          transcript: {},
+          elapsedSeconds: 999_999,
+          reason: reason as never,
+        }),
+      ).rejects.toMatchObject({ details: { reason: 'INVALID_SETTLEMENT_REASON' } });
     await expect(
       book.open({
         idempotencyKey: 'x'.repeat(ENGINE_LIMITS.maxIdempotencyKeyBytes + 1),

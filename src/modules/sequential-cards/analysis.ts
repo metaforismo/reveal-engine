@@ -24,6 +24,7 @@ import {
   isTerminalCover,
   liquidationFactor,
   livePositions,
+  offeredActions,
   transformedClaim,
 } from './pricing.js';
 import { CARDS_MAX_DEALT, eligibleSetSize, reject } from './validation.js';
@@ -310,6 +311,18 @@ export interface CardsAnalysis {
   readonly identicalActionCells: number;
   /** The prior over board positions is uniform, which is what makes a re-back free. */
   readonly priorUniform: boolean;
+  /**
+   * Reachable decision cells at or after the first reveal where the declared
+   * `dormancy.onDormant` action is **not** among the ones the round would offer.
+   *
+   * `triad/docs/ENGINE.md` §5.1 requires it to be offered in every decision
+   * state, and this is that requirement counted rather than argued: a dormant
+   * settlement that could land in a state where its own action is unavailable
+   * would have to invent a price, which is the one thing a system settlement
+   * must never do. Always `0` for a definition that declares no dormancy policy,
+   * and the walk does not pay for the check in that case.
+   */
+  readonly dormantOfferMisses: number;
 }
 
 interface ClaimRange {
@@ -545,6 +558,7 @@ function* analysisWalk(
   const offersSwitch = definition.pricing.actions.includes('switch');
   const offersSplit = definition.pricing.actions.includes('split');
   const offersCash = definition.pricing.actions.includes('cash');
+  const dormantAction = definition.dormancy?.onDormant;
   const rebackCosts = definition.backing.rebackMode === 'move' && offersSwitch;
 
   const prior = cardsBelief(definition, []);
@@ -586,6 +600,7 @@ function* analysisWalk(
   let decisionCells = 0;
   let terminalCells = 0;
   let identicalActionCells = 0;
+  let dormantOfferMisses = 0;
   let pricingIdentityHolds = true;
   let maxPayout = rational(0n);
   let minPositivePayout: Rational | undefined;
@@ -655,6 +670,19 @@ function* analysisWalk(
       }
       decisionCells += 1;
       if (revision === 0) continue;
+
+      // The dormant resolution has to be available wherever a dormant
+      // settlement can land, and `offeredActions` is the same function the book
+      // consults — asked here in the state itself rather than reasoned about
+      // from the declaration. Paid for only by definitions that declare the
+      // policy: for the rest the walk's cost is unchanged.
+      if (
+        dormantAction !== undefined &&
+        !offeredActions(definition, belief, covered, { stepRevision: revision }).includes(
+          dormantAction,
+        )
+      )
+        dormantOfferMisses += 1;
 
       const probability = coverProbability(belief, covered);
       const liquidValue = multiply(multiply(probability, unit), factor);
@@ -882,5 +910,6 @@ function* analysisWalk(
     worstPolicyReturn,
     identicalActionCells,
     priorUniform,
+    dormantOfferMisses,
   });
 }

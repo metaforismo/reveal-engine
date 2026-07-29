@@ -15,6 +15,7 @@ import { cardsRoundOf } from '../../src/modules/sequential-cards/adapter.js';
 import { coverProbability, fairValue } from '../../src/modules/sequential-cards/pricing.js';
 import { cardsBelief } from '../../src/modules/sequential-cards/deck.js';
 import {
+  triadDormantReference,
   triadMiddleReference,
   triadStochasticReference,
 } from '../../src/modules/sequential-cards/references.js';
@@ -357,12 +358,14 @@ describe('sequential-cards: the settlement draw', () => {
    * `triad/docs/ENGINE.md` §4.1's worked definition, verbatim, minus the one
    * field this module refuses by name.
    *
-   * §12.1 of the module doc claims that removing `dormancy` is now the whole
-   * difference between the consuming game's specification and what constructs
-   * here. That is a claim about somebody else's document, so it is checked
-   * rather than asserted: the declaration below is transcribed from the spec,
-   * and if a future revision narrows anything it declares — the rounding rule,
-   * the stake lattice, the action list, the cap — this stops constructing.
+   * §12.1 of the module doc claims that the consuming game's §4.1 definition now
+   * constructs **as written**. That is a claim about somebody else's document,
+   * so it is checked rather than asserted: the declaration below is transcribed
+   * from the spec with nothing removed — `dormancy` included, which an earlier
+   * revision of this test had to delete to get a definition to build — and if a
+   * future revision narrows anything it declares, the rounding rule, the stake
+   * lattice, the action list, the cap or the dormancy policy, this stops
+   * constructing.
    */
   it("constructs the consuming game's own declared definition", () => {
     const triad = defineCardsGame({
@@ -399,24 +402,27 @@ describe('sequential-cards: the settlement draw', () => {
       },
       risk: { maxWinMultiple: 200n, capMustNotBind: true },
       seed: { operatorSeedScope: 'per-round', clientEntropy: 'required', clientSeedBytes: 16 },
+      dormancy: {
+        windowSeconds: 86_400,
+        onDormant: 'cash',
+        earlySettlementReasons: ['account-state-changed'],
+      },
     });
     const analysis = analyseDefinition(triad);
     expect(analysis.bestPolicyReturn).toEqual(rational(24n, 25n));
     expect(analysis.worstPolicyReturn).toEqual(rational(24n, 25n));
     expect(analysis.minStakeThreshold).toBe(25n);
     expect(analysis.nonZeroCreditThreshold).toBe(23n);
-
-    // And the one field that still is not implemented is refused by name rather
-    // than dropped, because a definition running under a policy it never agreed
-    // to is worse than one that fails to build.
-    expect(() =>
-      defineCardsGame({
-        ...triad,
-        id: 'triad-dormant-v1',
-        dormancy: { windowSeconds: 86_400, onDormant: 'cash' },
-      } as never),
-    ).toThrowError(
-      expect.objectContaining({ details: expect.objectContaining({ reason: 'UNDECLARED_FIELD' }) }),
+    // Every declared field survived into the frozen definition, and the whole
+    // spec-shaped declaration is the reference this module ships: two
+    // definitions that agree field for field are one adapter.
+    expect(triad.dormancy).toEqual({
+      windowSeconds: 86_400,
+      onDormant: 'cash',
+      earlySettlementReasons: ['account-state-changed'],
+    });
+    expect(cardsFingerprint({ ...triad, id: triadDormantReference.id })).toBe(
+      cardsFingerprint(triadDormantReference),
     );
   });
 });

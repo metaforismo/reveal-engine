@@ -11,15 +11,18 @@ import { writeFileSync } from 'node:fs';
 import { buildFrozenRound, FROZEN_ROUND_ID, FROZEN_SEED } from '../tests/support/frozen-round.js';
 import {
   buildFrozenCardsRound,
+  buildFrozenDormantCardsRound,
   buildFrozenStochasticCardsRound,
   FROZEN_CARDS_ROUND_ID,
   FROZEN_CARDS_SEED,
+  FROZEN_DORMANT_ROUND_ID,
   FROZEN_STOCHASTIC_ROUND_ID,
 } from '../tests/support/frozen-cards-round.js';
 
 const round = await buildFrozenRound();
 const cards = await buildFrozenCardsRound();
 const drawn = await buildFrozenStochasticCardsRound();
+const dormant = await buildFrozenDormantCardsRound();
 
 const files: readonly [string, unknown][] = [
   [
@@ -67,6 +70,16 @@ const files: readonly [string, unknown][] = [
       roundId: FROZEN_STOCHASTIC_ROUND_ID,
       snapshot: drawn.snapshot,
       receipts: drawn.receipts,
+    },
+  ],
+  [
+    'tests/fixtures/cards-book-dormant-v1.json',
+    {
+      note: 'Frozen reveal-engine/cards-book-v1 snapshot of a round the system settled: it carries the settlement reason, and its terminal receipt is fingerprinted over it.',
+      seed: FROZEN_CARDS_SEED,
+      roundId: FROZEN_DORMANT_ROUND_ID,
+      snapshot: dormant.snapshot,
+      receipts: dormant.receipts,
     },
   ],
 ];

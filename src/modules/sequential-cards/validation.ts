@@ -4,6 +4,7 @@ import { compare, rational, type Rational } from '../../core/rational.js';
 import { assertIdentifier, assertRational, isRecord } from '../../core/validation.js';
 import { ENGINE_API_VERSION } from '../../core/versions.js';
 import {
+  CARDS_EARLY_SETTLEMENT_REASONS,
   SEQUENTIAL_CARDS_MODULE_ID,
   type CardsRejectionReason,
   type Deal,
@@ -30,6 +31,17 @@ export const CARDS_MAX_DEALT = 16;
 
 /** Side markets one definition may declare. */
 export const CARDS_MAX_SIDE_MARKETS = 48;
+
+/**
+ * The longest dormancy window a definition may declare, in seconds: one year.
+ *
+ * The point of the window is that **every** round settles and therefore every
+ * operator seed is revealed on a schedule, so a window nobody alive will see
+ * elapse is the same thing as no window at all, spelled in a way that reads like
+ * one. A definition that wants no scheduled settlement declares no `dormancy`
+ * block and gets a refusal on the command instead of a promise it never keeps.
+ */
+export const CARDS_MAX_DORMANCY_SECONDS = 31_536_000;
 
 /** Simultaneous claims the module's book admits; a definition may be stricter. */
 export const CARDS_MAX_OPEN_CLAIMS = ENGINE_LIMITS.maxRoundClaims;
@@ -93,6 +105,7 @@ const DECLARED_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
       'pricing',
       'risk',
       'seed',
+      'dormancy',
     ],
   ],
   ['$.ladder', ['size', 'dealt', 'objective']],
@@ -115,19 +128,20 @@ const DECLARED_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ['$.pricing.liquidationSpread', ['numerator', 'denominator']],
   ['$.risk', ['maxWinMultiple', 'capMustNotBind']],
   ['$.seed', ['operatorSeedScope', 'clientEntropy', 'clientSeedBytes']],
+  ['$.dormancy', ['windowSeconds', 'onDormant', 'earlySettlementReasons']],
 ]);
 
 /**
  * Fields a consumer's specification declares that this version does not
  * implement, with the reason it does not, so the refusal names the gap instead
  * of reporting an anonymous typo.
+ *
+ * Empty as of the dormancy round, and kept rather than deleted: it is the
+ * mechanism that turns the next unimplemented field into a named refusal instead
+ * of an anonymous one, and `docs/adr/0007-…` records why the one entry it used
+ * to hold was wrong.
  */
-const UNIMPLEMENTED_KEYS: ReadonlyMap<string, string> = new Map([
-  [
-    '$.dormancy',
-    'this module owns no clock and settles no round on a schedule; the host owns the dormancy window and calls cash() itself',
-  ],
-]);
+const UNIMPLEMENTED_KEYS: ReadonlyMap<string, string> = new Map();
 
 /** Refuses any key the module does not implement, at one declaration object. */
 function assertDeclaredKeys(value: Record<string, unknown>, path: string): void {
@@ -462,6 +476,69 @@ function assertTicketRiskAndSeed(definition: SequentialCardsDefinition): void {
 }
 
 /**
+ * The dormancy policy, if the definition declares one.
+ *
+ * Everything here is a **declarative** rule. The one economic rule
+ * `triad/docs/ENGINE.md` §5.1 states over this block — that `onDormant` names an
+ * action the definition actually offers in every decision state — is not a field
+ * check and is proved by exhaustion in `analysis.ts`, alongside the cap and the
+ * minimum stake, because that is the only place the reachable state space
+ * exists.
+ */
+function assertDormancy(definition: SequentialCardsDefinition): void {
+  const dormancy = definition.dormancy;
+  if (dormancy === undefined) return;
+  if (!isRecord(dormancy))
+    rejectDefinition('Dormancy policy must be an object', '$.dormancy', 'INVALID_DORMANCY_POLICY');
+  if (
+    !Number.isSafeInteger(dormancy.windowSeconds) ||
+    dormancy.windowSeconds < 1 ||
+    dormancy.windowSeconds > CARDS_MAX_DORMANCY_SECONDS
+  )
+    rejectDefinition(
+      `A dormancy window must be a safe integer number of seconds in [1, ${CARDS_MAX_DORMANCY_SECONDS}]`,
+      '$.dormancy.windowSeconds',
+      'INVALID_DORMANCY_POLICY',
+    );
+  // `'cash'` is the only implemented resolution, and it is the only one that is
+  // EV-neutral at a zero spread: a system settlement must not be a decision.
+  if (dormancy.onDormant !== 'cash')
+    rejectDefinition(
+      "Only 'cash' is implemented as a dormant resolution; it is the one that takes no decision on the player's behalf",
+      '$.dormancy.onDormant',
+      'INVALID_DORMANCY_POLICY',
+    );
+  if (!definition.pricing.actions.includes(dormancy.onDormant))
+    rejectDefinition(
+      'A dormant resolution must be an action the definition offers',
+      '$.dormancy.onDormant',
+      'ACTION_NOT_OFFERED',
+    );
+  const reasons = dormancy.earlySettlementReasons;
+  if (!Array.isArray(reasons) || reasons.length > CARDS_EARLY_SETTLEMENT_REASONS.length)
+    rejectDefinition(
+      'Early settlement reasons must be a bounded array',
+      '$.dormancy.earlySettlementReasons',
+      'INVALID_SETTLEMENT_REASON',
+    );
+  reasons.forEach((reason: unknown, index) => {
+    // A reason the module does not know would let a host settle a live round on
+    // its own schedule under a name nothing checks, which is the one thing this
+    // list exists to make unspellable.
+    if (
+      typeof reason !== 'string' ||
+      !(CARDS_EARLY_SETTLEMENT_REASONS as readonly string[]).includes(reason) ||
+      reasons.indexOf(reason as (typeof CARDS_EARLY_SETTLEMENT_REASONS)[number]) !== index
+    )
+      rejectDefinition(
+        'Unknown or repeated early settlement reason',
+        `$.dormancy.earlySettlementReasons[${index}]`,
+        'INVALID_SETTLEMENT_REASON',
+      );
+  });
+}
+
+/**
  * Structural assertion for a definition.
  *
  * This is the cheap half. `defineCardsGame()` runs it and then proves the
@@ -487,11 +564,14 @@ export function assertCardsDefinition(
   assertSideMarkets(definition);
   assertPricing(definition);
   assertTicketRiskAndSeed(definition);
+  assertDormancy(definition);
   // Last, so a definition with both a real fault and an unknown field reports
   // the fault. Every nested object is known to be a record by now.
   assertDeclaredKeys(value, '$');
   for (const nested of ['ladder', 'reveal', 'backing', 'ticket', 'pricing', 'risk', 'seed'])
     assertDeclaredKeys(value[nested] as Record<string, unknown>, `$.${nested}`);
+  if (definition.dormancy !== undefined)
+    assertDeclaredKeys(value.dormancy as Record<string, unknown>, '$.dormancy');
   for (const nested of ['entryRtp', 'liquidationSpread'])
     assertDeclaredKeys(
       definition.pricing[nested as 'entryRtp'] as unknown as Record<string, unknown>,

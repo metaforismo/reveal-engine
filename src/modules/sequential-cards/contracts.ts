@@ -20,6 +20,7 @@ export const CARDS_ACTIONS = Object.freeze([
   'split',
   'cash',
   'settle',
+  'settleDormant',
 ] as const);
 export type CardsAction = (typeof CARDS_ACTIONS)[number];
 
@@ -45,10 +46,12 @@ export const CARDS_REJECTION_REASONS = Object.freeze([
   'CHOICE_REQUIRED',
   'DECISION_ALREADY_TAKEN',
   'DUPLICATE_SELECTION',
+  'INVALID_DORMANCY_POLICY',
   'INVALID_LADDER',
   'INVALID_LIQUIDATION_SPREAD',
   'INVALID_REVEAL_SPEC',
   'INVALID_ROUNDING_POLICY',
+  'INVALID_SETTLEMENT_REASON',
   'INVALID_SIDE_MARKET',
   'INVALID_STAKE_LATTICE',
   'MISSING_CLIENT_ENTROPY',
@@ -56,6 +59,7 @@ export const CARDS_REJECTION_REASONS = Object.freeze([
   'POSITION_SETTLED',
   'REBACK_REJECTED',
   'ROUND_ALREADY_OPEN',
+  'ROUND_NOT_DORMANT',
   'ROUND_NOT_OPEN',
   'SELECTION_NOT_LIVE',
   'STAKE_BELOW_MINIMUM',
@@ -179,6 +183,63 @@ export interface TicketSpec {
   readonly stakeScope: 'per-selection';
 }
 
+/**
+ * Reasons a host may assert to settle a live round **before** its window
+ * elapses.
+ *
+ * The list is closed on purpose. A reason the module does not know is refused at
+ * definition time, and the one reason it knows is the one that cannot be an
+ * operator's schedule: an account that stopped being able to hold a live claim.
+ * `triad/docs/DESIGN.md` §10.6 rules 8 and 9 argue the case; the module's part is
+ * to make "settle it now" impossible to spell without naming why.
+ */
+export const CARDS_EARLY_SETTLEMENT_REASONS = Object.freeze(['account-state-changed'] as const);
+export type CardsEarlySettlementReason = (typeof CARDS_EARLY_SETTLEMENT_REASONS)[number];
+
+/** How a system settlement is recorded, so the two paths are never conflated. */
+export const CARDS_SETTLEMENT_REASONS = Object.freeze([
+  'ROUND_DORMANT',
+  'ACCOUNT_STATE_CHANGED',
+] as const);
+export type CardsSettlementReason = (typeof CARDS_SETTLEMENT_REASONS)[number];
+
+/**
+ * What happens to a live round nobody comes back to.
+ *
+ * **The module still owns no clock**, and declaring this policy does not give it
+ * one: there is no timer, nothing wakes up, and no round expires. What the
+ * declaration buys is a settlement the module can *refuse* — `settleDormant` is
+ * a host-called command that carries the seconds the host measured, and the
+ * module holds it to the declared window or to a declared early reason. That is
+ * exactly the division `triad/docs/ENGINE.md` §9 states ("it refuses it early
+ * with `ROUND_NOT_DORMANT` but has no timer of its own and never wakes up"), and
+ * it is why the field is implementable here at all.
+ *
+ * The policy is **optional**. A definition that declares none has no dormant
+ * settlement path, which is this module's behaviour before dormancy existed and
+ * remains the honest default for a host that schedules its own liquidations.
+ */
+export interface DormancySpec {
+  /**
+   * Seconds from the moment a decision became available until the round may be
+   * auto-settled. Nothing decays or re-prices inside it: it is a
+   * settlement-hygiene bound, not a decision clock, and the host must not
+   * display it as one.
+   */
+  readonly windowSeconds: number;
+  /**
+   * Action taken on a dormant round. `'cash'` is the only implemented value: it
+   * is exactly EV-neutral at a zero spread, so an auto-settlement neither
+   * guesses at intent nor imposes a loss the player did not choose.
+   */
+  readonly onDormant: 'cash';
+  /**
+   * Reasons that settle a live round by `onDormant` before the window elapses.
+   * May be empty; may not name a reason the module does not know.
+   */
+  readonly earlySettlementReasons: readonly CardsEarlySettlementReason[];
+}
+
 export interface SequentialCardsDefinition {
   readonly apiVersion: typeof ENGINE_API_VERSION;
   readonly moduleId: typeof SEQUENTIAL_CARDS_MODULE_ID;
@@ -193,6 +254,12 @@ export interface SequentialCardsDefinition {
   readonly pricing: CardsPricingPolicy;
   readonly risk: CardsRiskPolicy;
   readonly seed: CardsSeedPolicy;
+  /**
+   * Optional. Present, it enables `settleDormant` and is sealed into the
+   * fingerprint like every other declarative field; absent, the round has no
+   * dormant settlement path at all and the snapshot carries no trace of one.
+   */
+  readonly dormancy?: DormancySpec;
 }
 
 /**

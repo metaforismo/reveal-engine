@@ -60,6 +60,18 @@ export function cardsFingerprint(definition: SequentialCardsDefinition): string 
     definition.seed.clientEntropy,
     definition.seed.clientSeedBytes,
   );
+  // Optional, and still sealed: `encodeFields` frames the field **count** first
+  // and every field by length, so the encoding of a definition without a
+  // dormancy policy is not a prefix of one with it and the two can never share a
+  // fingerprint. A round that may be settled by the system on a declared
+  // schedule is a different contract from one that may not.
+  if (definition.dormancy !== undefined)
+    fields.push(
+      definition.dormancy.windowSeconds,
+      definition.dormancy.onDormant,
+      definition.dormancy.earlySettlementReasons.length,
+      ...definition.dormancy.earlySettlementReasons,
+    );
   return createHash('sha256').update(encodeFields(fields)).digest('hex');
 }
 
@@ -182,6 +194,17 @@ function assertCardsEconomics(
       '$.risk.maxWinMultiple',
       'CAP_WOULD_BIND',
     );
+  // A dormant settlement takes the player's decision away and must therefore
+  // land on an action the round was already offering. Proved in every reachable
+  // decision state rather than inferred from the action list, because the offer
+  // rule is a function of the state and not of the declaration.
+  if (analysis.dormantOfferMisses > 0)
+    reject(
+      'INVALID_ADAPTER',
+      `The dormant resolution is unavailable in ${analysis.dormantOfferMisses} reachable decision states, so an auto-settlement there would have to invent a price`,
+      '$.dormancy.onDormant',
+      'ACTION_NOT_OFFERED',
+    );
   cardsFingerprint(definition);
 }
 
@@ -209,5 +232,18 @@ export function freezeCardsDefinition(input: SequentialCardsDefinition): Sequent
     }),
     risk: Object.freeze({ ...input.risk }),
     seed: Object.freeze({ ...input.seed }),
+    // Rebuilt field by field like every other block, and **omitted entirely**
+    // when it was not declared: a `dormancy: undefined` key on the frozen
+    // definition would make `Object.keys` disagree with the fingerprint about
+    // whether the policy exists.
+    ...(input.dormancy === undefined
+      ? {}
+      : {
+          dormancy: Object.freeze({
+            windowSeconds: input.dormancy.windowSeconds,
+            onDormant: input.dormancy.onDormant,
+            earlySettlementReasons: Object.freeze([...input.dormancy.earlySettlementReasons]),
+          }),
+        }),
   });
 }

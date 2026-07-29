@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { deriveDeal } from '../../src/modules/sequential-cards/truth.js';
 import { deriveRevealSteps } from '../../src/modules/sequential-cards/steps.js';
-import { triadMiddleReference } from '../../src/modules/sequential-cards/references.js';
+import {
+  triadDormantReference,
+  triadMiddleReference,
+} from '../../src/modules/sequential-cards/references.js';
+import { cardsFingerprint } from '../../src/modules/sequential-cards/adapter.js';
+import { deriveRoundingSeed } from '../../src/modules/sequential-cards/credits.js';
+import { buildCardsTranscript } from '../../src/modules/sequential-cards/transcript.js';
 import { CardsBook } from '../../src/modules/sequential-cards/round-book.js';
 import type { RevealStep } from '../../src/modules/sequential-cards/contracts.js';
 import { seed } from '../helpers.js';
 
 const definition = triadMiddleReference;
+const dormant = triadDormantReference;
 const SEED = seed(77);
 
 /**
@@ -138,5 +145,72 @@ describe('sequential-cards: a command prices what it validated', () => {
     expect(book.selections[0]?.positions).toEqual([target]);
     expect(book.decisions[0]?.positions).toEqual([target]);
     expect(() => CardsBook.restore(definition, book.serialize())).not.toThrow();
+  });
+
+  it('settles dormant on the window it validated, not the one the caller rewrote', async () => {
+    // The dormant path adds two fields the caller owns and the module cannot
+    // re-derive — the measured seconds and the early reason — so both are read
+    // once, before the ledger's `await`, and only the reads are used. A request
+    // that clears the window and then rewrites itself must not settle a round
+    // the module refused, and one refused before the window must leave the
+    // round exactly as it found it.
+    const roundId = 'mutable-dormant';
+    const book = new CardsBook(dormant);
+    await book.open({
+      idempotencyKey: 'open',
+      expectedStepRevision: 0,
+      roundId,
+      selections: [{ id: 'a', kind: 'position', position: 0, stake: 25n }],
+      roundingSeed: deriveRoundingSeed(SEED, cardsFingerprint(dormant), roundId),
+    });
+    const deal = deriveDeal(SEED, dormant, roundId);
+    const step = deriveRevealSteps(dormant, deal, book.choices)[0] as RevealStep;
+    await book.advanceReveal({ idempotencyKey: 'reveal', expectedStepRevision: 0, step });
+
+    const window = dormant.dormancy?.windowSeconds as number;
+    const request: Record<string, unknown> = {
+      idempotencyKey: 'dormant',
+      expectedStepRevision: 1,
+      revealedSeed: SEED,
+      transcript: buildCardsTranscript(SEED, dormant, roundId, book.choices),
+      elapsedSeconds: window,
+    };
+    const pending = book.settleDormant(request as never);
+    // Moved under the pending command: neither may change what settles.
+    request.elapsedSeconds = 0;
+    request.reason = 'account-state-changed';
+    await pending;
+    expect(book.settlementReason).toBe('ROUND_DORMANT');
+    expect(() => CardsBook.restore(dormant, book.serialize())).not.toThrow();
+
+    // And the refusal leaves nothing behind: a second round refused a second
+    // short of the window is untouched, whatever the request says afterwards.
+    const second = new CardsBook(dormant);
+    await second.open({
+      idempotencyKey: 'open',
+      expectedStepRevision: 0,
+      roundId: `${roundId}-2`,
+      selections: [{ id: 'a', kind: 'position', position: 0, stake: 25n }],
+      roundingSeed: deriveRoundingSeed(SEED, cardsFingerprint(dormant), `${roundId}-2`),
+    });
+    const secondDeal = deriveDeal(SEED, dormant, `${roundId}-2`);
+    const secondStep = deriveRevealSteps(dormant, secondDeal, second.choices)[0] as RevealStep;
+    await second.advanceReveal({
+      idempotencyKey: 'reveal',
+      expectedStepRevision: 0,
+      step: secondStep,
+    });
+    const early: Record<string, unknown> = {
+      idempotencyKey: 'dormant',
+      expectedStepRevision: 1,
+      revealedSeed: SEED,
+      transcript: buildCardsTranscript(SEED, dormant, `${roundId}-2`, second.choices),
+      elapsedSeconds: window - 1,
+    };
+    await expect(second.settleDormant(early as never)).rejects.toThrowError();
+    early.elapsedSeconds = window;
+    expect(second.terminal).toBe(false);
+    expect(second.liquidBalance).toBe(0n);
+    expect(second.settlementReason).toBeNull();
   });
 });

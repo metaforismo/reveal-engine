@@ -16,6 +16,7 @@ import { cardsFingerprint, defineCardsGame } from './adapter.js';
 import { analyseDefinition, forEachCanonicalState } from './analysis.js';
 import type {
   CardsRejectionReason,
+  CardsSettlementReason,
   PlayerChoice,
   RevealStep,
   SequentialCardsDefinition,
@@ -26,6 +27,7 @@ import {
   claimProbability,
   forEachCombination,
   objectivePositionOf,
+  objectiveRankOf,
   reachableObjectiveRanks,
   type CardsBelief,
 } from './deck.js';
@@ -50,6 +52,8 @@ import {
 import {
   CardsBook,
   assertTicketComposition,
+  dormantFingerprint,
+  dormantTotal,
   openFingerprint as openTicketFingerprint,
   settlementTotal,
   type CardsBookSnapshot,
@@ -64,7 +68,7 @@ import {
   verifyCardsTranscript,
 } from './transcript.js';
 import { composeRoundSeed, deriveDeal, deriveSelectors } from './truth.js';
-import { assertPlayerChoices, eligibleSetSize } from './validation.js';
+import { CARDS_MAX_DORMANCY_SECONDS, assertPlayerChoices, eligibleSetSize } from './validation.js';
 import type { SequentialCardsShape } from './shape.js';
 
 type Check = ModuleConformanceCheck<SequentialCardsShape>;
@@ -169,6 +173,9 @@ export function stakedCardsSnapshot(
     }),
     decisions: [] as never[],
     settlement: null,
+    // Keyed off the definition, in the order `CardsBook.snapshot()` writes it,
+    // so a hand-built snapshot is byte-identical to one a real round wrote.
+    ...(definition.dormancy === undefined ? {} : { settlementReason: null }),
     ...(roundingSeed === undefined ? {} : { roundingSeed }),
     liquidBalance: '0',
     capBasisStake: String(total),
@@ -995,6 +1002,184 @@ const capNeverBinds: Check = {
   },
 };
 
+const dormantActionIsOffered: Check = {
+  code: 'CARDS_DORMANT_ACTION_OFFERED',
+  description:
+    'When a dormancy policy is declared, its resolution is offered in every decision state the board can reach',
+  scope: 'definition',
+  run({ definition, count }) {
+    const dormancy = definition.dormancy;
+    if (dormancy === undefined) return [];
+    const failures: ConformanceFailure[] = [];
+    const dealt = definition.ladder.dealt;
+    forEachCanonicalState(definition, ({ steps, belief }) => {
+      // Before the first reveal the board was never decidable and no
+      // liquidating action is offered anywhere, which is exactly why
+      // `settleDormant` refuses a round standing at revision 0.
+      if (steps.length === 0) return;
+      const hidden = belief.record.hidden;
+      // Independent of the definition-time walk on purpose: that one enumerates
+      // the covers a *policy* can reach, this one enumerates every cover the
+      // board could hold at all, so agreeing is evidence rather than one walk
+      // reading the other's answer.
+      for (let mask = 1; mask < 1 << hidden.length; mask += 1) {
+        const covered: number[] = [];
+        for (let index = 0; index < hidden.length; index += 1)
+          if ((mask & (1 << index)) !== 0) covered.push(hidden[index] as number);
+        if (covered.length > dealt) continue;
+        count('dormantOfferStates');
+        const offers = offeredActions(definition, belief, covered, {
+          stepRevision: steps.length,
+        });
+        // A terminal cover offers nothing at all, and settles at `p · claim`,
+        // which is the same number the dormant resolution would pay: there is
+        // no price to invent, so it is not a miss.
+        if (offers.length === 0 || offers.includes(dormancy.onDormant)) continue;
+        failures.push(
+          failure(
+            'CARDS_DORMANT_ACTION_OFFERED',
+            '$.dormancy.onDormant',
+            `A decision state after ${steps.length} reveal(s) offers ${JSON.stringify(offers)}, which does not include the dormant resolution`,
+          ),
+        );
+        return;
+      }
+    });
+    return failures;
+  },
+};
+
+const everyRoundSettles: Check = {
+  code: 'CARDS_EVERY_ROUND_SETTLES',
+  description:
+    'A declared dormancy window gives every round a settlement, and the seed it publishes re-seals its commitment',
+  scope: 'round',
+  run({ definition, seedHex, roundId, count }) {
+    const dormancy = definition.dormancy;
+    if (dormancy === undefined) return [];
+    const failures: ConformanceFailure[] = [];
+    const reject = (message: string): void => {
+      failures.push(failure('CARDS_EVERY_ROUND_SETTLES', '$.dormancy', message));
+    };
+    // A window nobody alive would see elapse is the same thing as no scheduled
+    // settlement at all, spelled to read like one.
+    if (dormancy.windowSeconds < 1 || dormancy.windowSeconds > CARDS_MAX_DORMANCY_SECONDS)
+      reject('The dormancy window is not a bound a round can actually reach');
+
+    const staked = stakedCardsSnapshot(definition, seedHex, roundId);
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+    const declaresEarly = dormancy.earlySettlementReasons.includes('account-state-changed');
+    // Both system paths the definition actually declares are positive controls:
+    // a check that only ever forges would still pass if `restore()` refused
+    // every system settlement ever written.
+    const honest: readonly [CardsSettlementReason, string][] = [
+      [
+        'ROUND_DORMANT',
+        forgeDormant(definition, staked, seedHex, roundId, {
+          frame: staked.stepRevision,
+          reason: 'ROUND_DORMANT',
+          reseal,
+        }),
+      ],
+      ...(declaresEarly
+        ? ([
+            [
+              'ACCOUNT_STATE_CHANGED',
+              forgeDormant(definition, staked, seedHex, roundId, {
+                frame: staked.stepRevision,
+                reason: 'ACCOUNT_STATE_CHANGED',
+                reseal,
+              }),
+            ],
+          ] as [CardsSettlementReason, string][])
+        : []),
+    ];
+    for (const [reason, snapshot] of honest) {
+      count('dormantSettlements');
+      try {
+        const restored = CardsBook.restore(definition, snapshot);
+        if (JSON.stringify(restored.snapshot()) !== snapshot)
+          reject('A dormant settlement does not re-serialize identically');
+        // Terminal, reasoned, and — because `restore()` re-derives the deal,
+        // the reveals and the commitment from the revealed seed — the seed this
+        // round published is the one its commitment seals. That is the
+        // countable half of the property: a round settled on schedule reveals
+        // its seed on schedule, and the seed it reveals is the committed one.
+        if (!restored.terminal || restored.settlementReason !== reason)
+          reject('A dormant settlement did not close the round under its own reason');
+        if (restored.settlement === null || restored.settlement.revealedSeed !== seedHex)
+          reject('A settled round does not carry the seed it was settled against');
+      } catch (error) {
+        reject(`Restore rejected an honest dormant settlement: ${String(error)}`);
+      }
+    }
+
+    const closed = honest[0]?.[1] as string;
+    const priced = forgeDormant(definition, staked, seedHex, roundId, {
+      frame: staked.stepRevision,
+      reason: 'ROUND_DORMANT',
+      reseal,
+      payTheOutcome: true,
+    });
+    const tampers: readonly string[] = [
+      // Before the board was decidable there was no price to settle at.
+      forgeDormant(definition, staked, seedHex, roundId, {
+        frame: 0,
+        reason: 'ROUND_DORMANT',
+        reseal,
+      }),
+      // A reason relabelled after the fact, from one the definition declares to
+      // another one it declares. Nothing but the receipt fingerprint can refuse
+      // this: both values are legal for this definition and every other field
+      // stays consistent, so it is the case that separates "the reason is
+      // recorded" from "the reason is sealed".
+      reseal({
+        ...(JSON.parse(closed) as Record<string, unknown>),
+        settlementReason: declaresEarly ? 'ACCOUNT_STATE_CHANGED' : 'ROUND_DORMANT',
+      }),
+      // And the reason erased, which is a system settlement presented as the
+      // player's own.
+      reseal({ ...(JSON.parse(closed) as Record<string, unknown>), settlementReason: null }),
+      // An early reason the definition never declared, minted honestly under
+      // its own fingerprint — so only the declaration can refuse it. Skipped
+      // where the definition does declare it, since there it is legal and is a
+      // positive control above instead.
+      ...(declaresEarly
+        ? []
+        : [
+            forgeDormant(definition, staked, seedHex, roundId, {
+              frame: staked.stepRevision,
+              reason: 'ACCOUNT_STATE_CHANGED',
+              reseal,
+            }),
+          ]),
+      // The price. A dormant settlement pays the board the player was looking
+      // at, never the outcome the seed decides: paying the outcome is the
+      // rewrite worth writing, because it is the one that pays more. Skipped in
+      // the states where the two prices coincide, where there is nothing to
+      // forge — and only there, because a blanket "skip anything equal to the
+      // honest snapshot" would silently drop the relabelling case above the
+      // moment the reason stopped being sealed, which is the one defect it
+      // exists to catch.
+      ...(priced === closed ? [] : [priced]),
+    ];
+    for (const tampered of tampers) {
+      count('dormantTampers');
+      try {
+        CardsBook.restore(definition, tampered);
+        reject('Restore accepted a dormant settlement no round could have issued');
+      } catch {
+        // Expected.
+      }
+    }
+    return failures;
+  },
+};
+
 const seedMixesClientEntropy: Check = {
   code: 'CARDS_SEED_MIXES_CLIENT_ENTROPY',
   description: 'The round seed changes when only the client seed changes, and requires one',
@@ -1731,6 +1916,109 @@ function forgeCash(
   });
 }
 
+/**
+ * A **system** settlement appended to a snapshot, priced at the frame it claims.
+ *
+ * One builder writes the honest cases and the forged ones, for the same reason
+ * `forgeCash` does: the credited integer, the cap arithmetic, the settlement
+ * record and the reason are all re-derived from the frame and the seed every
+ * time, so the only thing separating a snapshot that must restore from one that
+ * must not is whether a round could have issued the command.
+ */
+function forgeDormant(
+  definition: SequentialCardsDefinition,
+  staked: CardsBookSnapshot,
+  seedHex: string,
+  roundId: string,
+  options: {
+    readonly frame: number;
+    readonly reason: CardsSettlementReason;
+    readonly reseal: (value: Record<string, unknown>) => string;
+    /** Price the live rows against the outcome instead of the board. */
+    readonly payTheOutcome?: boolean;
+  },
+): string {
+  const rows = staked.selections as unknown as Record<string, unknown>[];
+  const selections: CardsSelection[] = rows.map((row) => {
+    const wire = row.claim as { numerator: string; denominator: string };
+    return Object.freeze({
+      id: row.id as string,
+      kind: row.kind as 'position' | 'market',
+      marketId: row.marketId as string | null,
+      openedPosition: row.openedPosition as number | null,
+      positions: row.positions as readonly number[],
+      stake: BigInt(row.stake as string),
+      claim: rational(BigInt(wire.numerator), BigInt(wire.denominator)),
+      decidedAtStepRevision: row.decidedAtStepRevision as number,
+      status: row.status as CardsSelection['status'],
+      credited: BigInt(row.credited as string),
+    });
+  });
+  const steps = (staked.steps as unknown as RevealStep[]).slice(0, options.frame);
+  const deal = deriveDeal(seedHex, definition, roundId);
+  const transcript = buildCardsTranscript(
+    seedHex,
+    definition,
+    roundId,
+    staked.choices as unknown as readonly PlayerChoice[],
+  );
+  const objectiveRank = objectiveRankOf(definition, deal.ranks);
+  const objectivePosition = objectivePositionOf(definition, deal.ranks);
+  const sequence = staked.receipts.length + 1;
+  const tape = tapeOf(definition, staked);
+  const total =
+    options.payTheOutcome === true
+      ? settlementTotal(definition, selections, objectivePosition, objectiveRank, {
+          tape,
+          sequence,
+        })
+      : dormantTotal(definition, selections, cardsBelief(definition, steps), objectiveRank, {
+          tape,
+          sequence,
+        });
+  const payable = payableWithinCap(
+    total,
+    BigInt(staked.capBasisStake as string),
+    definition.risk.maxWinMultiple,
+    BigInt(staked.liquidBalance),
+  );
+  const record = {
+    revealedSeed: seedHex,
+    commitment: transcript.commitment,
+    objectiveRank,
+    objectivePosition,
+  };
+  const fingerprint = dormantFingerprint(stepDigest(steps), { ...record, reason: options.reason });
+  const receipts = [
+    ...(staked.receipts as unknown as WireEntry[]),
+    {
+      fingerprint,
+      receipt: toWireReceipt({
+        schema: RECEIPT_SCHEMA,
+        idempotencyKey: 'conformance-dormant',
+        commandFingerprint: fingerprint,
+        action: 'settleDormant',
+        ledgerRevision: sequence,
+        frameRevision: options.frame,
+        debited: 0n,
+        credited: payable.credited,
+        balanceDelta: payable.credited,
+        capped: payable.capped,
+      }),
+    },
+  ];
+  return options.reseal({
+    ...staked,
+    terminal: true,
+    settlement: record,
+    settlementReason: options.reason,
+    receipts,
+    ledgerRevision: receipts.length,
+    liquidBalance: String(BigInt(staked.liquidBalance) + payable.credited),
+    selections: rows.map((row) => (row.status === 'live' ? { ...row, status: 'settled' } : row)),
+  });
+}
+
 /** The committed tape a snapshot's round credits from, if its definition declares one. */
 function tapeOf(
   definition: SequentialCardsDefinition,
@@ -1922,6 +2210,8 @@ export const SEQUENTIAL_CARDS_CHECKS: readonly Check[] = Object.freeze([
   roundingIsUnbiased,
   roundingIsBounded,
   capNeverBinds,
+  dormantActionIsOffered,
+  everyRoundSettles,
   beliefIsExhaustive,
   beliefIsNormalised,
   selectorIsPrecommitted,

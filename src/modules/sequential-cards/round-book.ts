@@ -35,8 +35,11 @@ import { cardsFingerprint, cardsRoundOf } from './adapter.js';
 import {
   CARDS_ACTIONS,
   CARDS_BOOK_SCHEMA,
+  CARDS_SETTLEMENT_REASONS,
   type CardsAction,
+  type CardsEarlySettlementReason,
   type CardsRejectionReason,
+  type CardsSettlementReason,
   type PlayerChoice,
   type RevealStep,
   type SequentialCardsDefinition,
@@ -135,6 +138,37 @@ export interface SettleRequest {
   readonly transcript: unknown;
 }
 
+/**
+ * A settlement the **system** takes, not the player.
+ *
+ * The module owns no clock, so the host measures the window and says how long it
+ * measured. That is the whole of the division of labour: the seconds are an
+ * assertion the host makes and the module cannot check, and everything the
+ * module *can* check — that the assertion clears the declared window, that an
+ * early reason is one the definition declared, that the round is past its first
+ * reveal, that the seed re-derives the round, and that the price is the one the
+ * board was already showing — it checks and refuses.
+ */
+export interface DormantSettleRequest {
+  readonly idempotencyKey: string;
+  readonly expectedStepRevision: number;
+  readonly revealedSeed: string;
+  readonly transcript: unknown;
+  /**
+   * Seconds the host measured since the board became decidable. Compared
+   * against `dormancy.windowSeconds`; ignored when an early reason is asserted,
+   * because an early settlement is early by definition.
+   */
+  readonly elapsedSeconds: number;
+  /**
+   * A declared early-settlement reason, or absent for the ordinary
+   * end-of-window case. Absent, the receipt records `ROUND_DORMANT`; present, it
+   * records the reason in its own name, so the two are never conflated
+   * afterwards.
+   */
+  readonly reason?: CardsEarlySettlementReason;
+}
+
 export type CardsSelectionStatus = 'live' | 'cashed' | 'settled';
 
 /**
@@ -220,6 +254,17 @@ export interface CardsBookSnapshot {
   }[];
   readonly settlement: CardsSettlementRecord | null;
   /**
+   * Why the system settled this round, or `null` when the player's own
+   * settlement closed it.
+   *
+   * Present exactly when the definition declares a `dormancy` policy, on the
+   * same rule as `roundingSeed`: a definition with no dormant path has nothing
+   * to record and must not present a key the round would then have to decide
+   * what to do with, and a snapshot of one that does is byte-identical to the
+   * ones this module wrote before dormancy existed.
+   */
+  readonly settlementReason?: string | null;
+  /**
    * The round's committed rounding tape.
    *
    * Present exactly when the definition declares `rounding: 'stochastic'`, and
@@ -267,9 +312,10 @@ const SNAPSHOT_KEYS = Object.freeze([
  * refused, and so is a stochastic one without.
  */
 function snapshotKeysFor(definition: SequentialCardsDefinition): readonly string[] {
-  return definition.pricing.rounding === 'stochastic'
-    ? [...SNAPSHOT_KEYS, 'roundingSeed']
-    : SNAPSHOT_KEYS;
+  const keys = [...SNAPSHOT_KEYS];
+  if (definition.pricing.rounding === 'stochastic') keys.push('roundingSeed');
+  if (definition.dormancy !== undefined) keys.push('settlementReason');
+  return keys.length === SNAPSHOT_KEYS.length ? SNAPSHOT_KEYS : Object.freeze(keys);
 }
 
 const SELECTION_KEYS = Object.freeze([
@@ -327,6 +373,7 @@ export class CardsBook {
   #roundId: string | undefined;
   #roundingSeed: string | undefined;
   #settlement: CardsSettlementRecord | null = null;
+  #settlementReason: CardsSettlementReason | null = null;
   #terminal = false;
 
   constructor(readonly definition: SequentialCardsDefinition) {
@@ -348,6 +395,10 @@ export class CardsBook {
   }
   get settlement(): CardsSettlementRecord | null {
     return this.#settlement;
+  }
+  /** `null` unless the system settled this round; never `null` after it did. */
+  get settlementReason(): CardsSettlementReason | null {
+    return this.#settlementReason;
   }
   get roundId(): string | undefined {
     return this.#roundId;
@@ -760,6 +811,164 @@ export class CardsBook {
     });
   }
 
+  /**
+   * Settles a round the player never came back to, at the price the board was
+   * already showing.
+   *
+   * Every live **position** is liquidated at `p · claim` against the belief at
+   * the round's current frame — the same number `cash` would have credited in
+   * that state, and the reason `onDormant: 'cash'` is the only implemented
+   * resolution: at a zero spread it is exactly EV-neutral, so a settlement
+   * nobody chose neither guesses at intent nor imposes a loss. Every live
+   * **market** settles from the deal, like any other settlement, because a
+   * market has no in-round price to liquidate at. The seed is revealed on the
+   * same command, so the round's commitment becomes checkable on schedule rather
+   * than whenever a player happens to return.
+   *
+   * **This does not give the module a clock.** `elapsedSeconds` is the host's
+   * measurement and the module cannot verify it; what the module does is refuse
+   * everything around it — a window that has not elapsed, an early reason the
+   * definition never declared, a round still before its first reveal, a seed
+   * that does not re-derive the round, a tape the credits did not come from —
+   * and record which reason was given, in the receipt fingerprint and in the
+   * snapshot, so an auto-settlement can never be replayed as a player's
+   * decision. A host that asserts a window it did not measure is inside the same
+   * trust boundary as one that never calls this at all: §6.3 and
+   * `docs/integration-checklist.md` state it as an obligation rather than imply
+   * it is closed.
+   */
+  async settleDormant(request: DormantSettleRequest): Promise<CardsReceipt> {
+    assertRequestRecord(request);
+    const key = request.idempotencyKey;
+    const expected = request.expectedStepRevision;
+    const elapsed: unknown = request.elapsedSeconds;
+    const declaredReason: unknown = request.reason;
+    assertIdempotencyKey(key);
+    assertRevisionInput(expected);
+    const dormancy = this.definition.dormancy;
+    if (dormancy === undefined)
+      reject(
+        'CLAIM_REJECTED',
+        'This definition declares no dormancy policy, so no round of it is ever dormant',
+        '$.dormancy',
+        'ROUND_NOT_DORMANT',
+      );
+    if (!Number.isSafeInteger(elapsed) || (elapsed as number) < 0)
+      reject(
+        'CLAIM_REJECTED',
+        'Elapsed seconds must be a non-negative safe integer',
+        '$.elapsedSeconds',
+        'ROUND_NOT_DORMANT',
+      );
+    let reason: CardsSettlementReason = 'ROUND_DORMANT';
+    if (declaredReason !== undefined) {
+      if (
+        typeof declaredReason !== 'string' ||
+        !(dormancy.earlySettlementReasons as readonly string[]).includes(declaredReason)
+      )
+        reject(
+          'CLAIM_REJECTED',
+          'That early-settlement reason is not one this definition declares',
+          '$.reason',
+          'INVALID_SETTLEMENT_REASON',
+        );
+      reason = 'ACCOUNT_STATE_CHANGED';
+    } else if ((elapsed as number) < dormancy.windowSeconds)
+      reject(
+        'CLAIM_REJECTED',
+        `The dormancy window is ${dormancy.windowSeconds} seconds and ${String(elapsed)} were asserted, with no early-settlement reason`,
+        '$.elapsedSeconds',
+        'ROUND_NOT_DORMANT',
+      );
+    const revealedSeed = normalizeSeed(request.revealedSeed);
+    const transcript = deserializeCardsTranscript(request.transcript);
+    const objectiveRank = objectiveRankOf(this.definition, transcript.deal.ranks);
+    const objectivePosition = objectivePositionOf(this.definition, transcript.deal.ranks);
+    const fingerprint = dormantFingerprint(stepDigest(this.#steps), {
+      revealedSeed,
+      commitment: transcript.commitment,
+      objectiveRank,
+      objectivePosition,
+      reason,
+    });
+    return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
+      this.#assertStepRevision(expected);
+      if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
+      // The window runs from the moment the board became decidable, and before
+      // the first reveal it never did: the prior is uniform, no liquidating
+      // action is offered, and there is no price for a system settlement to be
+      // "the one already showing". `triad/docs/DESIGN.md` §10.6 rule 7 makes the
+      // same point from the product side.
+      if (this.stepRevision < 1)
+        reject(
+          'CLAIM_REJECTED',
+          'A round settles dormant only after the board became decidable, which is its first reveal',
+          '$.expectedStepRevision',
+          'ROUND_NOT_DORMANT',
+        );
+      const verification = verifyCardsTranscript(revealedSeed, this.definition, transcript);
+      if (!verification.ok)
+        fail('INVALID_TRANSCRIPT', verification.message, verification.path, {
+          verificationCode: verification.code,
+        });
+      // A dormant round may be settled part-way through its reveal schedule, so
+      // the proof's steps have to *extend* this book's rather than equal them.
+      // The prefix is still exact: every step this round published must be the
+      // step the sealed deal produces at that index.
+      if (
+        transcript.roundId !== this.#roundId ||
+        transcript.choices.length !== this.#choices.length ||
+        transcript.choices.some(
+          (choice, index) => choice.position !== this.#choices[index]?.position,
+        ) ||
+        !revealStepsEqual(transcript.steps.slice(0, this.stepRevision), this.#steps)
+      )
+        fail('TRANSCRIPT_MISMATCH', 'Settlement proof is for a different round', '$.choices');
+      if (this.#roundingSeed !== undefined) {
+        const expectedTape = deriveRoundingSeed(
+          revealedSeed,
+          cardsFingerprint(this.definition),
+          this.#roundId as string,
+        );
+        if (!constantTimeHexEqual(expectedTape, this.#roundingSeed))
+          fail(
+            'TRANSCRIPT_MISMATCH',
+            'The rounding tape this round credited from does not derive from the revealed seed',
+            '$.revealedSeed',
+          );
+      }
+      const total = dormantTotal(this.definition, this.selections, this.belief(), objectiveRank, {
+        tape: this.#tape(),
+        sequence: this.#ledger.ledgerRevision + 1,
+      });
+      const close = (payable: Payable): CardsReceipt => {
+        const receipt = this.#mint(
+          key,
+          fingerprint,
+          'settleDormant',
+          0n,
+          payable.credited,
+          payable.capped,
+        );
+        for (const selection of this.selections)
+          if (selection.status === 'live')
+            this.#selections.set(selection.id, Object.freeze({ ...selection, status: 'settled' }));
+        this.#settlement = Object.freeze({
+          revealedSeed,
+          commitment: transcript.commitment,
+          objectiveRank,
+          objectivePosition,
+        });
+        this.#settlementReason = reason;
+        this.#terminal = true;
+        return receipt;
+      };
+      return this.#ledger.capBasisStake === undefined
+        ? close(Object.freeze({ theoretical: total, credited: 0n, capped: false }))
+        : this.#ledger.creditClaim(total, close);
+    });
+  }
+
   serialize(): string {
     return JSON.stringify(this.snapshot());
   }
@@ -805,6 +1014,9 @@ export class CardsBook {
         ),
       ),
       settlement: this.#settlement === null ? null : Object.freeze({ ...this.#settlement }),
+      ...(this.definition.dormancy === undefined
+        ? {}
+        : { settlementReason: this.#settlementReason }),
       ...(this.definition.pricing.rounding === 'stochastic'
         ? { roundingSeed: this.#roundingSeed ?? null }
         : {}),
@@ -1230,17 +1442,62 @@ export class CardsBook {
       if (receipt.debited !== 0n)
         fail('INVALID_SNAPSHOT', 'A settlement never debits', '$.receipts');
       const record = raw.settlement;
+      const dormant = receipt.action === 'settleDormant';
+      const dormancy = definition.dormancy;
+      // The reason is **re-derived through the fingerprint**, never read: the
+      // expected fingerprint below is rebuilt from the reason the snapshot
+      // carries, so relabelling an end-of-window settlement as an account-state
+      // one — or the reverse — stops matching the receipt that recorded it.
+      const reason = raw.settlementReason ?? null;
+      if (dormant) {
+        if (dormancy === undefined)
+          fail(
+            'INVALID_SNAPSHOT',
+            'This definition declares no dormancy policy and its rounds have no system settlement',
+            '$.receipts',
+          );
+        if (!(CARDS_SETTLEMENT_REASONS as readonly (string | null)[]).includes(reason))
+          fail(
+            'INVALID_SNAPSHOT',
+            'A system settlement records the reason it was taken under',
+            '$.settlementReason',
+          );
+        if (
+          reason === 'ACCOUNT_STATE_CHANGED' &&
+          !dormancy.earlySettlementReasons.includes('account-state-changed')
+        )
+          fail(
+            'INVALID_SNAPSHOT',
+            'That early-settlement reason is not one this definition declares',
+            '$.settlementReason',
+          );
+        // Before the first reveal the board was never decidable, so there is no
+        // price a dormant settlement could have been taken at.
+        if (receipt.frameRevision < 1)
+          fail(
+            'INVALID_SNAPSHOT',
+            'A dormant settlement cannot precede the reveal that made the board decidable',
+            '$.receipts',
+          );
+      } else if (reason !== null)
+        fail(
+          'INVALID_SNAPSHOT',
+          'A settlement the player took records no system reason',
+          '$.settlementReason',
+        );
       if (
         record === null ||
-        receipt.frameRevision !== definition.reveal.count ||
+        (!dormant && receipt.frameRevision !== definition.reveal.count) ||
         receipt.commandFingerprint !==
-          commandFingerprint('settle', [
-            digest,
-            record.revealedSeed,
-            record.commitment,
-            record.objectiveRank,
-            record.objectivePosition,
-          ])
+          (dormant
+            ? dormantFingerprint(digest, { ...record, reason: reason as string })
+            : commandFingerprint('settle', [
+                digest,
+                record.revealedSeed,
+                record.commitment,
+                record.objectiveRank,
+                record.objectivePosition,
+              ]))
       )
         fail(
           'INVALID_SNAPSHOT',
@@ -1256,7 +1513,11 @@ export class CardsBook {
       const round = cardsRoundOf(definition, book.#roundId as string);
       const deal = deriveDeal(record.revealedSeed, definition, round.roundId);
       const derivedSteps = deriveRevealSteps(definition, deal, book.#choices);
-      if (!revealStepsEqual(derivedSteps, book.#steps))
+      // A dormant round may have been settled part-way through its schedule, so
+      // its published reveals must be a **prefix** of what the seed produces.
+      // The commitment below still re-seals over the whole derived list, which
+      // is what the round committed to when it opened.
+      if (!revealStepsEqual(derivedSteps.slice(0, book.#steps.length), book.#steps))
         fail(
           'INVALID_SNAPSHOT',
           'The reveal log does not re-derive from the revealed seed',
@@ -1299,13 +1560,21 @@ export class CardsBook {
           );
       }
       const payable = payableWithinCap(
-        settlementTotal(
-          definition,
-          [...book.#selections.values()],
-          record.objectivePosition,
-          record.objectiveRank,
-          { tape: book.#tape(), sequence: receipt.ledgerRevision },
-        ),
+        dormant
+          ? dormantTotal(
+              definition,
+              [...book.#selections.values()],
+              beliefAt(receipt.frameRevision),
+              record.objectiveRank,
+              { tape: book.#tape(), sequence: receipt.ledgerRevision },
+            )
+          : settlementTotal(
+              definition,
+              [...book.#selections.values()],
+              record.objectivePosition,
+              record.objectiveRank,
+              { tape: book.#tape(), sequence: receipt.ledgerRevision },
+            ),
         capBasis as bigint,
         definition.risk.maxWinMultiple,
         liquid,
@@ -1317,6 +1586,7 @@ export class CardsBook {
         if (selection.status === 'live')
           book.#selections.set(selection.id, Object.freeze({ ...selection, status: 'settled' }));
       book.#settlement = Object.freeze({ ...record });
+      book.#settlementReason = dormant ? (reason as CardsSettlementReason) : null;
       settled = true;
     });
 
@@ -1337,6 +1607,18 @@ export class CardsBook {
       fail('INVALID_SNAPSHOT', 'Terminal flag disagrees with the receipt log', '$.terminal');
     if ((raw.settlement === null) === settled)
       fail('INVALID_SNAPSHOT', 'Settlement record disagrees with the receipt log', '$.settlement');
+    // A reason on a round the receipts never settled by the system is a field
+    // nothing in the replay above would have looked at, so it is refused here
+    // rather than carried into a restored book that would then publish it.
+    if (
+      definition.dormancy !== undefined &&
+      (raw.settlementReason ?? null) !== book.#settlementReason
+    )
+      fail(
+        'INVALID_SNAPSHOT',
+        'Settlement reason disagrees with the receipt log',
+        '$.settlementReason',
+      );
     if (opened !== (book.#roundId !== undefined))
       fail('INVALID_SNAPSHOT', 'Round identity disagrees with the receipt log', '$.roundId');
     if (!opened && book.#roundingSeed !== undefined)
@@ -1667,6 +1949,84 @@ export function settlementTotal(
   return rational(credits);
 }
 
+/**
+ * What a **dormant** settlement owes, as an exact integer.
+ *
+ * The two halves are priced from different things on purpose, and that is the
+ * whole content of `onDormant: 'cash'`:
+ *
+ * - a live **position** is liquidated at `p · claim` against the belief at the
+ *   frame the round was standing at, which is the number `cash` would have
+ *   credited in that state and never more than the claim it liquidates;
+ * - a live **market** settles from the objective rank, exactly as under
+ *   `settle`, because a market carries no position to liquidate and no in-round
+ *   price to do it at.
+ *
+ * Each row crosses its own credit boundary and its remainder finances nothing
+ * else's, for the same reason `settlementTotal` floors row by row. And because
+ * `p · claim ≤ claim` everywhere, a dormant settlement can never pay more than
+ * the settlement it replaces — so the reachable maximum `defineCardsGame` proves
+ * the cap against still bounds this path without a second walk.
+ */
+export function dormantTotal(
+  definition: SequentialCardsDefinition,
+  selections: readonly CardsSelection[],
+  belief: CardsBelief,
+  objectiveRank: number,
+  event: { readonly tape: CreditTape | undefined; readonly sequence: number },
+): Rational {
+  let credits = 0n;
+  for (const selection of selections) {
+    if (selection.status !== 'live') continue;
+    const claim =
+      selection.kind === 'position'
+        ? fairValue(definition, selection.claim, coverProbability(belief, selection.positions))
+        : (
+              definition.sideMarkets.find((market) => market.id === selection.marketId)
+                ?.winningRanks ?? []
+            ).includes(objectiveRank)
+          ? selection.claim
+          : rational(0n);
+    if (claim.numerator === 0n) continue;
+    credits += convertToCredits(
+      definition,
+      claim,
+      { selectionId: selection.id, sequence: event.sequence },
+      event.tape,
+    ).credits;
+  }
+  return rational(credits);
+}
+
+/**
+ * The command fingerprint of a dormant settlement.
+ *
+ * The **reason** is inside it, which is what stops the two system paths being
+ * relabelled after the fact: a receipt minted for an end-of-window settlement
+ * cannot be re-presented as an account-state one, or the other way round,
+ * without the fingerprint stopping matching. `restore()` rebuilds it from the
+ * reason the snapshot carries, so the field is re-derived rather than read.
+ */
+export function dormantFingerprint(
+  digest: string,
+  record: {
+    readonly revealedSeed: string;
+    readonly commitment: string;
+    readonly objectiveRank: number;
+    readonly objectivePosition: number;
+    readonly reason: string;
+  },
+): string {
+  return commandFingerprint('settleDormant', [
+    digest,
+    record.revealedSeed,
+    record.commitment,
+    record.objectiveRank,
+    record.objectivePosition,
+    record.reason,
+  ]);
+}
+
 function marketProbability(
   definition: SequentialCardsDefinition,
   belief: CardsBelief,
@@ -1894,6 +2254,8 @@ function parseCardsSnapshot(
   assertSnapshotKeys(candidate, snapshotKeysFor(subject), '$');
   if (candidate.roundingSeed !== undefined && candidate.roundingSeed !== null)
     assertWireHex(candidate.roundingSeed, '$.roundingSeed');
+  if (candidate.settlementReason !== undefined && candidate.settlementReason !== null)
+    assertWireString(candidate.settlementReason, '$.settlementReason');
   if (
     candidate.schema !== CARDS_BOOK_SCHEMA ||
     typeof candidate.terminal !== 'boolean' ||

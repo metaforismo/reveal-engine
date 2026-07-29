@@ -179,9 +179,36 @@ export const triadStochasticReference: SequentialCardsDefinition = defineCardsGa
   pricing: { ...triadMiddleReference.pricing, rounding: 'stochastic' },
 });
 
+/**
+ * `triad/docs/ENGINE.md` §4.1's worked definition, field for field.
+ *
+ * The consuming game declares a `dormancy` policy alongside the settlement draw,
+ * and until this revision the module refused the field by name — so the spec's
+ * own code block did not construct, and the compatibility claim in §12.1 rested
+ * on deleting a line from it. This reference is that definition as written, so
+ * the claim is now a thing the build runs rather than a thing the document says:
+ * `tests/sequential-cards/dormancy.test.ts` constructs §4.1 verbatim and asserts
+ * it fingerprints identically to this.
+ *
+ * It is also what gives `CARDS_EVERY_ROUND_SETTLES` and
+ * `CARDS_DORMANT_ACTION_OFFERED` a subject. A check that only ever runs where it
+ * cannot fail is not evidence, which is the same reason `triad-stochastic-v1`
+ * ships beside `triad-middle-v1`.
+ */
+export const triadDormantReference: SequentialCardsDefinition = defineCardsGame({
+  ...triadStochasticReference,
+  id: 'triad-dormant-v1',
+  dormancy: {
+    windowSeconds: 86_400,
+    onDormant: 'cash',
+    earlySettlementReasons: ['account-state-changed'],
+  },
+});
+
 export const SEQUENTIAL_CARDS_REFERENCES: readonly SequentialCardsDefinition[] = Object.freeze([
   triadMiddleReference,
   triadStochasticReference,
+  triadDormantReference,
   duoMiddleReference,
   cascadeMiddleReference,
 ]);

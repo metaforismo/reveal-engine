@@ -27,6 +27,7 @@ import { sequentialCards } from '../../src/modules/sequential-cards/module.js';
 import {
   cascadeMiddleReference,
   duoMiddleReference,
+  triadDormantReference,
   triadMiddleReference,
 } from '../../src/modules/sequential-cards/references.js';
 import { CardsBook } from '../../src/modules/sequential-cards/round-book.js';
@@ -61,6 +62,7 @@ describe('sequential-cards: the lifecycle contract', () => {
       'split',
       'cash',
       'settle',
+      'settleDormant',
     ]);
     expect(sequentialCards.transcript.schema).toBe('reveal-engine/cards-transcript-v1');
     expect(sequentialCards.book.snapshotSchema).toBe('reveal-engine/cards-book-v1');
@@ -390,14 +392,62 @@ describe('sequential-cards: the lifecycle contract', () => {
     // does not implement has to be refused rather than dropped: `freezeCards
     // Definition` rebuilds field by field and `cardsFingerprint` seals field by
     // field, so an unrecognised key would neither be honoured nor sealed, and
-    // two definitions differing only in it would share a fingerprint.
+    // two definitions differing only in it would share a fingerprint. The
+    // dormancy policy is now implemented rather than refused (ADR 0007), so the
+    // cases below are its *own* rules, which are the same kind of contract.
     [
-      'a dormancy policy the module has no clock to honour',
+      'a dormancy window that could never elapse',
+      (draft: Record<string, unknown>) => {
+        draft.dormancy = {
+          windowSeconds: 0,
+          onDormant: 'cash',
+          earlySettlementReasons: [],
+        };
+      },
+      'INVALID_DORMANCY_POLICY',
+    ],
+    [
+      'a dormant resolution that is not a liquidation',
+      (draft: Record<string, unknown>) => {
+        draft.dormancy = {
+          windowSeconds: 86_400,
+          onDormant: 'void',
+          earlySettlementReasons: [],
+        };
+      },
+      'INVALID_DORMANCY_POLICY',
+    ],
+    [
+      'a dormant resolution the definition never offers',
+      (draft: Record<string, unknown>) => {
+        (draft.pricing as Record<string, unknown>).actions = ['switch'];
+        draft.dormancy = {
+          windowSeconds: 86_400,
+          onDormant: 'cash',
+          earlySettlementReasons: [],
+        };
+      },
+      'ACTION_NOT_OFFERED',
+    ],
+    [
+      'an early-settlement reason the module does not know',
       (draft: Record<string, unknown>) => {
         draft.dormancy = {
           windowSeconds: 86_400,
           onDormant: 'cash',
-          earlySettlementReasons: ['account-state-changed'],
+          earlySettlementReasons: ['operator-discretion'],
+        };
+      },
+      'INVALID_SETTLEMENT_REASON',
+    ],
+    [
+      'an unknown dormancy field',
+      (draft: Record<string, unknown>) => {
+        draft.dormancy = {
+          windowSeconds: 86_400,
+          onDormant: 'cash',
+          earlySettlementReasons: [],
+          graceSeconds: 60,
         };
       },
       'UNDECLARED_FIELD',
@@ -467,25 +517,21 @@ describe('sequential-cards: the lifecycle contract', () => {
   });
 
   /**
-   * The two capabilities the consuming game's specification declares and this
-   * version does not implement have to be refused **by name**, not dropped.
+   * A field the module does not implement is refused **by name**, not dropped.
    *
-   * `rounding: 'stochastic'` already was. `dormancy` was not: the assertion pass
-   * ignored unknown keys and `freezeCardsDefinition` rebuilt the definition
-   * field by field, so a declared dormancy policy vanished without a word and
-   * never entered the fingerprint — the definition would run under a policy it
-   * had never agreed to. `docs/modules/sequential-cards.md` §12 carries the
-   * table of what a consumer declares that this version does not implement.
+   * This test used to be about `dormancy`, which is now implemented (ADR 0007).
+   * The mechanism it was written to hold — an unimplemented capability naming
+   * itself in the refusal rather than reporting an anonymous typo — outlives the
+   * one field it was aimed at, and this keeps it exercised: a consumer-shaped
+   * definition declaring a capability this version has no code for is refused at
+   * the path that declares it, and nothing about it survives into the frozen
+   * definition or the fingerprint.
    */
-  it("names each capability it does not implement when a consumer's definition declares one", () => {
+  it("names a capability it does not implement when a consumer's definition declares one", () => {
     const consumerShaped = {
       ...definition,
       id: 'consumer-shaped-v1',
-      dormancy: {
-        windowSeconds: 86_400,
-        onDormant: 'cash',
-        earlySettlementReasons: ['account-state-changed'],
-      },
+      jackpot: { poolShare: 1, seedCredits: 1_000 },
     } as unknown as SequentialCardsDefinition;
     let refusal: unknown;
     try {
@@ -496,14 +542,53 @@ describe('sequential-cards: the lifecycle contract', () => {
     expect(refusal).toBeInstanceOf(RevealEngineError);
     const error = refusal as RevealEngineError;
     expect(error.code).toBe('INVALID_ADAPTER');
-    expect(error.path).toBe('$.dormancy');
+    expect(error.path).toBe('$.jackpot');
     expect(error.details).toMatchObject({ reason: 'UNDECLARED_FIELD' });
-    // The refusal says what is missing and why, so an integrator is not left
-    // guessing whether the field was honoured.
-    expect(error.message).toContain('dormancy');
-    expect(error.message).toContain('owns no clock');
+    // The refusal names the field, so an integrator is not left guessing
+    // whether it was honoured.
+    expect(error.message).toContain('jackpot');
     // And nothing was silently kept: the accepted reference has no such field.
-    expect('dormancy' in definition).toBe(false);
+    expect('jackpot' in definition).toBe(false);
+  });
+
+  /**
+   * The dormancy policy the consuming game declares is now **implemented**, and
+   * the difference between implemented and tolerated is the fingerprint.
+   *
+   * A field that is honoured but unsealed is the worse of the two failures the
+   * refusal used to prevent: two definitions differing only in when the system
+   * may settle a live round would share an adapter identity and a commitment.
+   */
+  it('seals a declared dormancy policy into the fingerprint', () => {
+    const declared = {
+      ...definition,
+      id: 'dormant-shaped-v1',
+      dormancy: {
+        windowSeconds: 86_400,
+        onDormant: 'cash' as const,
+        earlySettlementReasons: ['account-state-changed' as const],
+      },
+    };
+    const built = defineCardsGame(declared);
+    expect(built.dormancy).toEqual(declared.dormancy);
+    expect(Object.isFrozen(built.dormancy)).toBe(true);
+    expect(Object.isFrozen(built.dormancy?.earlySettlementReasons)).toBe(true);
+    // Absent, present, and present-with-a-different-window are three adapters.
+    const withoutPolicy = cardsFingerprint(
+      defineCardsGame({ ...definition, id: 'dormant-shaped-v1' }),
+    );
+    const shorterWindow = cardsFingerprint(
+      defineCardsGame({ ...declared, dormancy: { ...declared.dormancy, windowSeconds: 3_600 } }),
+    );
+    const noEarlyReason = cardsFingerprint(
+      defineCardsGame({
+        ...declared,
+        dormancy: { ...declared.dormancy, earlySettlementReasons: [] },
+      }),
+    );
+    expect(
+      new Set([cardsFingerprint(built), withoutPolicy, shorterWindow, noEarlyReason]).size,
+    ).toBe(4);
   });
 
   /**
@@ -655,6 +740,8 @@ describe('sequential-cards: the lifecycle contract', () => {
         'CARDS_ROUNDING_UNBIASED',
         'CARDS_ROUNDING_BOUNDED',
         'CARDS_CAP_NEVER_BINDS',
+        'CARDS_DORMANT_ACTION_OFFERED',
+        'CARDS_EVERY_ROUND_SETTLES',
         'CARDS_BELIEF_EXHAUSTIVE',
         'CARDS_BELIEF_NORMALISED',
         'CARDS_SELECTOR_PRECOMMITTED',
@@ -679,6 +766,8 @@ describe('sequential-cards: the lifecycle contract', () => {
         CARDS_ROUNDING_UNBIASED: 1,
         CARDS_ROUNDING_BOUNDED: 1,
         CARDS_CAP_NEVER_BINDS: 1,
+        CARDS_DORMANT_ACTION_OFFERED: 1,
+        CARDS_EVERY_ROUND_SETTLES: 3,
         CARDS_BELIEF_EXHAUSTIVE: 3,
         CARDS_BELIEF_NORMALISED: 3,
         CARDS_SELECTOR_PRECOMMITTED: 3,
@@ -692,8 +781,37 @@ describe('sequential-cards: the lifecycle contract', () => {
       // Eleven value rewrites, one re-fenced receipt, and two forged
       // liquidations — the branch that carries money out of the round.
       expect(report.counters.snapshotTampers).toBe(3 * 14);
+      // The two dormancy checks ran and had nothing to assert, because none of
+      // these three references declares the policy. `ran` says they executed;
+      // the counters say they found no subject, and the reference below is what
+      // stops that being the only thing they ever do.
+      expect(report.counters.dormantOfferStates).toBeUndefined();
+      expect(report.counters.dormantSettlements).toBeUndefined();
     },
   );
+
+  /**
+   * The dormancy checks, on the one reference that declares the policy.
+   *
+   * A check that only ever runs where it cannot fail is not evidence — the same
+   * reason `triad-stochastic-v1` ships beside `triad-middle-v1` — so this pins
+   * that both of them do real work on `triad-dormant-v1`: an exhaustive sweep of
+   * the covers every reachable board can hold, and a settlement forged four ways
+   * per seed with the two the definition declares restoring as positive
+   * controls.
+   */
+  it('exercises the dormancy checks on the reference that declares one', () => {
+    const report = assertModuleConformance(sequentialCards, triadDormantReference, 3);
+    expect(report.ok).toBe(true);
+    expect(report.ran.CARDS_DORMANT_ACTION_OFFERED).toBe(1);
+    expect(report.ran.CARDS_EVERY_ROUND_SETTLES).toBe(3);
+    // 286 hands x 3 backed positions x 2 eligible cuts x 3 covers of the two
+    // cards still face down.
+    expect(report.counters.dormantOfferStates).toBe(286 * 3 * 2 * 3);
+    // Both declared system paths restore, per seed.
+    expect(report.counters.dormantSettlements).toBe(3 * 2);
+    expect(report.counters.dormantTampers).toBeGreaterThanOrEqual(3 * 2);
+  });
 
   /**
    * The objectives and the unsorted board, which the shipped references do not

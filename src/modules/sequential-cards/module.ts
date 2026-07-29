@@ -14,6 +14,7 @@ import {
   SEQUENTIAL_CARDS_REFERENCES,
   cascadeMiddleReference,
   duoMiddleReference,
+  triadDormantReference,
   triadMiddleReference,
   triadStochasticReference,
 } from './references.js';
@@ -118,6 +119,7 @@ export const sequentialCards: LifecycleModule<SequentialCardsShape> =
       references: [
         { id: triadMiddleReference.id, definition: triadMiddleReference },
         { id: triadStochasticReference.id, definition: triadStochasticReference },
+        { id: triadDormantReference.id, definition: triadDormantReference },
         { id: duoMiddleReference.id, definition: duoMiddleReference },
         { id: cascadeMiddleReference.id, definition: cascadeMiddleReference },
       ],
