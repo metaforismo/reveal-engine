@@ -84,7 +84,7 @@ Randomness comes from `core/random.ts` only:
 ### 3. Step model
 
 `maxSteps`, `choiceTiming`, `beliefSpace`, `count`, `derive`, `encode`, `equal`,
-`belief`, and `price` when the belief space is marginal.
+`belief` when the belief space is `outcomes`, and `price` when it is `marginal`.
 
 `derive(seed, definition, round, truth, choices)` receives the logged player
 choices. A module whose steps depend on decisions — pick a contract, _then_
@@ -92,8 +92,9 @@ resolve the stage — stays a pure function of (seed-committed randomness, logge
 choices), which is exactly what makes its transcript verifiable. Modules with
 `choiceTiming: 'none'` receive an empty array and must ignore it; passing them a
 non-empty one is `INVALID_CHOICE`. `defineLifecycleModule()` wraps `derive`,
-`build`, and `commitmentBody` so `ENGINE_LIMITS.maxLoggedChoices` is enforced on
-every path without the module doing anything.
+`build`, `commitmentBody`, and — through `transcript.choicesOf` — `verify`, so
+`ENGINE_LIMITS.maxLoggedChoices` is enforced on every path without the module
+doing anything.
 
 `belief(definition, steps)` returns exact non-negative weights after a step
 prefix. **Zero is a legal weight.** A step that eliminates an outcome sets its
@@ -102,12 +103,17 @@ every outcome is eliminated. (A module where "everything is eliminated" is a
 legal state — a survival round where no entity is left — must model that state
 as an outcome of its own rather than as an empty vector.)
 
-`beliefSpace` says what that vector actually is:
+`weightVector` is a **bounded** shape and the bound is load-bearing: it admits
+between `2` and `ENGINE_LIMITS.maxOutcomes` (64) entries, every entry
+non-negative, with a strictly positive total. `weightVector([5n])` and a
+65-entry vector both fail with `INVALID_WEIGHTS`.
 
-| `beliefSpace` | Meaning                                                                         | Pricing                                        |
-| ------------- | ------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `outcomes`    | the vector **is** the space claims are priced from; a claim indexes it          | `weightProbability(belief(...), index)`        |
-| `marginal`    | the truth space is combinatorial; the vector is a per-item view, not the prices | `price(definition, steps, claim)` is mandatory |
+`beliefSpace` says what that vector actually is, and whether it exists at all:
+
+| `beliefSpace` | Meaning                                                                         | `belief()`                                      | Pricing                                        |
+| ------------- | ------------------------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------- |
+| `outcomes`    | the vector **is** the space claims are priced from; a claim indexes it          | **mandatory** — it is the money                 | `weightProbability(belief(...), index)`        |
+| `marginal`    | the truth space is combinatorial; the vector is a per-item view, not the prices | optional, and capped at 64 items like any other | `price(definition, steps, claim)` is mandatory |
 
 This distinction exists because a flat vector is bounded by
 `ENGINE_LIMITS.maxOutcomes = 64`, and a paytable over orderings is not: `5!` is
@@ -117,6 +123,18 @@ module prices its claims by exact counting —
 `fallingFactorial` — and `defineLifecycleModule()` refuses to build it without
 a `price()` implementation.
 
+The same 64 cap applies to a marginal module's per-item view, which is why
+`belief()` is optional there: a module whose item space is larger than 64 — a
+multi-deck shoe, a large field — has no honest vector to return and must omit it
+rather than invent a bucketing. Where the vector _is_ the pricing space,
+`defineLifecycleModule()` refuses to build a module without it.
+
+One more limit meets these: `ENGINE_LIMITS.maxPermutationSize` (1,024) bounds
+how many items may be _shuffled_, while `maxBigIntBits` (4,096) bounds how large
+an exact count may be before a `Rational` can no longer carry it — `536!` is
+4,092 bits. `core/combinatorics.ts` enforces the second bound in its own
+`INVALID_WEIGHTS` taxonomy, so the two never disagree silently.
+
 A step schedule must not leak the truth through its _structure_. Likelihood
 strengths, labels, and ordering have to look identical whichever truth was
 drawn; only the targets may differ. Conformance checks this by sweeping every
@@ -125,7 +143,7 @@ truth for a fixed seed.
 ### 4. Transcript schema and versioning
 
 `schema`, `acceptedSchemas`, `build`, `commitmentBody`, `seedCommitment`,
-`toWire`, `fromWire`.
+`toWire`, `fromWire`, `choicesOf`.
 
 Each module owns its own schema string and its own migration set. Core never
 parses a module transcript.
@@ -141,6 +159,14 @@ parses a module transcript.
   same round twice under different decisions, and both settlements verify.
 - `fromWire` is the untrusted-input boundary: exact key sets, canonical decimal
   BigInt strings, bounded lengths, no coercion.
+- `choicesOf` returns the decoded transcript's logged decision list. It is
+  mandatory for any module whose `choiceTiming` is not `none`, and it exists for
+  exactly one reason: `verify()` is the only entry point that reads a choice log
+  off the wire, and the phase order below has a verifier re-derive steps from
+  the transcript's own log rather than through the guarded `steps.derive`. Core
+  cannot find that log without being told where it lives, so this accessor is
+  how `assertLoggedChoices` reaches it. A choice-timed module that omits
+  `choicesOf` fails to define.
 
 #### Pre-commitment for choice-timed rounds
 
@@ -246,6 +272,23 @@ under a recomputed checksum. A choice-timed module has to do this — its
 settlement proof is a function of the decision log, so the log is money-bearing
 state.
 
+The same applies to anything a snapshot asserts about _what a claim is worth_. A
+price is a function of the belief at the step the claim was opened at, and
+`restore()` has already replayed the steps, so recompute it. `progressive-market`
+does both: the open receipt's fingerprint is
+`commandFingerprint('open', [frame, outcome, stake])`, which pins the outcome,
+and the contingent payout is recomputed as `stake x quote()` at the posterior
+replayed to `openedAtFrameRevision`. A restore that reads either field straight
+out of the snapshot settles a losing position as a winner, or a small claim as a
+large one, under a perfectly recomputed checksum. Treat every money-bearing
+field the same way: if it is derivable from the receipt log and the replayed
+steps, derive it.
+
+The checksum is not the control. It detects corruption, not tampering — anyone
+who can rewrite a field can recompute the hash over it. Every snapshot test in
+this repository therefore re-seals its mutation before restoring it, so what is
+under test is the semantic validation and not the hash.
+
 ### 6. Verifier
 
 `verify(seed, definition, input) -> VerificationResult`.
@@ -292,7 +335,17 @@ editing it.
 Every module should at minimum check: definitions are deeply frozen, derivation
 is deterministic and frozen, step structure does not vary with the truth, a
 built transcript verifies against its own seed, beliefs normalise exactly, and
-`restore()` round-trips its own snapshot while rejecting tampered ones.
+`restore()` round-trips its own snapshot while rejecting tampered ones. Both the
+shipped module and both fixtures do; `progressive-market`'s
+`SNAPSHOT_NOT_REVALIDATED` is the one to copy, because its tamper set includes
+the money-bearing claim fields rather than only the balance and the checksum.
+
+Checks are synchronous while a book's command API is not, so a check that needs
+a staked mid-round snapshot re-derives it from the module's own primitives
+rather than driving the book. That is what
+`progressive-market/checks.ts:stakedSnapshotFor()` does, and a contract test pins
+it field for field against a real staked round so the re-derivation cannot drift
+into something `restore()` would reject for the wrong reason.
 
 ### What `defineLifecycleModule()` cannot check
 
@@ -312,12 +365,12 @@ than a nicety.
 
 The contract was designed against four shapes, not one.
 
-| Module               | Truth                       | Steps                          | Choices     | Book                                           |
-| -------------------- | --------------------------- | ------------------------------ | ----------- | ---------------------------------------------- |
-| `progressive-market` | `scalar-index`              | Bayesian evidence stream       | none        | single position, winner-takes-claim            |
-| `sequential-cards`   | `permutation` (deck order)  | reveals that zero out outcomes | none        | multi position, independent sells and switches |
-| `staged-survival`    | `composite` (a random tape) | stage resolutions              | before-step | multi claim, partial banking                   |
-| `permutation`        | `permutation` of n items    | ordering reveals               | none        | multi bet, paytable settlement                 |
+| Module               | Truth                       | Steps                          | Choices     | Belief                                                   | Book                                           |
+| -------------------- | --------------------------- | ------------------------------ | ----------- | -------------------------------------------------------- | ---------------------------------------------- |
+| `progressive-market` | `scalar-index`              | Bayesian evidence stream       | none        | `outcomes`; `belief()` is the price, ≤ 64 outcomes       | single position, winner-takes-claim            |
+| `sequential-cards`   | `permutation` (deck order)  | reveals that zero out outcomes | none        | `marginal`; omit `belief()` if the shoe exceeds 64 cards | multi position, independent sells and switches |
+| `staged-survival`    | `composite` (a random tape) | stage resolutions              | before-step | `marginal`; `price()` over surviving entities            | multi claim, partial banking                   |
+| `permutation`        | `permutation` of n items    | ordering reveals               | none        | `marginal`; `price()` by exact counting                  | multi bet, paytable settlement                 |
 
 Only `progressive-market` ships today. The other three are the immediate next
 modules and are named here so the contract is judged against them.

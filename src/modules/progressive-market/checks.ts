@@ -185,10 +185,7 @@ export function stakedSnapshotFor(
     position: {
       outcome,
       contingentPayout: toWireRational(
-        multiply(
-          rational(stake),
-          quote(game, initialPosterior(game), outcome, true, 0).multiplier,
-        ),
+        multiply(rational(stake), quote(game, initialPosterior(game), outcome, true, 0).multiplier),
       ),
       stake: String(stake),
       capBasisStake: String(stake),
@@ -252,7 +249,10 @@ const snapshotIsRevalidated: Check = {
     }
 
     const reseal = (value: Record<string, unknown>): string =>
-      JSON.stringify({ ...value, snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }) });
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
     const position = snapshot.position as NonNullable<RoundBookSnapshot['position']>;
     const tampers: readonly (readonly [string, string])[] = [
       [

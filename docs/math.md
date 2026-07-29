@@ -6,7 +6,10 @@ Core represents a belief as a vector of non-negative BigInt weights with a
 strictly positive total. Weights are reduced by their GCD after every update, so
 ratios are preserved exactly and `p_i = w_i / Σw` is an exact rational. A weight
 of zero is legal and means the outcome has been eliminated with posterior
-_exactly_ zero — never an epsilon, never a float underflow.
+_exactly_ zero — never an epsilon, never a float underflow. The vector is
+bounded at `ENGINE_LIMITS.maxOutcomes` (64) entries with a minimum of two, which
+is why a module whose truth space is combinatorial prices through exact counting
+instead; see [lifecycle modules](lifecycle-modules.md).
 
 The progressive market applies the symmetric Bayesian form: for outcome `i`,
 positive prior weight `w_i`, and evidence targeting `t` with likelihood weights

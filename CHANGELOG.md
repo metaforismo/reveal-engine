@@ -27,6 +27,15 @@ Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.
 - `StepModel.beliefSpace` and `StepModel.price()`: a module whose truth space is
   combinatorial declares that its weight vector is a marginal view rather than
   its pricing space, and prices claims by exact counting instead.
+- `TranscriptModel.choicesOf`, required whenever `choiceTiming` is not `none`.
+  It is how `defineLifecycleModule()` reaches the decoded choice log on the
+  `verify()` path — the one entry point that reads a choice list off the wire
+  and the one the guard previously missed. See
+  `docs/adr/0003-snapshot-derivation-and-the-choice-guard.md`.
+- `SNAPSHOT_NOT_REVALIDATED` conformance check for `progressive-market`, so the
+  CI conformance step exercises restore-tampering for the registered module: a
+  staked mid-round snapshot restored and then re-sealed with each of seven
+  tampered fields, including both money-bearing position fields.
 - Frozen wire fixtures for `receipt-v1` and `round-book-v1`
   (`tests/fixtures/`, regenerated with `npm run fixtures:update`), and a
   comparison of the seeded stress workload's `correctnessDigest` against its
@@ -64,6 +73,18 @@ Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.
 - **Breaking (core):** `TranscriptModel.commitmentBody` takes a fifth `choices`
   argument; `BookModel` requires `maxOpenClaims`; `StepModel` requires
   `beliefSpace`; `ConformanceModel` requires `references`.
+- **Breaking (core):** `StepModel.belief` is optional when `beliefSpace` is
+  `marginal` and required when it is `outcomes`. `weightVector` admits 2..64
+  entries, so a marginal module whose per-item space is larger — a multi-deck
+  shoe, a large field — previously could not satisfy the contract at all.
+- `core/combinatorics.ts` bounds an exact count by `ENGINE_LIMITS.maxBigIntBits`
+  and reports it as `INVALID_WEIGHTS`. `maxPermutationSize` (1,024) bounds
+  shuffling and `maxBigIntBits` bounds what a `Rational` can carry — `536!` is
+  4,092 bits — and the two used to disagree silently, surfacing as an
+  `INVALID_RATIONAL` from another module.
+- `stableJson` orders keys by UTF-16 code unit instead of `localeCompare`. It
+  anchors `snapshotHash`, so its order must be a property of the bytes and not
+  of the host's ICU data or default locale. No in-repo digest changes.
 - `ENGINE_LIMITS.maxLoggedChoices` and `maxRoundClaims` are enforced —
   `defineLifecycleModule()` guards every choice-consuming entry point and
   validates the declared claim budget. Both were previously published and
@@ -87,6 +108,18 @@ Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.
 
 ### Fixed
 
+- **Money path.** `RoundBook.restore()` read `position.outcome` and
+  `position.contingentPayout` out of the snapshot instead of deriving them, so a
+  re-sealed reconnect payload could move a losing position onto the winning
+  outcome or inflate its claim and settle for the difference (3,233 against an
+  honest 0; the full 250,000 cap ceiling against an honest 1,940). Both are now
+  re-derived: the outcome from the open receipt's `commandFingerprint`, the
+  payout from the price replayed at `openedAtFrameRevision`. Present on `main`
+  as well, and covered by conformance from now on.
+- `CommandLedger.install()` rejects a receipt log that reuses an idempotency
+  key. It keyed the receipt map by that key, so three receipts sharing one
+  passed the dense-revision check, visited the module three times, and installed
+  one — leaving the key live for replay.
 - Hostile-input regression introduced by the relocation: `scopeOf()` in the
   progressive market's sampler wrappers read `context.gameId` before validating
   it, so `uniform`, `uniformBigInt`, `scopeOf`, and `roundIdentityOf` leaked a

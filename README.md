@@ -154,7 +154,11 @@ Four independent layers, all reproducible:
    module against every reference definition it declares, sweeping every truth
    for deterministic seeds, and rejects definitions that are non-deterministic,
    mutable, unfrozen, non-normalised, or that leak the truth through the
-   _structure_ of their reveal schedule.
+   _structure_ of their reveal schedule. It also restores a staked mid-round
+   snapshot and re-seals a set of tampered copies, including the two fields that
+   say what a player bet and what it is worth — because a snapshot checksum
+   detects corruption, not tampering, and a reconnect payload is
+   attacker-controlled in every game.
 
 Plus hostile-input tests (malformed seeds, oversized payloads, non-canonical
 BigInts, unknown fields, tampered commitments, cross-adapter confusion), race
