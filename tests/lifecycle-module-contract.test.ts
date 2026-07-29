@@ -15,6 +15,8 @@ import {
   constellationReference,
 } from '../src/modules/progressive-market/references/index.js';
 import { sealCommitment } from '../src/core/commitment.js';
+import { COMMITMENT_VERSION } from '../src/core/versions.js';
+import { encodeFields, type CanonicalField } from '../src/internal/canonical.js';
 import { ENGINE_LIMITS } from '../src/api/limits.js';
 import { rational, type Rational } from '../src/core/rational.js';
 import { snapshotHash } from '../src/core/snapshot.js';
@@ -92,6 +94,73 @@ describe('lifecycle module contract', () => {
       roundId,
       proofVersion: 'reveal-engine/commit-v2',
     });
+  });
+
+  /**
+   * `encode()` is documented as "the canonical fields that bind the truth into
+   * the commitment body", and core cannot enforce that: it seals whatever bytes
+   * `commitmentBody` returns and has no idea where a truth section starts. So
+   * the guarantee has to come from the module writing the layout once — and this
+   * test is what says it did. It rebuilds the sealed body out of nothing but the
+   * module's public declarations, and the last two cases show it would notice if
+   * the declared encoding and the body ever drifted apart.
+   */
+  it('composes the commitment body out of the encoders the module declares', () => {
+    const definition = binaryBeaconReference;
+    const roundId = 'encode-round';
+    const round = {
+      ...progressiveMarket.definitions.identity(definition),
+      roundId,
+      proofVersion: 'reveal-engine/commit-v2' as const,
+    };
+    const truth = progressiveMarket.truth.derive(seed(31), definition, roundId);
+    const steps = progressiveMarket.steps.derive(seed(31), definition, round, truth, []);
+
+    const bodyFrom = (
+      encodeTruth: (value: typeof truth) => readonly CanonicalField[],
+      encodeStep: (value: (typeof steps)[number]) => readonly CanonicalField[],
+    ): Buffer =>
+      encodeFields([
+        'Axiom Games Reveal Engine commitment',
+        COMMITMENT_VERSION,
+        definition.id,
+        definition.adapterVersion,
+        progressiveMarket.definitions.fingerprint(definition),
+        roundId,
+        ...encodeTruth(truth),
+        steps.length,
+        ...steps.flatMap((step) => [...encodeStep(step)]),
+      ]);
+
+    const sealed = progressiveMarket.transcript.commitmentBody(definition, round, truth, steps, []);
+    expect(
+      Buffer.compare(
+        sealed,
+        bodyFrom(progressiveMarket.truth.encode, progressiveMarket.steps.encode),
+      ),
+    ).toBe(0);
+    // Drop a field from either declared encoder and the body no longer matches,
+    // which is the drift this composition exists to make impossible.
+    expect(
+      Buffer.compare(
+        sealed,
+        bodyFrom(() => [], progressiveMarket.steps.encode),
+      ),
+    ).not.toBe(0);
+    expect(
+      Buffer.compare(
+        sealed,
+        bodyFrom(progressiveMarket.truth.encode, (step) => [step.index, step.target]),
+      ),
+    ).not.toBe(0);
+    // And the body that verifies is the one that was sealed.
+    expect(
+      progressiveMarket.verify(
+        seed(31),
+        definition,
+        progressiveMarket.transcript.build(seed(31), definition, roundId),
+      ).ok,
+    ).toBe(true);
   });
 
   it('drives a real round through the module book hooks', async () => {

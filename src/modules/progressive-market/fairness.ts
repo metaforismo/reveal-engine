@@ -114,10 +114,29 @@ export function legacyCommitment(
 }
 
 /**
+ * The truth's canonical fields, exactly as the commitment body carries them.
+ *
+ * This is the module's `truth.encode`. It is defined here, next to the body it
+ * feeds, so the two cannot be parallel layouts that drift apart: the declared
+ * encoder *is* the body's truth section.
+ */
+export function encodeTruth(truth: number): readonly CanonicalField[] {
+  return [truth];
+}
+
+/** One evidence event's canonical fields; the module's `steps.encode`. */
+export function encodeEvent(event: EvidenceEvent): readonly CanonicalField[] {
+  return [event.index, event.target, event.favour, event.other, event.label];
+}
+
+/**
  * Canonical commitment body for one progressive-market round.
  *
  * Binding the adapter fingerprint means an operator cannot publish a commitment
- * under one set of economics and settle under another.
+ * under one set of economics and settle under another. The truth and step
+ * sections are composed from `encodeTruth`/`encodeEvent`, which are the same
+ * functions the module declares as `truth.encode`/`steps.encode`, so a change to
+ * either layout moves the commitment — it can never silently move only one side.
  */
 export function canonicalTranscriptBytes(
   game: GameDefinition,
@@ -132,12 +151,10 @@ export function canonicalTranscriptBytes(
     game.adapterVersion,
     adapterFingerprint(game),
     context.roundId,
-    truth,
+    ...encodeTruth(truth),
     events.length,
   ];
-  events.forEach((event) =>
-    fields.push(event.index, event.target, event.favour, event.other, event.label),
-  );
+  events.forEach((event) => fields.push(...encodeEvent(event)));
   return encodeFields(fields);
 }
 

@@ -324,6 +324,30 @@ function price(
 }
 
 /**
+ * The declared encoders, defined next to the body that composes them.
+ *
+ * These are the module's `truth.encode` and `steps.encode`. Writing them once
+ * and composing them below is what keeps the declared encoding and the
+ * proof-bearing one the same layout: a step carries which entities failed as
+ * well as which survived, and a body that bound only the survivors would let a
+ * failure list be rewritten under an unchanged commitment.
+ */
+function encodeTruth(truth: SurvivalTruth): readonly CanonicalField[] {
+  return [truth.digest, truth.draws.length];
+}
+
+function encodeStep(step: SurvivalStep): readonly CanonicalField[] {
+  return [
+    step.index,
+    step.contractId,
+    step.survivors.length,
+    ...step.survivors,
+    step.failed.length,
+    ...step.failed,
+  ];
+}
+
+/**
  * Canonical body.
  *
  * It binds the choice log as well as the truth and the steps. Without that, an
@@ -344,19 +368,11 @@ function commitmentBody(
     ...identityFields(definition),
     fingerprint(definition),
     round.roundId,
-    truth.digest,
-    truth.draws.length,
+    ...encodeTruth(truth),
     choices.length,
     ...choices,
     steps.length,
-    ...steps.flatMap((step): CanonicalField[] => [
-      step.index,
-      step.contractId,
-      step.survivors.length,
-      ...step.survivors,
-      step.failed.length,
-      ...step.failed,
-    ]),
+    ...steps.flatMap((step) => [...encodeStep(step)]),
   ]);
 }
 
@@ -1031,7 +1047,7 @@ export const stagedSurvivalFixtureModule: LifecycleModule<SurvivalShape> =
     truth: {
       kind: 'composite',
       derive: deriveTruth,
-      encode: (truth) => [truth.digest, truth.draws.length],
+      encode: encodeTruth,
       equal: (left, right) => left.digest === right.digest,
     },
     steps: {
@@ -1041,7 +1057,7 @@ export const stagedSurvivalFixtureModule: LifecycleModule<SurvivalShape> =
       count: (definition) => definition.stages,
       derive: (_seedHex, definition, _round, truth, choices) =>
         deriveSteps(definition, truth, choices),
-      encode: (step) => [step.index, step.contractId, step.survivors.length, ...step.survivors],
+      encode: encodeStep,
       equal: stepsEqual,
       belief,
       price,

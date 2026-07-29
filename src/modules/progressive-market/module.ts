@@ -1,4 +1,3 @@
-import type { CanonicalField } from '../../internal/canonical.js';
 import {
   defineLifecycleModule,
   type LifecycleModule,
@@ -24,6 +23,8 @@ import {
   canonicalTranscriptBytes,
   deriveEvidence,
   deriveTruth,
+  encodeEvent,
+  encodeTruth,
   evidenceEqual,
   makeTranscript,
   roundContext,
@@ -67,7 +68,9 @@ export const progressiveMarket: LifecycleModule<ProgressiveMarketShape> =
     truth: {
       kind: 'scalar-index',
       derive: (seedHex, definition, roundId) => deriveTruth(seedHex, definition, roundId),
-      encode: (truth): readonly CanonicalField[] => [truth],
+      // The commitment body composes this same function, so the declared
+      // encoding and the proof-bearing one are one layout, not two.
+      encode: encodeTruth,
       equal: (left, right) => left === right,
       enumerate: (definition) => Object.freeze(definition.outcomes.map((_outcome, index) => index)),
     },
@@ -80,13 +83,7 @@ export const progressiveMarket: LifecycleModule<ProgressiveMarketShape> =
       count: (definition) => definition.evidence.eventCount,
       derive: (seedHex, definition, round, truth) =>
         deriveEvidence(seedHex, definition, contextOf(round), truth),
-      encode: (step): readonly CanonicalField[] => [
-        step.index,
-        step.target,
-        step.favour,
-        step.other,
-        step.label,
-      ],
+      encode: encodeEvent,
       equal: evidenceEqual,
       belief: (definition, steps): WeightVector =>
         weightVector(posteriorFor(definition, steps).weights),

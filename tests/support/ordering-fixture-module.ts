@@ -238,6 +238,22 @@ function price(
   return countingProbability(factorial(openPositions - consumed), support);
 }
 
+/**
+ * The declared encoders, defined next to the body that composes them.
+ *
+ * `truth.encode` and `steps.encode` are the module's statement of what binds
+ * into the commitment; the body below is that statement's only consumer. Keeping
+ * them as one definition is what stops the two from drifting into layouts that
+ * disagree while both look correct.
+ */
+function encodeTruth(truth: readonly number[]): readonly CanonicalField[] {
+  return [truth.length, ...truth];
+}
+
+function encodeStep(step: OrderingStep): readonly CanonicalField[] {
+  return [step.index, step.position, step.item];
+}
+
 function commitmentBody(
   definition: OrderingDefinition,
   round: RoundIdentity,
@@ -253,10 +269,9 @@ function commitmentBody(
     ...identityFields(definition),
     fingerprint(definition),
     round.roundId,
-    truth.length,
-    ...truth,
+    ...encodeTruth(truth),
     steps.length,
-    ...steps.flatMap((step): CanonicalField[] => [step.index, step.position, step.item]),
+    ...steps.flatMap((step) => [...encodeStep(step)]),
   ]);
 }
 
@@ -757,7 +772,7 @@ export const orderingFixtureModule: LifecycleModule<OrderingShape> =
     truth: {
       kind: 'permutation',
       derive: deriveTruth,
-      encode: (truth) => [truth.length, ...truth],
+      encode: encodeTruth,
       equal: (left, right) =>
         left.length === right.length && left.every((value, index) => value === right[index]),
     },
@@ -767,7 +782,7 @@ export const orderingFixtureModule: LifecycleModule<OrderingShape> =
       beliefSpace: 'marginal',
       count: (definition) => definition.items.length - 1,
       derive: (_seedHex, definition, _round, truth) => deriveSteps(definition, truth),
-      encode: (step) => [step.index, step.position, step.item],
+      encode: encodeStep,
       equal: (left, right) =>
         left.length === right.length &&
         left.every(
