@@ -185,6 +185,12 @@ and passes every check in §8. A test transcribes that declaration and builds it
 so the compatibility claim is a checked one rather than a reading of somebody
 else's document.
 
+**Superseded by [ADR 0007](0007-the-dormant-settlement.md).** "With `dormancy`
+removed" was the wrong closure and this round said so on the same page it made
+the claim. Deleting a field from somebody else's specification to get their
+definition to build is not compatibility; the field is implemented now, and the
+same test transcribes §4.1 **without** removing anything.
+
 ## Consequences
 
 - Core is unchanged. The frame invariant lives in the module rather than in
@@ -197,7 +203,7 @@ else's document.
   Decision 4 is superseded to that extent.
 - `SEQUENTIAL_CARDS_REFERENCES` is four definitions, and conformance runs 21
   checks against each. The new checks are non-vacuous on every reference,
-  including the deterministic ones.
+  including the deterministic ones. **ADR 0007** makes it five and 23.
 - §6.3's residual-risk statement is narrower than the one it replaces and names
   two residuals rather than one — the stake and the reveal — because those are
   exactly the inputs `restore()` can neither re-derive nor replay. The earlier

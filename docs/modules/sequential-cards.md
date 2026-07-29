@@ -313,14 +313,15 @@ shape beside `cards-book-v1.json`.
 
 One round, one ticket, one ledger.
 
-| Action   | Effect                                                              | Credit boundary |
-| -------- | ------------------------------------------------------------------- | --------------- |
-| `open`   | debit the ticket total; price every row at `r / p`; log the backing | debit only      |
-| `reveal` | apply one reveal **the host derived**, fenced and idempotent        | none            |
-| `switch` | move a claim onto one other position at true odds                   | **none**        |
-| `split`  | hedge a claim evenly across a set at true odds                      | **none**        |
-| `cash`   | credit `floor(V)` for one selection and close it                    | credit          |
-| `settle` | verify the proof, then credit every selection on its own outcome    | credit          |
+| Action          | Effect                                                                                                      | Credit boundary |
+| --------------- | ----------------------------------------------------------------------------------------------------------- | --------------- |
+| `open`          | debit the ticket total; price every row at `r / p`; log the backing                                         | debit only      |
+| `reveal`        | apply one reveal **the host derived**, fenced and idempotent                                                | none            |
+| `switch`        | move a claim onto one other position at true odds                                                           | **none**        |
+| `split`         | hedge a claim evenly across a set at true odds                                                              | **none**        |
+| `cash`          | credit `floor(V)` for one selection and close it                                                            | credit          |
+| `settle`        | verify the proof, then credit every selection on its own outcome                                            | credit          |
+| `settleDormant` | verify the proof, then liquidate every live position at the board price and settle every market on the deal | credit          |
 
 A ticket may hold up to `backing.maxOpenBeforeReveal` backed positions plus any
 declared side markets. **Every row is `external` stake**, so the round's ceiling
@@ -488,6 +489,76 @@ against the sealed truth. `progressive-market` has the same boundary with its
 evidence log; it is stated here rather than papered over with a re-derivation
 that sounds stronger than it is.
 
+### 6.4 The system settlement, and the clock the module still does not own
+
+A definition may declare a `dormancy` policy. Declaring one does **not** give
+this module a clock: nothing wakes up, no timer runs, and no decision expires.
+What it adds is one command, `settleDormant`, and a set of refusals around it.
+
+```ts
+book.settleDormant({
+  idempotencyKey, expectedStepRevision, revealedSeed, transcript,
+  elapsedSeconds,          // what the host measured
+  reason?: 'account-state-changed',
+});
+```
+
+The host measures the window and says how long it measured; the module refuses
+everything it can check around that assertion:
+
+- a round still standing at step revision 0, because the board was never
+  decidable and there is no price a system settlement could be "the one already
+  showing";
+- `elapsedSeconds` below `dormancy.windowSeconds` with no reason asserted —
+  `ROUND_NOT_DORMANT`;
+- a `reason` the definition does not declare in `earlySettlementReasons` —
+  `INVALID_SETTLEMENT_REASON`;
+- a definition with no `dormancy` block at all, whose rounds are never dormant;
+- a proof for another round, a seed the reveals do not re-derive from, and a
+  rounding tape the round's credits did not come from — the same three the
+  ordinary `settle` refuses.
+
+**What it pays.** Every live position is liquidated at `p · claim` against the
+belief at the frame the round was standing at — the identical number `cash`
+would have credited in that state, swept against it round by round in
+`tests/sequential-cards/dormancy.test.ts` — and every live market settles from
+the objective rank, because a market carries no position to liquidate. So a
+dormant settlement can never pay more than the claim it liquidates, and the
+reachable maximum §7 proves the cap against still bounds it without a second
+walk.
+
+One case in that argument is worth spelling out, because it is the one place
+this command can do something no player command can. `settleDormant` does
+**not** apply the one-action-per-decision-window rule: `triad/docs/DESIGN.md`
+§10.6 rule 8 requires the account-state path to settle a round that is _live_,
+not only one that is _decidable_, and a row that has already switched or split
+in the current window is live. So the system can liquidate a row in the same
+window the player transformed it in, which `cash` would refuse. That is sound
+for one reason and it is the reason `liquidationSpread` is pinned to zero: a
+transformation preserves fair value exactly, `q · claim' = p · claim`, so the
+amount the system pays is the amount the walk already recorded for the cover the
+row held **before** the transformation. Nothing new enters the reachable set.
+The test sweeps 40 rounds and asserts the two rationals are equal, not close. `onDormant` may only be an action the definition offers, and that is
+proved in **every reachable decision state** by the definition-time walk rather
+than read off the action list: a system settlement that could land where its own
+action is unavailable would have to invent a price.
+
+**What it records.** The receipt's command fingerprint binds the reason, and the
+snapshot carries `settlementReason` — a key present exactly when the definition
+declares the policy, on the same rule as the rounding tape. So the two system
+paths cannot be relabelled into each other after the fact, and a system
+settlement cannot be re-presented as the player's own decision: `restore()`
+rebuilds the fingerprint from the reason the snapshot carries and refuses a
+mismatch. `tests/fixtures/cards-book-dormant-v1.json` freezes both.
+
+**What it cannot check, stated plainly.** The module cannot verify that
+`elapsedSeconds` was measured, that the window started when the board became
+decidable, or that an account really changed state. A host that asserts a window
+it did not measure settles a live round at a fair price it chose the moment of —
+the price is still fair, and the choice of moment is not the module's to police.
+That is the same trust boundary as the reveal in §6.2 and the snapshot store in
+§6.3, and it is on the integration checklist for the same reason.
+
 ## 7. What `defineCardsGame()` proves, and how
 
 `assertCardsDefinition` is the cheap half — shapes, ranges, enums, the stake
@@ -578,8 +649,8 @@ credited and not which controls coincide — `duo-middle-v1` at 420 cells, and
 
 ## 8. Conformance
 
-Twenty-one checks, all declared on the module and all run by `reveal-conformance`
-against every reference:
+Twenty-three checks, all declared on the module and all run by
+`reveal-conformance` against every reference:
 
 | Code                                 | Scope      | Property                                                                                                                                                             |
 | ------------------------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -594,7 +665,9 @@ against every reference:
 | `CARDS_ROUNDING_NEVER_UNDERPAYS`     | definition | the credited integer is the whole part of the claim, or one credit above it                                                                                          |
 | `CARDS_ROUNDING_UNBIASED`            | definition | the declared rounding rule's expected credit, counted over the whole draw space                                                                                      |
 | `CARDS_ROUNDING_BOUNDED`             | definition | the exact extremal return is `entryRtp` and the conversion moves no payout by a whole credit                                                                         |
-| `CARDS_CAP_NEVER_BINDS`              | definition | the reachable maximum is strictly below the cap                                                                                                                      |
+| `CARDS_CAP_NEVER_BINDS`              | definition | the reachable **credited** maximum, settlement draw included, is strictly below the cap                                                                              |
+| `CARDS_DORMANT_ACTION_OFFERED`       | definition | a declared dormant resolution is offered on every cover a decidable board can hold                                                                                   |
+| `CARDS_EVERY_ROUND_SETTLES`          | round      | a declared window is one a round can reach, a system settlement restores under its own sealed reason, and the seed it publishes re-seals its commitment              |
 | `CARDS_BELIEF_EXHAUSTIVE`            | round      | belief weights equal a completion count from an independently coded enumeration                                                                                      |
 | `CARDS_BELIEF_NORMALISED`            | round      | non-negative, positive total, reduced, summing to one, zero exactly where it is zero                                                                                 |
 | `CARDS_SELECTOR_PRECOMMITTED`        | round      | selectors derive from the seed alone and drive the reveal through the eligibility rule                                                                               |
@@ -651,6 +724,30 @@ settling two rows together pays a credit that cashing them one at a time does
 not. Of the sixteen probes per reference, 3, 8 and 6 respectively are ones where
 `⌊2c⌋ ≠ 2⌊c⌋`, so the check discriminates rather than agreeing by construction.
 
+`CARDS_CAP_NEVER_BINDS` compares the **credited** ceiling, not the claim
+ceiling, and the distinction is the defect a reviewer found in it. Under
+`'floor'` the two coincide; under `'stochastic'` the draw can pay one whole
+credit above the claim's whole part, so they diverge — and an earlier revision
+of this check compared `maxPayoutMultiple` while the construction gate it shares
+a name with compared `creditCeilingMultiple`. `defineCardsGame` refused
+definitions this check passed. A check that is weaker than the gate it certifies
+is evidence for a claim nobody made, so it now asks the same question the gate
+asks.
+
+The two dormancy checks run against every reference and have a subject on one of
+them, `triad-dormant-v1`, which is why that reference exists at all: a check
+that only ever runs where it cannot fail is not evidence.
+`CARDS_DORMANT_ACTION_OFFERED` walks every canonical state after the first
+reveal and every cover the still-hidden cards can form — 5,148 of them for the
+three-card shape — and asks `offeredActions` in the state itself rather than
+reasoning from the declaration, which makes it independent of the
+definition-time walk that asserts the same property over reachable covers.
+`CARDS_EVERY_ROUND_SETTLES` restores both system settlements the definition
+declares as positive controls and then forges the log four ways: a settlement
+before the board was decidable, a reason relabelled from one declared value to
+another declared value (which nothing but the sealed fingerprint can refuse), the
+reason erased, and a settlement paying the **outcome** instead of the board.
+
 `CARDS_IDENTICAL_ACTIONS_ENUMERATED` exists because
 `CARDS_ACTIONS_VALUE_NEUTRAL` is the check a game author will assume covers it
 and it does not: with `liquidationSpread = 0` **every** action has the same
@@ -694,45 +791,49 @@ extend it**. Every failure is raised with an existing public code and carries a
 machine-readable reason in `RevealEngineError.details.reason`, so a host branches
 on `(code, details.reason)` and never on message text.
 
-| `details.reason`            | Code                                                       | Meaning                                                                                                  |
-| --------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `INVALID_LADDER`            | `INVALID_ADAPTER`                                          | ladder or objective is unsatisfiable                                                                     |
-| `INVALID_REVEAL_SPEC`       | `INVALID_ADAPTER`                                          | reveal count, eligibility, or backing width leaves an empty eligible set                                 |
-| `INVALID_SIDE_MARKET`       | `INVALID_ADAPTER`                                          | empty, unsorted, duplicated, out-of-range, or unreachable selection                                      |
-| `INVALID_STAKE_LATTICE`     | `INVALID_ADAPTER`                                          | the minimum stake is not a multiple of the step, or either is non-positive                               |
-| `INVALID_ROUNDING_POLICY`   | `INVALID_ADAPTER`                                          | a rounding rule this version does not implement, or an out-of-range RTP/spread                           |
-| `CAP_WOULD_BIND`            | `INVALID_ADAPTER`                                          | `capMustNotBind` is set and a reachable payout reaches the cap                                           |
-| `ANALYSIS_SPACE_TOO_LARGE`  | `INVALID_ADAPTER`                                          | the reachable space, or the estimated work to walk it, is too large to prove the economics by exhaustion |
-| `UNDECLARED_FIELD`          | `INVALID_ADAPTER`                                          | a definition field this version does not implement, refused rather than dropped                          |
-| `MISSING_CLIENT_ENTROPY`    | `INVALID_ADAPTER` / `INVALID_SEED`                         | a required client seed is absent or too short                                                            |
-| `STAKE_BELOW_MINIMUM`       | `INVALID_ADAPTER` / `CLAIM_REJECTED`                       | a stake below the minimum or off the step lattice                                                        |
-| `BACKED_SELECTION_REQUIRED` | `CLAIM_REJECTED`                                           | a ticket of side markets alone, with no round to derive                                                  |
-| `CHOICE_REQUIRED`           | `CLAIM_REJECTED` / `INVALID_CHOICE`                        | the backing log is not the width the selector was sealed against                                         |
-| `POSITION_ALREADY_BACKED`   | `CLAIM_REJECTED` / `INVALID_CHOICE`                        | a second selection on one position, or more than the definition admits                                   |
-| `POSITION_SETTLED`          | `CLAIM_REJECTED`                                           | an action in a state the reveal already decided                                                          |
-| `UNPRICEABLE_OUTCOME`       | `CLAIM_REJECTED`                                           | an action targeting an outcome of probability exactly zero                                               |
-| `DECISION_ALREADY_TAKEN`    | `CLAIM_REJECTED`                                           | a second action in one decision window                                                                   |
-| `ACTION_NOT_OFFERED`        | `CLAIM_REJECTED`                                           | an action the definition does not offer here                                                             |
-| `REBACK_REJECTED`           | `CLAIM_REJECTED`                                           | a pre-reveal switch under `rebackMode: 'reject'`                                                         |
-| `ROUND_ALREADY_OPEN`        | `CLAIM_REJECTED`                                           | a second ticket, or a ticket after the first reveal                                                      |
-| `ROUND_NOT_OPEN`            | `CLAIM_REJECTED`                                           | a reveal before a ticket, or an empty ticket                                                             |
-| `SELECTION_NOT_LIVE`        | `CLAIM_REJECTED`                                           | an action on a cashed or settled selection                                                               |
-| `UNKNOWN_SELECTION`         | `CLAIM_REJECTED`                                           | no such selection in this round                                                                          |
-| `UNKNOWN_MARKET`            | `UNKNOWN_OUTCOME`                                          | no such side market in this definition                                                                   |
-| `DUPLICATE_SELECTION`       | `CLAIM_REJECTED`                                           | a repeated selection id on one ticket                                                                    |
-| `CHOICE_CONFLICT`           | `CLAIM_REJECTED` / `INVALID_CHOICE` / `INVALID_TRANSCRIPT` | a decision or reveal that contradicts the log                                                            |
+| `details.reason`            | Code                                                       | Meaning                                                                                                         |
+| --------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `INVALID_LADDER`            | `INVALID_ADAPTER`                                          | ladder or objective is unsatisfiable                                                                            |
+| `INVALID_REVEAL_SPEC`       | `INVALID_ADAPTER`                                          | reveal count, eligibility, or backing width leaves an empty eligible set                                        |
+| `INVALID_SIDE_MARKET`       | `INVALID_ADAPTER`                                          | empty, unsorted, duplicated, out-of-range, or unreachable selection                                             |
+| `INVALID_STAKE_LATTICE`     | `INVALID_ADAPTER`                                          | the minimum stake is not a multiple of the step, or either is non-positive                                      |
+| `INVALID_ROUNDING_POLICY`   | `INVALID_ADAPTER`                                          | a rounding rule this version does not implement, or an out-of-range RTP/spread                                  |
+| `CAP_WOULD_BIND`            | `INVALID_ADAPTER`                                          | `capMustNotBind` is set and a reachable payout reaches the cap                                                  |
+| `ANALYSIS_SPACE_TOO_LARGE`  | `INVALID_ADAPTER`                                          | the reachable space, or the estimated work to walk it, is too large to prove the economics by exhaustion        |
+| `UNDECLARED_FIELD`          | `INVALID_ADAPTER`                                          | a definition field this version does not implement, refused rather than dropped                                 |
+| `INVALID_DORMANCY_POLICY`   | `INVALID_ADAPTER`                                          | a dormancy window outside the module bound, or a resolution it does not implement                               |
+| `INVALID_SETTLEMENT_REASON` | `INVALID_ADAPTER` / `CLAIM_REJECTED`                       | an early-settlement reason the module does not know, or one the definition does not declare                     |
+| `ROUND_NOT_DORMANT`         | `CLAIM_REJECTED`                                           | `settleDormant` before the declared window, before the first reveal, or on a definition that declares no policy |
+| `MISSING_CLIENT_ENTROPY`    | `INVALID_ADAPTER` / `INVALID_SEED`                         | a required client seed is absent or too short                                                                   |
+| `STAKE_BELOW_MINIMUM`       | `INVALID_ADAPTER` / `CLAIM_REJECTED`                       | a stake below the minimum or off the step lattice                                                               |
+| `BACKED_SELECTION_REQUIRED` | `CLAIM_REJECTED`                                           | a ticket of side markets alone, with no round to derive                                                         |
+| `CHOICE_REQUIRED`           | `CLAIM_REJECTED` / `INVALID_CHOICE`                        | the backing log is not the width the selector was sealed against                                                |
+| `POSITION_ALREADY_BACKED`   | `CLAIM_REJECTED` / `INVALID_CHOICE`                        | a second selection on one position, or more than the definition admits                                          |
+| `POSITION_SETTLED`          | `CLAIM_REJECTED`                                           | an action in a state the reveal already decided                                                                 |
+| `UNPRICEABLE_OUTCOME`       | `CLAIM_REJECTED`                                           | an action targeting an outcome of probability exactly zero                                                      |
+| `DECISION_ALREADY_TAKEN`    | `CLAIM_REJECTED`                                           | a second action in one decision window                                                                          |
+| `ACTION_NOT_OFFERED`        | `CLAIM_REJECTED`                                           | an action the definition does not offer here                                                                    |
+| `REBACK_REJECTED`           | `CLAIM_REJECTED`                                           | a pre-reveal switch under `rebackMode: 'reject'`                                                                |
+| `ROUND_ALREADY_OPEN`        | `CLAIM_REJECTED`                                           | a second ticket, or a ticket after the first reveal                                                             |
+| `ROUND_NOT_OPEN`            | `CLAIM_REJECTED`                                           | a reveal before a ticket, or an empty ticket                                                                    |
+| `SELECTION_NOT_LIVE`        | `CLAIM_REJECTED`                                           | an action on a cashed or settled selection                                                                      |
+| `UNKNOWN_SELECTION`         | `CLAIM_REJECTED`                                           | no such selection in this round                                                                                 |
+| `UNKNOWN_MARKET`            | `UNKNOWN_OUTCOME`                                          | no such side market in this definition                                                                          |
+| `DUPLICATE_SELECTION`       | `CLAIM_REJECTED`                                           | a repeated selection id on one ticket                                                                           |
+| `CHOICE_CONFLICT`           | `CLAIM_REJECTED` / `INVALID_CHOICE` / `INVALID_TRANSCRIPT` | a decision or reveal that contradicts the log                                                                   |
 
 ## 11. Limits
 
-| Limit                         | Value      | Why                                                                             |
-| ----------------------------- | ---------- | ------------------------------------------------------------------------------- |
-| `CARDS_MAX_STEPS`             | 8          | the module's step budget; a definition declares its own count inside it         |
-| `CARDS_MAX_DEALT`             | 16         | bounds the subset enumeration every price rests on                              |
-| `CARDS_MAX_SIDE_MARKETS`      | 48         | with the backing width, stays inside `ENGINE_LIMITS.maxRoundClaims`             |
-| `CARDS_MAX_SUPPORT`           | 200,000    | completions one belief may enumerate; bounds `C(size, dealt)`                   |
-| `CARDS_MAX_ANALYSIS_CELLS`    | 500,000    | reachable `(state, cover)` pairs the definition-time walk may visit             |
-| `CARDS_MAX_ANALYSIS_OPS`      | 20,000,000 | estimated exact-rational operations that walk may cost                          |
-| `CARDS_MAX_ENUMERATED_TRUTHS` | 20,000     | above this, `truth.enumerate()` returns `undefined` rather than a partial sweep |
+| Limit                         | Value      | Why                                                                              |
+| ----------------------------- | ---------- | -------------------------------------------------------------------------------- |
+| `CARDS_MAX_STEPS`             | 8          | the module's step budget; a definition declares its own count inside it          |
+| `CARDS_MAX_DEALT`             | 16         | bounds the subset enumeration every price rests on                               |
+| `CARDS_MAX_SIDE_MARKETS`      | 48         | with the backing width, stays inside `ENGINE_LIMITS.maxRoundClaims`              |
+| `CARDS_MAX_SUPPORT`           | 200,000    | completions one belief may enumerate; bounds `C(size, dealt)`                    |
+| `CARDS_MAX_ANALYSIS_CELLS`    | 500,000    | reachable `(state, cover)` pairs the definition-time walk may visit              |
+| `CARDS_MAX_ANALYSIS_OPS`      | 20,000,000 | estimated exact-rational operations that walk may cost                           |
+| `CARDS_MAX_ENUMERATED_TRUTHS` | 20,000     | above this, `truth.enumerate()` returns `undefined` rather than a partial sweep  |
+| `CARDS_MAX_DORMANCY_SECONDS`  | 31,536,000 | one year; a window nobody sees elapse is no scheduled settlement, spelled as one |
 
 ### 11.1 The two analysis ceilings, and how they are calibrated
 
@@ -809,8 +910,13 @@ live and a real reveal eliminates most of them. That looseness is why a shape
 like `size 13 / dealt 7` is refused although it would in fact have walked in a
 few seconds, and it is the deliberate direction: a bound that refuses a cheap
 definition costs an operator one message, and a bound that admits an expensive
-one costs a blocked process. The shipped references leave 429×, 74× and 2.2×
-of operations headroom and 194×, 50× and 4.0× of cell headroom.
+one costs a blocked process. The three board shapes the references cover leave
+429×, 74× and 2.2× of operations headroom and 194×, 50× and 4.0× of cell
+headroom. A declared `dormancy` policy adds one `offeredActions` call per
+reachable decision cell and nothing else: measured on the slowest shape both
+ceilings admit (`size 70 / dealt 3 / split`, 492,660 cells), 11,222 ms without
+the policy and 11,287 ms with it — 0.6%, well inside the headroom above, and the
+ceilings are unchanged.
 
 ### 11.2 Bounded is not interruptible
 
@@ -865,17 +971,28 @@ specification.
   states_, which the canonical per-hand walk cannot express — it would report an
   arbitrary policy's return as the minimum. Refusing the definition is the honest
   option; implementing the search is a larger piece of work than this module.
-- **It owns no clock.** There is no dormancy window, no expiry, and no timer on a
-  decision. A host that wants a round to auto-settle calls `cash` itself; the
-  module has nothing to schedule it with and does not pretend otherwise. A
-  definition that declares a `dormancy` policy is **refused by name** at
-  `defineCardsGame()` with `UNDECLARED_FIELD`, and so is any other field this
-  version does not implement. Silently dropping one would be worse than the
-  thing `rounding: 'stochastic'` is declarable to avoid: `freezeCardsDefinition`
-  rebuilds a definition field by field and `cardsFingerprint` seals it field by
-  field, so an unrecognised key would neither be honoured nor sealed — the
-  definition would run under a policy it had never agreed to, and two
-  definitions differing only in that policy would share a fingerprint.
+- **It owns no clock — and that was never a reason to refuse the window.**
+  Nothing here wakes up, no timer runs, and no decision expires. But a
+  `dormancy` policy does not ask for a timer: the consuming specification is
+  explicit (`triad/docs/ENGINE.md` §9) that `settleDormant` is a command the
+  **host** calls and that the module's part is to refuse it early. An earlier
+  version of this module read "we own no clock" as "we cannot implement this"
+  and refused the field by name, which meant the consuming game's own worked
+  definition did not construct. It does now: §6.4 has the command, the window is
+  an assertion the host makes and the module holds it to, and
+  [`../adr/0007-the-dormant-settlement.md`](../adr/0007-the-dormant-settlement.md)
+  records why the refusal was wrong. What the module still cannot do is check
+  that the seconds were measured, and it says so rather than implying otherwise.
+  The policy is **optional**: a definition that declares none has no dormant
+  path, and its snapshots are byte-identical to the ones this module wrote
+  before the field existed. A field this version does not implement is still
+  refused by name at `defineCardsGame()` with `UNDECLARED_FIELD`, because
+  silently dropping one would be worse than the thing `rounding: 'stochastic'`
+  is declarable to avoid: `freezeCardsDefinition` rebuilds a definition field by
+  field and `cardsFingerprint` seals it field by field, so an unrecognised key
+  would neither be honoured nor sealed — the definition would run under a policy
+  it had never agreed to, and two definitions differing only in that policy
+  would share a fingerprint.
 - **It reports no-op controls; it does not refuse them.**
   `CARDS_IDENTICAL_ACTIONS_ENUMERATED` counts the states where a control is a
   relabelled hold and publishes the number, and
@@ -886,7 +1003,7 @@ specification.
   definition has no field to declare it in, and `switch` before the first reveal
   is a **re-back** — it changes which card is backed and therefore which card the
   reveal may take — so a control that is a relabelled hold after every reveal can
-  still be a real control before the first one. All three shipped references
+  still be a real control before the first one. All five shipped references
   report zero decoys. Disclosing a no-op state to a player is a game obligation
   that the conformance report can only equip, never discharge.
 - **It does not authenticate a reveal, only validate it.** `CardsBook` holds no
@@ -925,23 +1042,23 @@ difference is listed here rather than left for an integrator to discover at the
 type-checker, because a specification a consumer wrote and an implementation that
 quietly diverges from it is worse than either alone.
 
-| `ENGINE.md` declares                                                                | This version                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| §4.1 imports `from '@axiom-games/reveal-engine/sequential-cards'`                   | The package publishes `./modules/sequential-cards`, and there is no `./sequential-cards` alias, so the spec's code block does not resolve as written. The module lives under `./modules/` with every other lifecycle module and gains a second name for one export only by breaking that convention.                                                                                                                                 |
-| §5.5: with `rebackMode: 'move'` a host "may instead call `reback`"                  | There is no `reback` method. A re-back **is** `switchClaim` at step revision 0, where `offeredActions` offers `switch` only for a single-position cover and the prior is uniform, so the move is priced at exactly `(1 − σ)` and crosses no credit boundary. §5.3 describes the same behaviour under the other name.                                                                                                                 |
-| §5.6 scopes `CARDS_BELIEF_EXHAUSTIVE` as a **definition** check                     | Declared and run as a **round** check. It cross-checks the belief against an independently coded enumeration at each step prefix of a seeded round, so it needs a seed and a round id; a definition-scoped check has neither. Its coverage is per reference per seed rather than once per definition.                                                                                                                                |
-| `dormancy: DormancySpec` on the definition, and §5.1 assertions over it             | **Refused by name** with `UNDECLARED_FIELD`. The module owns no clock; the host owns the window and calls `cash` itself. §12 above says why silence would be worse.                                                                                                                                                                                                                                                                  |
-| `pricing.rounding: 'stochastic'` (the unbiased settlement draw of `MATH.md` §13)    | **Implemented.** §5.4 has the conversion and the committed tape it draws from, `triad-stochastic-v1` ships as a reference so the two rounding checks have a subject that can fail, and ADR 0006 records what closing it took. Two differences remain inside it, both rows of their own below: the tape is derived by the host because the book holds no seed, and the draw is re-derived rather than carried in the transcript body. |
-| `book.actions` including `settleDormant`                                            | Absent, for the same reason. The module's list adds `reveal`, which the spec does not have: ADR 0005 Decision 2 makes a reveal a ledger command.                                                                                                                                                                                                                                                                                     |
-| §5.4: the commitment body "does not seal the realised steps"                        | It seals the realised steps **and** the choice log. A reveal is a function of the sealed deal and the log, so sealing it adds no freedom and closes a reveal log nothing had signed.                                                                                                                                                                                                                                                 |
-| §5.4: a verifier needs the client seed and the nonce in the transcript              | The wire transcript carries neither. Composition is a host obligation, published as `composeRoundSeed()` (§9); the transcript binds `roundId` instead, which §6.1 explains is load-bearing and the spec does not require. A host that wants the composition inputs in the artefact must carry them alongside.                                                                                                                        |
-| §8 error codes `SEED_REUSED`, `ROUND_NOT_DORMANT`, `INVALID_SETTLEMENT_REASON`      | No `CARDS_REJECTION_REASONS` counterpart. The first is an operator-custody property the module cannot observe (§9); the other two belong to `settleDormant`.                                                                                                                                                                                                                                                                         |
-| §5.6 checks `CARDS_ROUNDING_UNBIASED`, `CARDS_ROUNDING_BOUNDED`                     | Both implemented and declared, and they run against every reference rather than only the stochastic one: under `'floor'` they assert that rule's own exact statements instead of reporting not-applicable. `CARDS_POLICY_RETURN_EXTREMAL` remains the exact-rational half and is stronger than the spec's wording — an argmin and argmax over the whole policy space, not over a shortlist.                                          |
-| §5.6 check `CARDS_EVERY_ROUND_SETTLES`                                              | Not implemented: it quantifies over `dormancy.windowSeconds`.                                                                                                                                                                                                                                                                                                                                                                        |
-| §5.6 check `CARDS_OBJECTIVE_TOTAL`                                                  | Folded into `CARDS_ELIGIBLE_SET_NONEMPTY`, whose description states both halves.                                                                                                                                                                                                                                                                                                                                                     |
-| §5.6 check `CARDS_IDENTICAL_ACTIONS_ENUMERATED` failing an undeclared no-op control | Enumerated and reported; **not** a refusal. §12 above gives the two reasons.                                                                                                                                                                                                                                                                                                                                                         |
-| §5.1 asserts `seed.clientEntropy` is `'required'` with `clientSeedBytes >= 16`      | The module also accepts `'optional'` with zero bytes, and enforces the 16-byte floor only when entropy is `'required'`. It is a **widening**, not a break — TRIAD's own definition declares `'required'` and clears the floor unchanged — but §12.1 claims to list every difference, and a reviewer found this one missing from it. Every shipped reference declares `'required'`.                                                   |
-| §5.5 emits the settlement draw **in the transcript** for every credit event         | The wire transcript carries neither the draws nor the credit events: it is built from `(seed, definition, roundId, choices)` before a round has any. A verifier re-derives every credited integer from the revealed seed and the receipt log instead — which is exactly what `restore()` does, so the property is checked rather than merely available. The location differs; the re-derivability does not.                          |
+| `ENGINE.md` declares                                                                | This version                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §4.1 imports `from '@axiom-games/reveal-engine/sequential-cards'`                   | The package publishes `./modules/sequential-cards`, and there is no `./sequential-cards` alias, so the spec's code block does not resolve as written. The module lives under `./modules/` with every other lifecycle module and gains a second name for one export only by breaking that convention.                                                                                                                                                                                                                                                      |
+| §5.5: with `rebackMode: 'move'` a host "may instead call `reback`"                  | There is no `reback` method. A re-back **is** `switchClaim` at step revision 0, where `offeredActions` offers `switch` only for a single-position cover and the prior is uniform, so the move is priced at exactly `(1 − σ)` and crosses no credit boundary. §5.3 describes the same behaviour under the other name.                                                                                                                                                                                                                                      |
+| §5.6 scopes `CARDS_BELIEF_EXHAUSTIVE` as a **definition** check                     | Declared and run as a **round** check. It cross-checks the belief against an independently coded enumeration at each step prefix of a seeded round, so it needs a seed and a round id; a definition-scoped check has neither. Its coverage is per reference per seed rather than once per definition.                                                                                                                                                                                                                                                     |
+| `dormancy: DormancySpec` on the definition, and §5.1 assertions over it             | **Implemented**, with one widening: the field is **optional** here. Declared, it is validated (window inside the module's one-year bound, `onDormant` an action the definition offers, every early reason one the module knows), sealed into the fingerprint, and enforced by §5.1's own economic assertion — `onDormant` is proved available in every reachable decision state. Omitted, the round has no dormant path and its snapshots are byte-identical to pre-dormancy ones. TRIAD declares it, so the widening is not a break for TRIAD. ADR 0007. |
+| `pricing.rounding: 'stochastic'` (the unbiased settlement draw of `MATH.md` §13)    | **Implemented.** §5.4 has the conversion and the committed tape it draws from, `triad-stochastic-v1` ships as a reference so the two rounding checks have a subject that can fail, and ADR 0006 records what closing it took. Two differences remain inside it, both rows of their own below: the tape is derived by the host because the book holds no seed, and the draw is re-derived rather than carried in the transcript body.                                                                                                                      |
+| `book.actions` including `settleDormant`                                            | **Present.** The command takes the host's measured `elapsedSeconds` and an optional declared reason, and pays §5.5's `cash` price on live positions plus the deal on live markets (§6.4). The module's list also adds `reveal`, which the spec does not have: ADR 0005 Decision 2 makes a reveal a ledger command.                                                                                                                                                                                                                                        |
+| §5.4: the commitment body "does not seal the realised steps"                        | It seals the realised steps **and** the choice log. A reveal is a function of the sealed deal and the log, so sealing it adds no freedom and closes a reveal log nothing had signed.                                                                                                                                                                                                                                                                                                                                                                      |
+| §5.4: a verifier needs the client seed and the nonce in the transcript              | The wire transcript carries neither. Composition is a host obligation, published as `composeRoundSeed()` (§9); the transcript binds `roundId` instead, which §6.1 explains is load-bearing and the spec does not require. A host that wants the composition inputs in the artefact must carry them alongside.                                                                                                                                                                                                                                             |
+| §8 error codes `SEED_REUSED`, `ROUND_NOT_DORMANT`, `INVALID_SETTLEMENT_REASON`      | `ROUND_NOT_DORMANT` and `INVALID_SETTLEMENT_REASON` are now in `CARDS_REJECTION_REASONS`, under `CLAIM_REJECTED` at the command and `INVALID_ADAPTER` at definition time. `SEED_REUSED` still has no counterpart: it is an operator-custody property the module cannot observe (§9). The module adds `INVALID_DORMANCY_POLICY`, which the spec has no code for.                                                                                                                                                                                           |
+| §5.6 checks `CARDS_ROUNDING_UNBIASED`, `CARDS_ROUNDING_BOUNDED`                     | Both implemented and declared, and they run against every reference rather than only the stochastic one: under `'floor'` they assert that rule's own exact statements instead of reporting not-applicable. `CARDS_POLICY_RETURN_EXTREMAL` remains the exact-rational half and is stronger than the spec's wording — an argmin and argmax over the whole policy space, not over a shortlist.                                                                                                                                                               |
+| §5.6 check `CARDS_EVERY_ROUND_SETTLES`                                              | **Implemented**, as a round check, and narrower than the spec's wording in one respect worth naming: the spec checks it "against the session log", which this module does not have. It checks what a module can — the declared window is one a round can reach, a system settlement restores under its own sealed reason, and the seed that settlement publishes re-seals the commitment it was opened under. The scheduling remains the host's obligation (§7 of the spec, §6.4 here).                                                                   |
+| §5.6 check `CARDS_OBJECTIVE_TOTAL`                                                  | Folded into `CARDS_ELIGIBLE_SET_NONEMPTY`, whose description states both halves.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| §5.6 check `CARDS_IDENTICAL_ACTIONS_ENUMERATED` failing an undeclared no-op control | Enumerated and reported; **not** a refusal. §12 above gives the two reasons.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| §5.1 asserts `seed.clientEntropy` is `'required'` with `clientSeedBytes >= 16`      | The module also accepts `'optional'` with zero bytes, and enforces the 16-byte floor only when entropy is `'required'`. It is a **widening**, not a break — TRIAD's own definition declares `'required'` and clears the floor unchanged — but §12.1 claims to list every difference, and a reviewer found this one missing from it. Every shipped reference declares `'required'`.                                                                                                                                                                        |
+| §5.5 emits the settlement draw **in the transcript** for every credit event         | The wire transcript carries neither the draws nor the credit events: it is built from `(seed, definition, roundId, choices)` before a round has any. A verifier re-derives every credited integer from the revealed seed and the receipt log instead — which is exactly what `restore()` does, so the property is checked rather than merely available. The location differs; the re-derivability does not.                                                                                                                                               |
 
 Everything else the specification asks for is implemented under the name it
 asks for, and that claim has been checked rather than assumed: all fourteen
@@ -953,13 +1070,19 @@ the settlement draw — which is why the claim is stated with what backs it rath
 than on its own. **Three** checks this module adds are not in the spec at all —
 `CARDS_DEFINITION_NOT_FROZEN`, `CARDS_POLICY_RETURN_EXTREMAL` and
 `CARDS_SNAPSHOT_NOT_REVALIDATED` — and the last of those is the one that found
-ADR 0005 Decision 2. Earlier versions of this paragraph counted four, including
+ADR 0005 Decision 2. A fourth, `CARDS_DORMANT_ACTION_OFFERED`, is the mechanical
+form of an assertion §5.1 does state, so it is counted there rather than here. Earlier versions of this paragraph counted four, including
 `CARDS_MIN_STAKE_SUFFICIENT`, which `ENGINE.md` §5.6 does ask for by name.
 
-**What still does not construct.** §4.1's worked definition declares `dormancy`,
-which is refused by name, so the code block as written does not build against
-this module and the row above says so. Removing that one field is now the whole
-difference: with it gone, §4.1's definition — `rounding: 'stochastic'` included —
-constructs, fingerprints, and passes every check in §8. That was not true before
-this revision, and it is worth stating plainly rather than leaving a consumer to
-discover which of two refusals they were going to hit first.
+**What constructs.** §4.1's worked definition now builds **as written** —
+`rounding: 'stochastic'`, `dormancy` and all — and
+`tests/sequential-cards/settlement-draw.test.ts` transcribes it field for field
+and asserts it fingerprints identically to `triad-dormant-v1`, so this paragraph
+is a thing the build runs rather than a thing this document says. Two earlier
+revisions of it said less and were right to: one refusal was
+`INVALID_ROUNDING_POLICY`, the other `UNDECLARED_FIELD` at `$.dormancy`, and
+both were closed by implementing the field rather than by narrowing the
+consumer's declaration. What remains different is the import path in the first
+row of the table above: the package publishes `./modules/sequential-cards` and
+not `./sequential-cards`, so the spec's `import` line still has to be adjusted
+by one path segment.

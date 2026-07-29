@@ -274,6 +274,15 @@ why — the module owns no clock — rather than an anonymous typo report.
 `docs/modules/sequential-cards.md` §12.1 is the table of everything the consumer
 declares that this version does not implement, and where each one moved.
 
+**Amended by [ADR 0007](0007-the-dormant-settlement.md).** The mechanism above
+stands and is unchanged; the one field it was aimed at was the wrong target.
+`triad/docs/ENGINE.md` §9 states that the module does **not** own the clock —
+`windowSeconds` is a declared parameter and `settleDormant` is a host-called
+command the module refuses early — so "we own no clock" was never a reason the
+field could not be implemented. It is implemented; `UNIMPLEMENTED_KEYS` is now
+empty and the refusal mechanism waits for the next field that genuinely needs
+it.
+
 ## Decision 8 — round-two findings, and what each cost
 
 A second independent read produced four major findings and four minor ones. All
@@ -396,7 +405,9 @@ finding is worth more than the line it lands on.
   Decision 4 below recorded it as a contract limitation — a book holds no seed,
   a draw needs committed randomness — and the conclusion did not follow from the
   premise: what a book cannot hold is the _round_ seed, and a one-way derivative
-  of it is a different object. `dormancy` is still refused by name.
+  of it is a different object. **Further amended by ADR 0007:** `dormancy` is
+  implemented too, as an optional declaration, so both consumer-declared
+  capabilities this ADR recorded as refusals are now code.
 - Two holes that the contract's prose did not prevent — an unsigned reveal log
   and an unbound round identity — are closed inside the module, and both are
   worth reading back into `docs/lifecycle-modules.md` as guidance for the next
