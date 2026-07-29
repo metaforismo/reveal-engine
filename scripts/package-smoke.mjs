@@ -19,6 +19,7 @@ const subpaths = [
   './modules',
   './modules/progressive-market',
   './modules/permutation',
+  './modules/permutation/aether',
   './conformance',
   './integration',
   './protocol',
@@ -40,6 +41,7 @@ try {
   assert(files.includes('dist/cli/verify.js'));
   assert(files.includes('dist/modules/progressive-market/index.js'));
   assert(files.includes('dist/modules/permutation/index.js'));
+  assert(files.includes('dist/modules/permutation/aether/index.js'));
   assert(!files.some((path) => path.startsWith('src/') || path.startsWith('tests/')));
 
   const installDirectory = join(directory, 'consumer');
@@ -77,6 +79,7 @@ try {
   const modules = loaded['./modules'];
   const progressiveMarket = loaded['./modules/progressive-market'];
   const permutation = loaded['./modules/permutation'];
+  const aetherPermutation = loaded['./modules/permutation/aether'];
   const conformance = loaded['./conformance'];
   const integration = loaded['./integration'];
 
@@ -100,6 +103,9 @@ try {
   assert.equal(permutation.permutation.truth.kind, 'permutation');
   assert.equal(permutation.aetherOrderClassicReference.items.length, 5);
   assert.equal(typeof permutation.PermutationBook, 'function');
+  assert.equal(typeof aetherPermutation.definePermutationGame, 'function');
+  assert.equal(aetherPermutation.aetherOrderClassic.bets.length, 11);
+  assert.equal(aetherPermutation.aetherOrderSeven.n, 7);
   assert.equal(typeof conformance.checkModuleConformance, 'function');
   assert.equal(typeof integration.RgsExample, 'function');
   assert.equal(loaded['./protocol'].RoundBook, progressiveMarket.RoundBook);

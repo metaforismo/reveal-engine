@@ -16,7 +16,8 @@
 - [ ] `sequential-cards`: committed deck shuffle, reveals that eliminate outcomes to exactly zero, multi-position book with independent fair-value sells and switches.
 - [ ] `staged-survival`: N entities through S stages, a contract chosen per stage before it resolves, per-entity partial claims, banking subsets between stages.
 - [x] `permutation`: structured permutation truth with multi-bet paytable settlement. Shipped on `platform/permutation` with no core change; see `docs/modules/permutation.md`.
-- [ ] `permutation`: the six AETHER ORDER families this version does not price (`before`, `early`, `late`, `neighbours`, `opening`, `podium`). Each needs a counting argument the pairwise-exclusive assignment model does not supply; see `docs/modules/permutation.md` §11.
+- [x] `permutation`: the six AETHER ORDER families the lifecycle module does not price (`before`, `early`, `late`, `neighbours`, `opening`, `podium`). Resolved in `src/modules/permutation/aether/`, which takes adapter-supplied `resolve` predicates and prices them exactly by enumeration over the full `n!` space — a predicate the module did not write cannot be reduced to the pairwise-exclusive pins the lifecycle module counts with. The lifecycle module still prices five; see `docs/modules/permutation.md` §11 and `docs/adr/0005`.
+- [ ] `permutation`: RGS-side pacing. `aether-order/docs/ENGINE.md` §5 requires a commit-to-commit cycle floor and a rolling-hour ceiling, and §9 gives them `CYCLE_FLOOR` and `BETTING_CLOSED`. The codes exist so a host raises the right one; the enforcement needs session state neither repository has.
 
 ## Deferred
 

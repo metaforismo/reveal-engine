@@ -696,10 +696,16 @@ authentication, safe to restore only from a store the adversary cannot write.
 
 ## 10. No core was modified
 
-This module is `src/modules/permutation/` and nothing else. No file under
-`src/core/`, `src/api/`, or `src/internal/` was changed, and no `ENGINE_LIMITS`
-value was added or moved. There is therefore no ADR here — the contract expressed
-the shape as it stands.
+The **lifecycle module** is `src/modules/permutation/*.ts` and nothing else. No
+file under `src/core/` or `src/internal/` was changed, and no `ENGINE_LIMITS`
+value was added or moved. The contract expressed the shape as it stands.
+
+One qualification, added when §11's adapter layer landed: `src/api/errors.ts`
+gained a `PERMUTATION_ERROR_CODES` array for the wire vocabulary
+`aether-order/docs/ENGINE.md` §9 requires. That is an addition for the _adapter_
+surface, not for this module — point 2 below still describes what this module
+does — and it is argued in
+[ADR 0005](../adr/0005-the-aether-order-contract-is-normative.md).
 
 Three places came close enough to be worth recording, because "we changed core to
 make our module fit" is a claim that should never pass silently:
@@ -735,23 +741,63 @@ evidence?)` with a new `S['restoreEvidence']` on the shape. It was not made.
 
 ## 11. Relationship to AETHER ORDER
 
-`aether-order/docs/ENGINE.md` specifies the adapter surface the game expects, and
-this module is compatible with the part of it that concerns the draw and the
-five families it ships. Shared and re-proved here: the item-index parameter
-convention, the 0-indexed positions, the `full` bet parameterised by the **order**
-rather than by a lexicographic rank, the `24/25` target RTP, the 25-chip stake
-quantum, the behavioural distinct-claim rule, and the exact multipliers for both
-variants. `tests/permutation-module.test.ts` carries that compatibility statement
-as executable assertions rather than prose, so it cannot drift into a claim
-nobody checks.
+**AETHER ORDER is driven by `src/modules/permutation/aether/`, not by this
+module.** That sentence replaces the one this section used to open with — "this
+module is compatible with the part of it that concerns the draw" — which was the
+loosest claim in this document. The draw was semantically compatible and
+**byte-incompatible**, six of eleven families were missing, and the client seed,
+the nonce, the seed commitment, round chaining and three wire schemas were absent
+entirely. A reader who stopped at that first sentence concluded the module could
+drive the game. It could not, while shipping `aetherOrderClassicReference` and
+`aetherOrderSevenReference` as conformance subjects — which reads as adapter
+readiness it did not have.
 
-**What is not here, stated rather than implied by silence.** AETHER ORDER's
-catalogue has eleven families; this module ships five. The other six — `before`,
-`early`, `late`, `neighbours`, `opening`, `podium` — are not expressible as a
-disjunction of _pairwise exclusive_ position pins the way these five are.
-`before {a, b}` alone wins on `n!/2` orders and `early {c}` on a union of two
-overlapping pin sets, so pricing them exactly needs a counting argument this
-version does not implement. They are out of scope for `1.0.0`.
+`aether-order/docs/ENGINE.md` is normative, so the fix was to satisfy it rather
+than to restate the divergence more carefully.
+[ADR 0005](../adr/0005-the-aether-order-contract-is-normative.md) records the
+decision; the short version is that the game contract now has a full
+implementation on its own subpath,
+`@axiom-games/reveal-engine/modules/permutation/aether`, covering ENGINE.md §2,
+§4, §5–§7, §8 and §9: adapter-supplied `BetFamily` catalogues, the behavioural
+catalogue digest and adapter fingerprint, `seedCommitment`, the client-seed and
+nonce-bearing sampler, the chained transcript, tickets with derived idempotency
+keys, exact settlement, Ed25519 receipts with the `SIGNATURE_UNCHECKED`
+tri-state, round snapshots carrying `playPolicyDigest`, and
+`assertPermutationAdapterConforms` with all twelve checks.
+
+It is proved rather than asserted. `aether-order/tests/fixtures/transcripts.json`
+is copied verbatim into `tests/fixtures/aether-order-transcripts.json`, and
+`tests/aether-frozen-fixtures.test.ts` re-derives all **eight** frozen rounds and
+requires every digest and every deterministic Ed25519 signature to match byte for
+byte — `seedCommitment`, `commitment`, `ticketDigest`, `settlementDigest`,
+receipt `digest` and `signature`, `idempotencyKey`, and both variants'
+`adapterFingerprint`. ENGINE.md §10 says "if a single commitment digest differs,
+the port is wrong"; none differs. The fixture's own SHA-256 is pinned too, so a
+reformat cannot quietly stop it being a copy.
+
+**The two surfaces are both real and are not interchangeable.** This module fits
+`docs/lifecycle-modules.md` and is in the registry; the aether layer fits the
+game's wire contract and is not a lifecycle module. What follows in §11.1
+describes **this module**, and every row of its divergence table is still true of
+it — what has changed is that the rows are no longer the end of the story.
+
+**What this module still does not have.** AETHER ORDER's catalogue has eleven
+families; this module prices five. The other six — `before`, `early`, `late`,
+`neighbours`, `opening`, `podium` — are not expressible as a disjunction of
+_pairwise exclusive_ position pins the way these five are: `before {a, b}` alone
+wins on `n!/2` orders and `early {c}` on a union of two overlapping pin sets, so
+the closed-form counting argument in §5 does not reach them. They stay out of
+scope for `1.0.0` here. The aether layer prices them exactly by enumeration over
+the full `n!` space, which is what ENGINE.md specifies and what an
+adapter-supplied predicate makes possible: a `resolve` the module did not write
+cannot be reduced to pins the module knows about.
+
+Shared and re-proved in **both** surfaces: the item-index parameter convention,
+the 0-indexed positions, the `full` bet parameterised by the **order** rather
+than by a lexicographic rank, the `24/25` target RTP, the 25-chip stake quantum,
+the behavioural distinct-claim rule, and the exact multipliers for both variants.
+`tests/permutation-module.test.ts` carries that as executable assertions for this
+module, so it cannot drift into a claim nobody checks.
 
 ### 11.1 What the host must enforce, because this module does not
 
@@ -793,24 +839,27 @@ the two items a deployment has to satisfy for itself: the commitment is durably
 published before entries, and the permutation book is bound to that published
 commitment before its first `place`. Nothing in this module closes either.
 
-**Everything AETHER ORDER declares that this module does not have.** Stated in
-full, because a reader who finds §1's transcript schema matching will otherwise
-assume the sibling tags match too — and they do not.
+**Everything AETHER ORDER declares that this lifecycle module does not have.**
+Stated in full, because a reader who finds §1's transcript schema tag matching
+will otherwise assume the sibling tags match too — and they do not. The third
+column is what `src/modules/permutation/aether/` supplies, so the table now reads
+as a boundary between two surfaces rather than as a list of things nobody
+implements.
 
-| ENGINE.md declares                                                                         | This module                                                                     |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `PERMUTATION_MODULE_VERSION = 'reveal-engine/permutation-v1'` (§2)                         | `PERMUTATION_MODULE_VERSION = '1.0.0'`; the platform tag is `moduleId` + semver |
-| `PERMUTATION_SNAPSHOT_SCHEMA = 'reveal-engine/permutation-round-snapshot-v1'`              | `reveal-engine/permutation-book-v2`, and a different structure                  |
-| `PERMUTATION_TRANSCRIPT_SCHEMA = 'reveal-engine/permutation-transcript-v1'`                | identical — the one tag that does match                                         |
-| `PERMUTATION_TICKET_SCHEMA`, `PERMUTATION_RECEIPT_SCHEMA`                                  | absent; the book has claims and core receipts, not tickets and signed ones      |
-| `SeedContext` / `RoundContext`: `variantId`, `nonce`, `clientSeed`, `gameId`               | absent; the derivation is `(seed, definition, roundId)` and nothing else        |
-| `previousCommitment` chaining                                                              | absent; no round binds its predecessor                                          |
-| `adapterVersion`, `adapterFingerprint`, `variantId`, `gameId` on the wire                  | absent; identity is `(moduleId, definitionId, definitionVersion, fingerprint)`  |
-| `PermutationPlayPolicy` + `permutationPlayPolicyDigest`, stamped into every round snapshot | absent; this module's snapshot has no field for it and digests no pacing policy |
-| adapter-supplied `BetFamily` (`enumerateInstances`, `resolve`)                             | replaced: the module **owns** the catalogue, so there is no adapter predicate   |
-| `n: 2 .. 12`                                                                               | `3 .. 8` (§1), for the reasons given there                                      |
-| signed receipts (`signerId`, Ed25519 `signature`, `verifyReceipt`)                         | absent; core receipts are an internal accounting record, not non-repudiation    |
-| eleven bet families                                                                        | five (above); the other six are not priced by this version                      |
+| ENGINE.md declares                                                                         | This lifecycle module                                                           | `aether/`                                                 |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `PERMUTATION_MODULE_VERSION = 'reveal-engine/permutation-v1'` (§2)                         | `PERMUTATION_MODULE_VERSION = '1.0.0'`; the platform tag is `moduleId` + semver | as declared                                               |
+| `PERMUTATION_SNAPSHOT_SCHEMA = 'reveal-engine/permutation-round-snapshot-v1'`              | `reveal-engine/permutation-book-v2`, and a different structure                  | as declared, with phase invariants and `playPolicyDigest` |
+| `PERMUTATION_TRANSCRIPT_SCHEMA = 'reveal-engine/permutation-transcript-v1'`                | identical tag, different body                                                   | as declared, byte-identical body                          |
+| `PERMUTATION_TICKET_SCHEMA`, `PERMUTATION_RECEIPT_SCHEMA`                                  | absent; the book has claims and core receipts, not tickets and signed ones      | implemented (§7.6, §7.8)                                  |
+| `SeedContext` / `RoundContext`: `variantId`, `nonce`, `clientSeed`, `gameId`               | absent; the derivation is `(seed, definition, roundId)` and nothing else        | implemented (§6)                                          |
+| `previousCommitment` chaining                                                              | absent; no round binds its predecessor                                          | implemented (§7.5)                                        |
+| `adapterVersion`, `adapterFingerprint`, `variantId`, `gameId` on the wire                  | absent; identity is `(moduleId, definitionId, definitionVersion, fingerprint)`  | implemented, fingerprint behavioural                      |
+| `PermutationPlayPolicy` + `permutationPlayPolicyDigest`, stamped into every round snapshot | absent; this module's snapshot has no field for it and digests no pacing policy | implemented; required on parse, fails closed              |
+| adapter-supplied `BetFamily` (`enumerateInstances`, `resolve`)                             | replaced: the module **owns** the catalogue, so there is no adapter predicate   | as declared; the eleven families are a reference adapter  |
+| `n: 2 .. 12`                                                                               | `3 .. 8` (§1), for the reasons given there                                      | `2 .. 12`; exhaustive checks refuse above 8               |
+| signed receipts (`signerId`, Ed25519 `signature`, `verifyReceipt`)                         | absent; core receipts are an internal accounting record, not non-repudiation    | implemented, with the `SIGNATURE_UNCHECKED` tri-state     |
+| eleven bet families                                                                        | five (above); the other six are not priced by this version                      | all eleven, priced exactly by enumeration                 |
 
 The two that are easiest to mistake for oversights are worth a sentence each.
 The **play policy** is a responsible-play surface AETHER ORDER digests into every

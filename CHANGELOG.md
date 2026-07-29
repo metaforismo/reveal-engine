@@ -4,6 +4,70 @@
 
 ### Added
 
+- **The AETHER ORDER engine contract** (`src/modules/permutation/aether/`,
+  package subpath `./modules/permutation/aether`): a full implementation of
+  `aether-order/docs/ENGINE.md`, which declares itself normative and demands
+  byte-identical commitments, ticket digests, receipt digests and signatures.
+  Covers §2 identity and schemas, §4 adapter-supplied `BetFamily` catalogues
+  with a behavioural catalogue digest and adapter fingerprint, §5–§7 seed
+  commitment, client-seed and nonce-bearing sampler, chained transcripts,
+  tickets with derived idempotency keys, exact settlement, Ed25519 receipts and
+  round snapshots, §8 all twelve conformance checks, and §9's error vocabulary.
+  The eleven AETHER ORDER families ship as a **reference adapter**, so an
+  integrator can supply their own catalogue and it will be priced, digested and
+  fingerprinted. `docs/adr/0005` argues the decision.
+
+  Proved, not asserted: `tests/aether-frozen-fixtures.test.ts` re-derives all
+  **eight** rounds frozen in the game repository and requires every digest and
+  every deterministic Ed25519 signature to match byte for byte. ENGINE.md §10
+  says "if a single commitment digest differs, the port is wrong"; none differs.
+
+  This closes a review finding that the module **could not drive AETHER ORDER
+  although it shipped AETHER ORDER references** — six of eleven families, the
+  client seed, the nonce, the seed commitment, round chaining and three wire
+  schemas were all absent, and the module owned its catalogue so an adapter
+  could not add them.
+
+- `PERMUTATION_ERROR_CODES` in `src/api/errors.ts`, the eight wire codes
+  ENGINE.md §9 requires, as a separate group so a reader can still see which
+  public contract introduced each code. `CORE_ERROR_CODES` and
+  `MODULE_ERROR_CODES` are unchanged.
+- `DERIVATION_OFF_SCHEDULE` conformance check plus
+  `tests/shuffle-uniformity.test.ts`: the shipped derivation is now pinned to
+  the draw schedule it documents. `SHUFFLE_NOT_BIJECTIVE` proves a property of
+  the algorithm and never calls the sampler, so a naive-shuffle edit to
+  `core/random.ts` previously passed conformance green and survived
+  `npm run fixtures:update` at 565/566. It now fails all three references and
+  nine tests, and neither is a fixture.
+- `tests/sampler-unbiased.test.ts`: the evidence `docs/modules/permutation.md`
+  §2 Lemma B used to cite and that did not exist. Checks the acceptance boundary
+  over every modulus in `1..512`, **executes** the rejection branch at
+  `M = 2^255 + 1` where half of all draws reject — for the moduli in real use it
+  fires with probability `~2^-254` and no test had ever taken it — and
+  chi-squares the residues, each with a decoy the same bound must reject.
+- `representativeInstance`, so `definePermutationGame` no longer materialises
+  all `n!` `full` orders to read element zero: 17.3 ms per call at `n = 8`
+  becomes 0.042 ms.
+
+### Fixed
+
+- **`PermutationBook.restore()` claimed "a rewritten ticket cannot survive its
+  own log". It can.** `commandFingerprint` is an unkeyed SHA-256 over public
+  fields and is an export, so a forger rewrites the log alongside the ticket: a
+  5,000-chip line nobody placed restores a balance of 576,120 against an honest
+  120, while the caller passes the correct published round. The claim is gone,
+  the residual is widened from "which round" to the entire ticket and its
+  accounting across `docs/modules/permutation.md` §9.2, `docs/threat-model.md`
+  and `docs/integration-checklist.md`, and both forgeries are executed in
+  `tests/security/snapshot-mutation.test.ts`.
+- `docs/lifecycle-modules.md` now carries the caveat the module doc does: "no
+  core change" was bought by narrowing two of the contract's five book slots, so
+  a host driving the registry polymorphically must downcast to open or reconnect
+  a real permutation round.
+- `docs/modules/permutation.md` §11 no longer opens "this module is compatible
+  with the part of it that concerns the draw", which was true of the semantics
+  and false of the bytes.
+
 - **The `permutation` lifecycle module** (`src/modules/permutation/`,
   documented in `docs/modules/permutation.md`): a committed permutation of
   `n` labeled items (`3 <= n <= 8`) drawn by core's seeded Fisher-Yates, settled
