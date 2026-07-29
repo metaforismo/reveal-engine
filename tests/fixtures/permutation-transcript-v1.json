@@ -1,0 +1,34 @@
+{
+  "note": "Frozen reveal-engine/permutation-transcript-v1 wire form. Regenerate with npm run fixtures:update.",
+  "seed": "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+  "roundId": "frozen-permutation-round",
+  "transcript": {
+    "schema": "reveal-engine/permutation-transcript-v1",
+    "definition": {
+      "id": "aether-order-classic",
+      "version": "1.0.0",
+      "fingerprint": "96e2c63ace89ba059d89cba7150fbf7f6995c187fb7a8b07a782278ec583abc1"
+    },
+    "roundId": "frozen-permutation-round",
+    "order": [3, 1, 0, 4, 2],
+    "reveals": [
+      {
+        "position": 0,
+        "item": 3
+      },
+      {
+        "position": 1,
+        "item": 1
+      },
+      {
+        "position": 2,
+        "item": 0
+      },
+      {
+        "position": 3,
+        "item": 4
+      }
+    ],
+    "commitment": "c94ede35a41dd1df4bab55d5ecb8784c8b3a9c53282564f950502d813bbff090"
+  }
+}

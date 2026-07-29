@@ -63,7 +63,7 @@ library. See [`docs/threat-model.md`](docs/threat-model.md).
 | `progressive-market` | one hidden truth, a Bayesian evidence stream, a single-position book with fair-value sell and re-entry             | shipped |
 | `sequential-cards`   | committed deck shuffle; reveals that eliminate outcomes to exactly zero; multiple simultaneous positions           | shipped |
 | `staged-survival`    | N entities through S stages; a contract chosen per stage before it resolves; per-entity partial claims and banking | shipped |
-| `permutation`        | structured truth (an ordering of n items) with multi-bet paytable settlement                                       | next    |
+| `permutation`        | structured truth (an ordering of n items) with multi-bet paytable settlement                                       | shipped |
 | `grid-pattern`       | spatial reveal over a committed grid                                                                               | later   |
 | `graph-propagation`  | reveal that spreads along a committed graph                                                                        | later   |
 | `campaign`           | value carried across linked rounds                                                                                 | later   |
@@ -72,14 +72,15 @@ The contract every module implements is documented in
 [`docs/lifecycle-modules.md`](docs/lifecycle-modules.md) and typed in
 `src/core/module.ts`.
 
-The remaining `next` modules are not built yet, but the properties that make them
-hard are already executable. `tests/support/ordering-fixture-module.ts` carries
-the permutation truth, the reveals that drive an outcome to posterior exactly
-zero, the combinatorial paytable, and the several simultaneous positions;
-`tests/support/staged-survival-fixture-module.ts` carries the per-stage decision
-logged before the stage resolves, the seed-committed random tape, and the
-per-entity partial claims. Both are test-only modules, not games — they exist so
-the contract is judged against shapes its first client does not have.
+The `later` modules are not built yet. Two **test-only** modules under
+`tests/support/` keep the contract honest independently of the four that ship:
+`ordering-fixture-module.ts` carries a permutation truth, reveals that drive an
+outcome to posterior exactly zero, a combinatorial paytable, and several
+simultaneous positions; `staged-survival-fixture-module.ts` carries the
+per-stage decision logged before the stage resolves, the seed-committed random
+tape, and per-entity partial claims. Neither is registered and neither is a
+game — they exist so the contract is judged by something other than the modules
+that consume it.
 
 ## Quickstart
 

@@ -32,12 +32,18 @@ import {
   FROZEN_SURVIVAL_ROUND,
   FROZEN_SURVIVAL_SEED,
 } from '../tests/support/staged-survival-frozen-round.js';
+import {
+  buildFrozenPermutationRound,
+  FROZEN_PERMUTATION_ROUND_ID,
+  FROZEN_PERMUTATION_SEED,
+} from '../tests/support/frozen-permutation-round.js';
 
 const round = await buildFrozenRound();
 const cards = await buildFrozenCardsRound();
 const drawn = await buildFrozenStochasticCardsRound();
 const dormant = await buildFrozenDormantCardsRound();
 const survival = await buildFrozenSurvivalRound();
+const permutationRound = await buildFrozenPermutationRound();
 
 const files: readonly [string, unknown][] = [
   [
@@ -118,15 +124,49 @@ const files: readonly [string, unknown][] = [
       snapshot: survival.snapshot,
     },
   ],
+  [
+    'tests/fixtures/permutation-transcript-v1.json',
+    {
+      note: 'Frozen reveal-engine/permutation-transcript-v1 wire form. Regenerate with npm run fixtures:update.',
+      seed: FROZEN_PERMUTATION_SEED,
+      roundId: FROZEN_PERMUTATION_ROUND_ID,
+      transcript: permutationRound.wire,
+    },
+  ],
+  [
+    // `permutation-book-v1.json` is deliberately NOT regenerated. It is the
+    // frozen negative fixture for a retired schema: `v1` carried no round
+    // binding, so restoring one would install a book that could settle against
+    // any round an operator picked after seeing the ticket. It has no migration
+    // — the field it lacks is the published commitment — and the frozen-fixture
+    // suite asserts it is refused with `UNSUPPORTED_VERSION`.
+    'tests/fixtures/permutation-book-v2.json',
+    {
+      note: 'Frozen reveal-engine/permutation-book-v2 snapshot for a settled three-line ticket on a bound round.',
+      seed: FROZEN_PERMUTATION_SEED,
+      roundId: FROZEN_PERMUTATION_ROUND_ID,
+      credited: String(permutationRound.credited),
+      snapshot: permutationRound.snapshot,
+    },
+  ],
 ];
 
+// Written through prettier with the repository's own config, so regenerating an
+// unchanged tree is a no-op rather than a whitespace diff that `npm run verify`
+// rejects at its first step. `JSON.stringify` alone disagrees with the formatter
+// about arrays — it puts one element per line where prettier packs them to
+// `printWidth`.
+//
+// The input is *indented* rather than compact on purpose: prettier's JSON
+// `objectWrap` default is `preserve`, so an object that arrives already broken
+// across lines stays broken. That keeps a fixture readable one field per line
+// while still letting short arrays such as `"order": [3, 1, 0, 4, 2]` pack.
 for (const [path, value] of files) {
+  // Resolved per path, not once for the whole run: a fixture directory may carry
+  // its own prettier configuration, and hoisting the lookup would silently
+  // format it under the repository root's.
   const options = await resolveConfig(path);
-  // Indented input, then formatted: prettier keeps an object expanded when the
-  // source had a newline after its brace, so feeding it the indented form is
-  // what makes the committed one-record-per-line layout the fixed point. A
-  // single-line input would be equally prettier-clean and would rewrite every
-  // fixture into a denser shape nobody asked for.
-  writeFileSync(path, await format(JSON.stringify(value, null, 2), { ...options, filepath: path }));
+  const source = JSON.stringify(value, null, 2);
+  writeFileSync(path, await format(source, { ...options, filepath: path, parser: 'json' }));
   console.log(`wrote ${path}`);
 }

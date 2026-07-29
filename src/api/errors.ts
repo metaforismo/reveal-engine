@@ -44,9 +44,41 @@ export const MODULE_ERROR_CODES = [
   'SETTLE_REJECTED',
 ] as const;
 
-export const ERROR_CODES = Object.freeze([...CORE_ERROR_CODES, ...MODULE_ERROR_CODES] as const);
+/**
+ * Permutation-ticket and receipt vocabulary from the AETHER ORDER contract.
+ *
+ * These are kept separate from the existing lifecycle-module vocabulary so a
+ * protocol reader can tell which public contract introduced each wire code.
+ */
+export const PERMUTATION_ERROR_CODES = [
+  'INVALID_TICKET',
+  'UNKNOWN_BET',
+  'UNKNOWN_INSTANCE',
+  'DUPLICATE_LINE',
+  'INEXACT_PAYOUT',
+  'SIGNATURE_UNCHECKED',
+  'CYCLE_FLOOR',
+  'BETTING_CLOSED',
+] as const;
+
+export const ERROR_CODES = Object.freeze([
+  ...CORE_ERROR_CODES,
+  ...MODULE_ERROR_CODES,
+  ...PERMUTATION_ERROR_CODES,
+] as const);
 
 export type RevealEngineErrorCode = (typeof ERROR_CODES)[number];
+export type PermutationErrorCode =
+  | (typeof PERMUTATION_ERROR_CODES)[number]
+  | 'INVALID_ADAPTER'
+  | 'INVALID_SEED'
+  | 'INVALID_CONTEXT'
+  | 'INVALID_TRANSCRIPT'
+  | 'UNSUPPORTED_VERSION'
+  | 'ADAPTER_MISMATCH'
+  | 'TRANSCRIPT_MISMATCH'
+  | 'COMMITMENT_MISMATCH'
+  | 'IDEMPOTENCY_CONFLICT';
 
 /** Stable runtime failure with a machine-readable code and input path. */
 export class RevealEngineError extends Error {

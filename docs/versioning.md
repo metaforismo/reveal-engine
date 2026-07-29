@@ -21,6 +21,17 @@ Migrations are pure, deterministic, and must keep a frozen fixture verifying. A
 migration never invents a missing proof, definition version, receipt, or
 economic field. Unsupported future versions fail closed.
 
+**A schema can be retired instead of migrated, and that rule is why.** The
+permutation module's `permutation-book-v1` snapshot carried no round binding, so
+the field a migration would have to supply is the round's published commitment —
+and nothing in a `v1` snapshot says what it was. Deriving one from the settlement
+the snapshot already carries would invent exactly the proof-bearing field the
+policy above forbids inventing, so `v1` is refused with `UNSUPPORTED_VERSION` and
+its fixture is kept as the **negative** vector proving the refusal. Retirement is
+available only while a format has no external consumer; `v1` never shipped
+outside its own branch. Anything already in a player's hands gets a migration or
+a verification-only mode, never a refusal.
+
 Every schema in the table above has a committed fixture or a known-answer vector
 under `tests/fixtures/`, rebuilt and compared field for field on every test run.
 Regenerate them deliberately with `npm run fixtures:update`; a diff there is a

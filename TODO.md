@@ -15,11 +15,13 @@
 
 - [x] `staged-survival`: N entities through S stages, a contract chosen per stage before it resolves, per-entity partial claims, banking subsets between stages. Ships with `fiveRunnerReference` and `oracleTrialReference`, twelve conformance checks, an exhaustive oracle test, frozen `transcript-v1` / `book-v1` fixtures, and `docs/modules/staged-survival.md`. No core file was modified; `docs/adr/0008` records why.
 - [x] `sequential-cards`: committed deck shuffle, reveals that eliminate outcomes to exactly zero, multi-position book with independent fair-value sells and switches. Ships with four reference definitions, 23 conformance checks, an exhaustive three-card oracle, frozen `cards-transcript-v1` / `cards-book-v1` fixtures (including the stochastic and dormant rounds), and `docs/modules/sequential-cards.md`. `docs/adr/0005`-`0007` record the scope, the settlement draw, and the dormant settlement.
+- [x] `permutation`: structured permutation truth with multi-bet paytable settlement. Shipped on `platform/permutation` with no core change; see `docs/modules/permutation.md`.
+- [x] `permutation`: the six AETHER ORDER families the lifecycle module does not price (`before`, `early`, `late`, `neighbours`, `opening`, `podium`). Resolved in `src/modules/permutation/aether/`, which takes adapter-supplied `resolve` predicates and prices them exactly by enumeration over the full `n!` space — a predicate the module did not write cannot be reduced to the pairwise-exclusive pins the lifecycle module counts with. The lifecycle module still prices five; see `docs/modules/permutation.md` §11 and `docs/adr/0010`.
 - [x] Give every lifecycle module its own replay anchor in the stress and benchmark artifacts (`moduleDigests`, schemas `stress-v3` / `benchmark-v3`), so a second module can join the workload without disturbing the first module's digest.
 
 ## Next modules (other agents)
 
-- [ ] `permutation`: structured permutation truth with multi-bet paytable settlement.
+- [ ] `permutation`: RGS-side pacing. `aether-order/docs/ENGINE.md` §5 requires a commit-to-commit cycle floor and a rolling-hour ceiling, and §9 gives them `CYCLE_FLOOR` and `BETTING_CLOSED`. The codes exist so a host raises the right one; the enforcement needs session state neither repository has.
 - [ ] `branching-population`: SWARM's cohort model — a population that _splits_, so draw consumption per stage is the population rather than a shrinking subset of a fixed entity set. Named as not-provided in `docs/modules/staged-survival.md` §10.
 
 ## Deferred

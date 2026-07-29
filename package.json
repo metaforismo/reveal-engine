@@ -44,6 +44,14 @@
       "types": "./dist/modules/staged-survival/index.d.ts",
       "default": "./dist/modules/staged-survival/index.js"
     },
+    "./modules/permutation": {
+      "types": "./dist/modules/permutation/index.d.ts",
+      "default": "./dist/modules/permutation/index.js"
+    },
+    "./modules/permutation/aether": {
+      "types": "./dist/modules/permutation/aether/index.d.ts",
+      "default": "./dist/modules/permutation/aether/index.js"
+    },
     "./protocol": {
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
