@@ -10,6 +10,7 @@ import {
   type StoredReceipt,
   type WireReceipt,
 } from '../../core/ledger.js';
+import type { Payable } from '../../core/payments.js';
 import { normalizeSeed } from '../../core/random.js';
 import { multiply, rational, type Rational } from '../../core/rational.js';
 import {
@@ -186,6 +187,12 @@ export class RoundBook {
           'Re-entry must be self-financing from liquidated proceeds',
           '$.stake',
         );
+      const maxRides = this.game.risk.continuation?.maxRides;
+      if (!first && maxRides !== undefined && this.#entryCount > maxRides)
+        fail('OPEN_REJECTED', 'Round continuation limit reached', '$.expectedFrameRevision', {
+          maxRides,
+          rides: this.#entryCount,
+        });
       const multiplier = quote(
         this.game,
         this.#posterior,
@@ -211,10 +218,9 @@ export class RoundBook {
         0n,
         false,
       );
+      this.#ledger.fundStake(request.stake, first ? 'external' : 'recycled');
       this.#position = position;
       this.#entryCount += 1;
-      this.#ledger.adoptCapBasis(request.stake);
-      if (!first) this.#ledger.applyDebit(request.stake);
       return receipt;
     });
   }
@@ -276,7 +282,11 @@ export class RoundBook {
         this.#position && this.#position.outcome === transcript.truth
           ? this.#position.contingentPayout
           : rational(0n);
-      const result = this.#ledger.creditWithinCap(theoretical);
+      // A round that never took a stake has no cap chain to credit against.
+      const result: Payable =
+        this.#ledger.capBasisStake === undefined
+          ? Object.freeze({ theoretical, credited: 0n, capped: false })
+          : this.#ledger.creditWithinCap(theoretical);
       const receipt = this.#mint(
         request.idempotencyKey,
         fingerprint,

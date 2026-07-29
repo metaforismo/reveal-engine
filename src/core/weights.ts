@@ -16,8 +16,18 @@ export interface WeightVector {
   readonly total: bigint;
 }
 
+function assertWeightList(value: unknown, path: string): asserts value is readonly bigint[] {
+  if (!Array.isArray(value) || value.length > ENGINE_LIMITS.maxOutcomes)
+    fail('INVALID_WEIGHTS', 'Weight list is not a bounded array', path);
+  value.forEach((weight, index) => {
+    if (typeof weight !== 'bigint')
+      fail('INVALID_WEIGHTS', 'Expected a BigInt', `${path}[${index}]`);
+  });
+}
+
 /** Greatest common divisor of a weight list; zeros are absorbed. */
 export function weightGcd(weights: readonly bigint[]): bigint {
+  assertWeightList(weights, '$.weights');
   let a = weights[0] ?? 0n;
   for (let index = 1; index < weights.length; index += 1) {
     let b = weights[index] ?? 0n;

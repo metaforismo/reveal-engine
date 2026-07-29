@@ -1,29 +1,50 @@
-export const ERROR_CODES = [
-  'INVALID_ADAPTER',
+/**
+ * Game-agnostic codes. Core and the lifecycle-module contract raise only these.
+ *
+ * A module with no adapter, posterior, or evidence reports a definition mismatch
+ * as `DEFINITION_MISMATCH` and a refused claim as `CLAIM_REJECTED`.
+ */
+export const CORE_ERROR_CODES = [
   'INVALID_MODULE',
   'UNKNOWN_MODULE',
+  'DEFINITION_MISMATCH',
   'INVALID_RATIONAL',
-  'INVALID_POSTERIOR',
   'INVALID_WEIGHTS',
-  'INVALID_EVIDENCE',
   'INVALID_SEED',
   'INVALID_CONTEXT',
+  'INVALID_CHOICE',
   'INVALID_TRANSCRIPT',
   'PAYLOAD_TOO_LARGE',
   'UNSUPPORTED_VERSION',
-  'ADAPTER_MISMATCH',
   'DERIVATION_FAILED',
   'TRANSCRIPT_MISMATCH',
   'COMMITMENT_MISMATCH',
   'UNKNOWN_OUTCOME',
   'STALE_FRAME',
   'IDEMPOTENCY_CONFLICT',
-  'OPEN_REJECTED',
-  'SELL_REJECTED',
-  'SETTLE_REJECTED',
+  'CLAIM_REJECTED',
   'ROUND_TERMINAL',
   'INVALID_SNAPSHOT',
 ] as const;
+
+/**
+ * Progressive-market vocabulary, wire-visible to existing hosts.
+ *
+ * `INVALID_ADAPTER` additionally remains the fallback code for a malformed
+ * lifecycle definition, because that is what every shipped consumer branches on.
+ * New modules should prefer the core codes above.
+ */
+export const MODULE_ERROR_CODES = [
+  'INVALID_ADAPTER',
+  'ADAPTER_MISMATCH',
+  'INVALID_POSTERIOR',
+  'INVALID_EVIDENCE',
+  'OPEN_REJECTED',
+  'SELL_REJECTED',
+  'SETTLE_REJECTED',
+] as const;
+
+export const ERROR_CODES = Object.freeze([...CORE_ERROR_CODES, ...MODULE_ERROR_CODES] as const);
 
 export type RevealEngineErrorCode = (typeof ERROR_CODES)[number];
 

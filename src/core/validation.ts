@@ -17,28 +17,6 @@ export function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
 
-export function assertRecord(
-  value: unknown,
-  code: RevealEngineErrorCode,
-  message: string,
-  path = '$',
-): asserts value is Record<string, unknown> {
-  if (!isRecord(value)) fail(code, message, path);
-}
-
-/** Rejects missing and unknown fields so unmodelled wire data can never survive a round trip. */
-export function assertExactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  code: RevealEngineErrorCode,
-  path: string,
-): void {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index]))
-    fail(code, 'Object has missing or unknown fields', path);
-}
-
 /** Non-empty, bounded, control-character-free UTF-8 identifier. */
 export function assertIdentifier(
   value: unknown,
@@ -87,14 +65,6 @@ export function assertRational(value: unknown, path = '$'): asserts value is Rat
   if (!isRecord(value)) fail('INVALID_RATIONAL', 'Expected rational object', path);
   assertBoundedBigInt(value.numerator, `${path}.numerator`);
   assertBoundedBigInt(value.denominator, `${path}.denominator`, true);
-}
-
-export function assertRevision(
-  value: unknown,
-  path: string,
-  code: RevealEngineErrorCode = 'INVALID_SNAPSHOT',
-): asserts value is number {
-  if (!Number.isSafeInteger(value) || Number(value) < 0) fail(code, 'Invalid revision', path);
 }
 
 export function assertProofVersion(

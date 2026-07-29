@@ -32,6 +32,29 @@ export function conformanceSeed(index: number): string {
 }
 
 /**
+ * Rejects anything that is not a lifecycle module before a field is read.
+ *
+ * The runner is reachable with attacker-shaped input through the CLI, so a
+ * malformed module is a typed `INVALID_MODULE`, never a `TypeError`.
+ */
+function assertLifecycleModule(value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new RevealEngineError('INVALID_MODULE', 'Expected a lifecycle module object', '$.module');
+  const module = value as Partial<LifecycleModule<never>>;
+  if (
+    typeof module.id !== 'string' ||
+    typeof module.version !== 'string' ||
+    typeof module.verify !== 'function' ||
+    typeof module.definitions !== 'object' ||
+    module.definitions === null ||
+    typeof module.conformance !== 'object' ||
+    module.conformance === null ||
+    !Array.isArray(module.conformance.checks)
+  )
+    throw new RevealEngineError('INVALID_MODULE', 'Module contract is incomplete', '$.module');
+}
+
+/**
  * Runs a lifecycle module's declared conformance checks over deterministic seeds.
  *
  * The runner is module-agnostic on purpose: it supplies identity, seeds, and a
@@ -42,8 +65,10 @@ export function conformanceSeed(index: number): string {
 export function checkModuleConformance<S extends LifecycleShape>(
   module: LifecycleModule<S>,
   definition: S['definition'],
-  seedCount: number = module.conformance.defaultSeeds,
+  seedCount?: number,
 ): ModuleConformanceReport {
+  assertLifecycleModule(module);
+  const seeds = seedCount ?? module.conformance.defaultSeeds;
   const failures: ConformanceFailure[] = [];
   const counters: Record<string, number> = {};
   const count = (key: string, delta = 1): void => {
@@ -55,7 +80,7 @@ export function checkModuleConformance<S extends LifecycleShape>(
     fingerprint: '',
   };
   try {
-    if (!Number.isSafeInteger(seedCount) || seedCount < 0 || seedCount > 4096)
+    if (!Number.isSafeInteger(seeds) || seeds < 0 || seeds > 4096)
       throw new RevealEngineError(
         'INVALID_MODULE',
         'Conformance seed count is outside limits',
@@ -88,7 +113,7 @@ export function checkModuleConformance<S extends LifecycleShape>(
     };
     for (const check of module.conformance.checks)
       if (check.scope === 'definition') failures.push(...check.run(contextFor(0)));
-    for (let seedIndex = 0; seedIndex < seedCount; seedIndex += 1) {
+    for (let seedIndex = 0; seedIndex < seeds; seedIndex += 1) {
       const context = contextFor(seedIndex);
       for (const check of module.conformance.checks)
         if (check.scope === 'round') failures.push(...check.run(context));
@@ -107,7 +132,7 @@ export function checkModuleConformance<S extends LifecycleShape>(
     definitionId: identity.definitionId,
     definitionVersion: identity.definitionVersion,
     fingerprint: identity.fingerprint,
-    seeds: seedCount,
+    seeds,
     checks: Object.freeze(module.conformance.checks.map((check) => check.code)),
     counters: Object.freeze({ ...counters }),
     ok: failures.length === 0,

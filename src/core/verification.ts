@@ -9,9 +9,16 @@ export interface VerificationSuccess {
 
 export interface VerificationFailure {
   readonly ok: false;
+  /**
+   * `DEFINITION_MISMATCH` is the game-agnostic code for "this transcript belongs
+   * to another definition". `ADAPTER_MISMATCH` is the progressive market's older
+   * spelling of the same thing, kept because hosts branch on it; a new module
+   * has no adapter and should report `DEFINITION_MISMATCH`.
+   */
   readonly code:
     | 'INVALID_TRANSCRIPT'
     | 'UNSUPPORTED_VERSION'
+    | 'DEFINITION_MISMATCH'
     | 'ADAPTER_MISMATCH'
     | 'DERIVATION_FAILED'
     | 'TRANSCRIPT_MISMATCH'
@@ -54,8 +61,10 @@ export function classifyVerificationError(error: unknown): VerificationFailure {
       ? 'UNSUPPORTED_VERSION'
       : failure.code === 'ADAPTER_MISMATCH'
         ? 'ADAPTER_MISMATCH'
-        : failure.code === 'DERIVATION_FAILED' || failure.code === 'INVALID_ADAPTER'
-          ? 'DERIVATION_FAILED'
-          : 'INVALID_TRANSCRIPT';
+        : failure.code === 'DEFINITION_MISMATCH'
+          ? 'DEFINITION_MISMATCH'
+          : failure.code === 'DERIVATION_FAILED' || failure.code === 'INVALID_ADAPTER'
+            ? 'DERIVATION_FAILED'
+            : 'INVALID_TRANSCRIPT';
   return verificationFailure(code, failure.message, failure.path);
 }

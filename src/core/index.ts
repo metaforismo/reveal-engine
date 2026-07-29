@@ -35,6 +35,8 @@ export {
   type WeightVector,
 } from './weights.js';
 
+export { countingProbability, factorial, fallingFactorial } from './combinatorics.js';
+
 export { payable, payableWithinCap, type Payable } from './payments.js';
 export { deriveMaxContinuations } from './continuation.js';
 
@@ -50,7 +52,13 @@ export {
   type TapeDraw,
 } from './random.js';
 
-export { constantTimeHexEqual, sealCommitment, sealLegacyCommitment } from './commitment.js';
+export {
+  constantTimeHexEqual,
+  sealCommitment,
+  sealLegacyCommitment,
+  sealSeedCommitment,
+  type SeedCommitmentBinding,
+} from './commitment.js';
 
 export {
   classifyVerificationError,
@@ -71,6 +79,7 @@ export {
   toWireReceipt,
   type CommandLedgerOptions,
   type Receipt,
+  type StakeFunding,
   type StoredReceipt,
   type WireReceipt,
 } from './ledger.js';
@@ -94,24 +103,25 @@ export {
 
 export {
   assertBoundedBigInt,
-  assertExactKeys,
   assertIdentifier,
   assertNonNegativeBigInt,
   assertProofVersion,
   assertRational,
-  assertRecord,
-  assertRevision,
 } from './validation.js';
 
 export {
+  assertClaimBudget,
+  assertLoggedChoices,
   defineLifecycleModule,
   samplerScopeOf,
+  type BeliefSpace,
   type BookModel,
   type BookPositions,
   type ChoiceTiming,
   type ClaimSettlement,
   type ConformanceFailure,
   type ConformanceModel,
+  type ConformanceReference,
   type DefinitionIdentity,
   type DefinitionModel,
   type LifecycleModule,

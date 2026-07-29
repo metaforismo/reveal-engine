@@ -5,7 +5,7 @@ import {
   encodeFields,
   type CanonicalField,
 } from '../../internal/canonical.js';
-import type { RoundIdentity } from '../../core/module.js';
+import { samplerScopeOf, type RoundIdentity } from '../../core/module.js';
 import {
   normalizeSeed,
   sha256Hex,
@@ -35,9 +35,15 @@ import { assertContext, assertDerivedEvidence, assertGameDefinition } from './va
 
 export { normalizeSeed, sha256Hex };
 
-/** Sampler scope for a round: the adapter id is the domain, so games never collide. */
+/**
+ * Sampler scope for a round: the adapter id is the domain, so games never collide.
+ *
+ * The context is validated before a single field is read. These wrappers are
+ * public entry points reachable with attacker-shaped input, so they must report
+ * the same typed `INVALID_CONTEXT` the core sampler does, never a `TypeError`.
+ */
 export function scopeOf(context: RoundContext): SamplerScope {
-  return { domain: context.gameId, roundId: context.roundId, proofVersion: context.proofVersion };
+  return samplerScopeOf(roundIdentityOf(context));
 }
 
 /**
@@ -67,6 +73,7 @@ export function uniform(
 }
 
 export function roundIdentityOf(context: RoundContext): RoundIdentity {
+  assertContext(context);
   return Object.freeze({
     moduleId: PROGRESSIVE_MARKET_MODULE_ID,
     definitionId: context.gameId,

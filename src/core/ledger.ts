@@ -5,11 +5,14 @@ import { encodeFields, type CanonicalField } from '../internal/canonical.js';
 import { payableWithinCap, type Payable } from './payments.js';
 import type { Rational } from './rational.js';
 import {
+  assertSnapshotKeys,
+  assertSnapshotRecord,
   assertSnapshotRevision,
   assertWireHex,
   parseWireBigInt,
   parseWireSignedBigInt,
 } from './snapshot.js';
+import { assertBoundedBigInt, isRecord } from './validation.js';
 
 export const RECEIPT_SCHEMA = 'reveal-engine/receipt-v1' as const;
 const COMMAND_DOMAIN = 'round-command-v1' as const;
@@ -90,10 +93,24 @@ export function toWireReceipt(receipt: Receipt): WireReceipt {
   });
 }
 
+/**
+ * Decodes one receipt from attacker-controlled snapshot data.
+ *
+ * Shape is checked before any field is read: a module calling this directly on
+ * wire input gets a typed `INVALID_SNAPSHOT`, never a `TypeError`.
+ */
 export function fromWireReceipt<Action extends string = string>(
   value: WireReceipt,
   actions: readonly Action[],
 ): Receipt<Action> {
+  const record = assertSnapshotRecord(value, '$.receipt');
+  assertSnapshotKeys(record, RECEIPT_WIRE_KEYS, '$.receipt');
+  if (!Array.isArray(actions)) fail('INVALID_SNAPSHOT', 'Expected an action list', '$.actions');
+  for (const key of ['schema', 'action', 'commandFingerprint', 'idempotencyKey'] as const)
+    if (typeof record[key] !== 'string')
+      fail('INVALID_SNAPSHOT', 'Receipt field is not a string', `$.receipt.${key}`);
+  if (typeof record.capped !== 'boolean')
+    fail('INVALID_SNAPSHOT', 'Receipt capped flag is not a boolean', '$.receipt.capped');
   const receipt = Object.freeze({
     ...value,
     debited: parseWireBigInt(value.debited, '$.receipt.debited', true),
@@ -121,6 +138,21 @@ export interface CommandLedgerOptions {
 }
 
 /**
+ * Where a stake's money comes from.
+ *
+ * `external` is new money entering the round from the player's wallet. It grows
+ * the round's cap basis, because the ceiling is a multiple of what the player
+ * actually risked — a book holding several independently funded positions has a
+ * larger legitimate ceiling than a book holding one.
+ *
+ * `recycled` is value the player already won inside this round and is putting
+ * back at risk. It is debited from the liquid balance and must never grow the
+ * basis: if a win could finance a larger ceiling, the cap would compound and the
+ * round's maximum exposure would be unbounded.
+ */
+export type StakeFunding = 'external' | 'recycled';
+
+/**
  * Round-scoped command ledger: serialization, idempotency, receipts, and the
  * cap-chain accounting every lifecycle module needs.
  *
@@ -128,7 +160,12 @@ export interface CommandLedgerOptions {
  * A module owns its state machine and calls the ledger for the parts that must
  * behave identically in every game: one command at a time, an idempotency key
  * bound to its exact payload, a receipt minted before state mutates, and a
- * credit that can never exceed the first entry's cap basis for the round.
+ * credit that can never take the round above its cap ceiling.
+ *
+ * There is exactly one ledger per round, however many positions the round
+ * holds. Per-position ledgers would fork both the command serialization order
+ * and the dense ledger-revision chain, which the snapshot format and the
+ * idempotency guarantee both depend on.
  */
 export class CommandLedger {
   readonly #maxWinMultiple: bigint;
@@ -140,6 +177,7 @@ export class CommandLedger {
   #tail: Promise<void> = Promise.resolve();
 
   constructor(options: CommandLedgerOptions) {
+    if (!isRecord(options)) fail('INVALID_ADAPTER', 'Ledger requires an options object', '$');
     if (typeof options.maxWinMultiple !== 'bigint' || options.maxWinMultiple <= 0n)
       fail('INVALID_ADAPTER', 'Ledger requires a positive max win multiple', '$.maxWinMultiple');
     const maxReceipts = options.maxReceipts ?? ENGINE_LIMITS.maxReceipts;
@@ -242,17 +280,43 @@ export class CommandLedger {
     });
   }
 
-  /** First stake of a round fixes the cap basis for every later credit in the chain. */
-  adoptCapBasis(stake: bigint): bigint {
-    const basis = this.#capBasisStake ?? stake;
+  /**
+   * Registers a stake against the round's cap chain and returns the new basis.
+   *
+   * Externally funded stakes accumulate, so a multi-position book gets a ceiling
+   * proportional to everything the player risked; recycled stakes are debited
+   * from liquid winnings and leave the ceiling exactly where it was. The
+   * round-wide invariant both halves preserve is
+   * `liquidBalance <= capBasisStake * maxWinMultiple`, i.e. a player can never
+   * walk away with more than `maxWinMultiple` times the money they brought in.
+   */
+  fundStake(amount: bigint, funding: StakeFunding): bigint {
+    assertBoundedBigInt(amount, '$.stake', true);
+    if (funding === 'recycled') {
+      if (this.#capBasisStake === undefined)
+        fail('CLAIM_REJECTED', 'A recycled stake requires an existing cap basis', '$.stake');
+      if (amount > this.#liquidBalance)
+        fail('CLAIM_REJECTED', 'A recycled stake must be self-financing', '$.stake');
+      this.#liquidBalance -= amount;
+      return this.#capBasisStake;
+    }
+    if (funding !== 'external') fail('CLAIM_REJECTED', 'Unknown stake funding source', '$.funding');
+    const basis = (this.#capBasisStake ?? 0n) + amount;
+    assertBoundedBigInt(basis, '$.capBasisStake', true);
     this.#capBasisStake = basis;
     return basis;
   }
 
-  /** Credit an exact rational claim, floored and bounded by the remaining chain cap. */
+  /**
+   * Credit an exact rational claim, floored and bounded by the remaining ceiling.
+   *
+   * A round that has taken no stake has no ceiling, so there is nothing to
+   * credit against: that is a module state-machine bug and fails loudly rather
+   * than silently paying zero against a positive theoretical claim.
+   */
   creditWithinCap(theoretical: Rational): Payable {
     if (this.#capBasisStake === undefined)
-      return Object.freeze({ theoretical, credited: 0n, capped: false });
+      fail('CLAIM_REJECTED', 'Cannot credit a round that has taken no stake', '$.capBasisStake');
     return payableWithinCap(
       theoretical,
       this.#capBasisStake,
@@ -264,11 +328,6 @@ export class CommandLedger {
   applyCredit(amount: bigint): void {
     if (amount < 0n) fail('INVALID_RATIONAL', 'Credit must be non-negative', '$.credited');
     this.#liquidBalance += amount;
-  }
-
-  applyDebit(amount: bigint): void {
-    if (amount < 0n) fail('INVALID_RATIONAL', 'Debit must be non-negative', '$.debited');
-    this.#liquidBalance -= amount;
   }
 
   /**

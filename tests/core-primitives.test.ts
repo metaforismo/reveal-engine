@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { ENGINE_LIMITS } from '../src/api/limits.js';
-import { sealCommitment, sealLegacyCommitment } from '../src/core/commitment.js';
+import {
+  sealCommitment,
+  sealLegacyCommitment,
+  sealSeedCommitment,
+} from '../src/core/commitment.js';
+import { countingProbability, factorial, fallingFactorial } from '../src/core/combinatorics.js';
+import { assertClaimBudget, assertLoggedChoices } from '../src/core/module.js';
 import { CommandLedger, commandFingerprint } from '../src/core/ledger.js';
 import { rational } from '../src/core/rational.js';
 import {
@@ -168,20 +174,46 @@ describe('shared command ledger', () => {
     expect(book.ledgerRevision).toBe(1);
   });
 
-  it('supports several simultaneous claims under one cap basis', async () => {
+  it('accumulates the cap basis across independently funded simultaneous claims', async () => {
     const book = ledger();
     for (const [index, stake] of [50n, 30n, 20n].entries()) {
       const key = `open-${index}`;
       const fingerprint = commandFingerprint('open', [0, index, stake]);
       await book.execute(key, fingerprint, () => {
         const receipt = book.mint(key, fingerprint, 'open', 0, stake, 0n, false);
-        book.adoptCapBasis(stake);
+        book.fundStake(stake, 'external');
         return receipt;
       });
     }
-    expect(book.capBasisStake).toBe(50n);
+    // Three positions the player actually paid for, so the ceiling is 100 x 10.
+    expect(book.capBasisStake).toBe(100n);
+    expect(book.creditWithinCap(rational(5000n))).toMatchObject({ credited: 1000n, capped: true });
     expect(book.ledgerRevision).toBe(3);
     expect(book.receiptCount).toBe(3);
+  });
+
+  it('never lets recycled winnings grow the ceiling they came from', () => {
+    const book = ledger();
+    book.fundStake(10n, 'external');
+    const won = book.creditWithinCap(rational(60n));
+    book.applyCredit(won.credited);
+    expect(book.liquidBalance).toBe(60n);
+
+    // Re-staking a win moves value inside the round; the basis must not move.
+    expect(book.fundStake(40n, 'recycled')).toBe(10n);
+    expect(book.capBasisStake).toBe(10n);
+    expect(book.liquidBalance).toBe(20n);
+    expect(book.creditWithinCap(rational(1000n))).toMatchObject({ credited: 80n, capped: true });
+
+    expect(() => book.fundStake(999n, 'recycled')).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED' }),
+    );
+    expect(() => book.fundStake(0n, 'external')).toThrowError(
+      expect.objectContaining({ code: 'INVALID_RATIONAL' }),
+    );
+    expect(() => book.fundStake(1n, 'wallet' as never)).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED' }),
+    );
   });
 
   it('never credits beyond the remaining chain cap', async () => {
@@ -189,7 +221,7 @@ describe('shared command ledger', () => {
     const fingerprint = commandFingerprint('open', [0, 0, 10n]);
     await book.execute('open', fingerprint, () => {
       const receipt = book.mint('open', fingerprint, 'open', 0, 10n, 0n, false);
-      book.adoptCapBasis(10n);
+      book.fundStake(10n, 'external');
       return receipt;
     });
     const partial = book.creditWithinCap(rational(60n));
@@ -202,13 +234,17 @@ describe('shared command ledger', () => {
     expect(book.liquidBalance).toBe(100n);
   });
 
-  it('credits nothing before a cap basis exists and rejects negative movements', () => {
+  it('refuses to credit a round that has taken no stake, instead of paying zero', () => {
     const book = ledger();
-    expect(book.creditWithinCap(rational(500n))).toMatchObject({ credited: 0n, capped: false });
-    expect(() => book.applyCredit(-1n)).toThrowError(
-      expect.objectContaining({ code: 'INVALID_RATIONAL' }),
+    // Silently paying 0 against a positive theoretical claim would hide a module
+    // state-machine bug behind a receipt that says it was not capped.
+    expect(() => book.creditWithinCap(rational(500n))).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED' }),
     );
-    expect(() => book.applyDebit(-1n)).toThrowError(
+    expect(() => book.fundStake(1n, 'recycled')).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED' }),
+    );
+    expect(() => book.applyCredit(-1n)).toThrowError(
       expect.objectContaining({ code: 'INVALID_RATIONAL' }),
     );
   });
@@ -266,5 +302,102 @@ describe('shared command ledger', () => {
     await expect(
       book.execute('b', fingerprint, () => book.mint('b', fingerprint, 'open', 0, 1n, 0n, false)),
     ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  });
+});
+
+describe('exact counting over structured truth spaces', () => {
+  it('counts factorials and falling factorials exactly', () => {
+    expect(factorial(0)).toBe(1n);
+    expect(factorial(8)).toBe(40_320n);
+    expect(factorial(30)).toBe(265252859812191058636308480000000n);
+    expect(fallingFactorial(8, 3)).toBe(336n);
+    expect(fallingFactorial(8, 8)).toBe(factorial(8));
+    expect(fallingFactorial(3, 8)).toBe(0n);
+  });
+
+  it('prices a combinatorial event the flat weight vector cannot hold', () => {
+    // A trifecta over eight runners is one of 336 events; ENGINE_LIMITS.maxOutcomes is 64.
+    expect(336n).toBeGreaterThan(BigInt(ENGINE_LIMITS.maxOutcomes));
+    expect(countingProbability(factorial(5), factorial(8))).toEqual(rational(1n, 336n));
+    expect(countingProbability(0n, factorial(8))).toEqual(rational(0n));
+  });
+
+  it('rejects a contradictory or unbounded counting measure', () => {
+    expect(() => countingProbability(2n, 1n)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WEIGHTS' }),
+    );
+    expect(() => countingProbability(1n, 0n)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WEIGHTS' }),
+    );
+    expect(() => factorial(ENGINE_LIMITS.maxPermutationSize + 1)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CONTEXT' }),
+    );
+  });
+});
+
+describe('seed pre-commitment for choice-timed rounds', () => {
+  const binding = {
+    moduleId: 'fixture',
+    definitionId: 'definition-v1',
+    definitionFingerprint: 'ab'.repeat(32),
+    roundId: 'round-1',
+    proofVersion: COMMITMENT_VERSION,
+  } as const;
+
+  it('binds the seed, the module, the frozen economics, and the round', () => {
+    const sealed = sealSeedCommitment(seed(31), binding);
+    expect(sealed).toMatch(/^[0-9a-f]{64}$/u);
+    expect(sealSeedCommitment(seed(32), binding)).not.toBe(sealed);
+    for (const changed of [
+      { ...binding, moduleId: 'other' },
+      { ...binding, definitionId: 'other' },
+      { ...binding, definitionFingerprint: 'cd'.repeat(32) },
+      { ...binding, roundId: 'round-2' },
+    ])
+      expect(sealSeedCommitment(seed(31), changed)).not.toBe(sealed);
+  });
+
+  it('is domain-separated from a body commitment and fails closed on bad input', () => {
+    expect(sealSeedCommitment(seed(31), binding)).not.toBe(
+      sealCommitment(seed(31), Buffer.alloc(0)),
+    );
+    expect(() => sealSeedCommitment(seed(31), null as never)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CONTEXT' }),
+    );
+    expect(() =>
+      sealSeedCommitment(seed(31), { ...binding, definitionFingerprint: 'zz' } as never),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_CONTEXT' }));
+    expect(() => sealSeedCommitment('nope', binding)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SEED' }),
+    );
+  });
+});
+
+describe('contract guards core actually enforces', () => {
+  it('bounds a logged choice list and refuses choices a module does not model', () => {
+    expect(assertLoggedChoices(undefined, 'before-step')).toEqual([]);
+    expect(assertLoggedChoices(['a', 'b'], 'before-step')).toEqual(['a', 'b']);
+    expect(() => assertLoggedChoices(['a'], 'none')).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CHOICE' }),
+    );
+    expect(() =>
+      assertLoggedChoices(
+        Array.from({ length: ENGINE_LIMITS.maxLoggedChoices + 1 }, () => 'a'),
+        'before-step',
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_CHOICE' }));
+    expect(() => assertLoggedChoices('a' as never, 'before-step')).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CHOICE' }),
+    );
+  });
+
+  it('bounds simultaneous claims against the declared budget', () => {
+    expect(() => assertClaimBudget(0, 1)).not.toThrow();
+    expect(() => assertClaimBudget(1, 1)).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED' }),
+    );
+    expect(() => assertClaimBudget(-1, 4)).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED' }),
+    );
   });
 });

@@ -22,10 +22,11 @@ export interface SamplerScope {
   readonly proofVersion: CommitmentVersion;
 }
 
+/** Every branch reports `INVALID_CONTEXT`: a malformed scope is a bad context, not a bad module. */
 export function assertSamplerScope(value: unknown, path = '$'): asserts value is SamplerScope {
   if (!isRecord(value)) fail('INVALID_CONTEXT', 'Expected sampler scope', path);
-  assertIdentifier(value.domain, `${path}.domain`);
-  assertIdentifier(value.roundId, `${path}.roundId`);
+  assertIdentifier(value.domain, `${path}.domain`, 'INVALID_CONTEXT');
+  assertIdentifier(value.roundId, `${path}.roundId`, 'INVALID_CONTEXT');
   assertProofVersion(value.proofVersion, `${path}.proofVersion`);
 }
 

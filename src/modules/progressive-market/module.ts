@@ -14,11 +14,13 @@ import {
   PROGRESSIVE_MARKET_MODULE_VERSION,
   ROUND_BOOK_SCHEMA,
   TRANSCRIPT_SCHEMA,
-  type EvidenceEvent,
-  type GameDefinition,
   type RoundContext,
-  type Transcript,
 } from './contracts.js';
+import {
+  binaryBeaconReference,
+  blackSignalReference,
+  constellationReference,
+} from './references/index.js';
 import {
   canonicalTranscriptBytes,
   deriveEvidence,
@@ -74,6 +76,8 @@ export const progressiveMarket: LifecycleModule<ProgressiveMarketShape> =
     steps: {
       maxSteps: 10_000,
       choiceTiming: 'none',
+      // One scalar truth among `outcomes`: the weight vector is the pricing space.
+      beliefSpace: 'outcomes',
       count: (definition) => definition.evidence.eventCount,
       derive: (seedHex, definition, round, truth) =>
         deriveEvidence(seedHex, definition, contextOf(round), truth),
@@ -93,7 +97,8 @@ export const progressiveMarket: LifecycleModule<ProgressiveMarketShape> =
       schema: TRANSCRIPT_SCHEMA,
       acceptedSchemas: ACCEPTED_TRANSCRIPT_SCHEMAS,
       build: (seedHex, definition, roundId) => makeTranscript(seedHex, definition, roundId),
-      commitmentBody: (definition, round, truth, steps) =>
+      // `choiceTiming` is 'none', so the contract guarantees `_choices` is empty.
+      commitmentBody: (definition, round, truth, steps, _choices) =>
         canonicalTranscriptBytes(definition, contextOf(round), truth, steps),
       toWire: transcriptToWire,
       fromWire: deserializeTranscript,
@@ -103,6 +108,7 @@ export const progressiveMarket: LifecycleModule<ProgressiveMarketShape> =
       snapshotSchema: ROUND_BOOK_SCHEMA,
       positions: 'single',
       settlement: 'winner-takes-claim',
+      maxOpenClaims: 1,
       actions: ROUND_ACTIONS,
       create: (definition) => new RoundBook(definition, initialPosterior(definition)),
       restore: (definition, snapshot) =>
@@ -113,6 +119,11 @@ export const progressiveMarket: LifecycleModule<ProgressiveMarketShape> =
     conformance: {
       defaultSeeds: 8,
       checks: PROGRESSIVE_MARKET_CHECKS,
+      references: [
+        { id: blackSignalReference.id, definition: blackSignalReference },
+        { id: constellationReference.id, definition: constellationReference },
+        { id: binaryBeaconReference.id, definition: binaryBeaconReference },
+      ],
     },
 
     verify: verifyTranscriptDetailed,
