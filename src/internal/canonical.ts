@@ -33,13 +33,22 @@ export function constantTimeHexEqual(left: string, right: string): boolean {
   return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
 }
 
-/** Deterministic JSON with sorted keys and dropped `undefined`; anchors snapshot checksums. */
+/**
+ * Deterministic JSON with sorted keys and dropped `undefined`; anchors snapshot
+ * checksums.
+ *
+ * Keys are ordered by UTF-16 code unit, never by `localeCompare`: collation
+ * depends on the host's ICU data and default locale, and it reports distinct
+ * keys as equal, which would leave the order decided by insertion. Two nodes
+ * must agree on the checksum of the same snapshot, so the comparison has to be
+ * a property of the bytes and nothing else.
+ */
 export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object')
     return `{${Object.entries(value)
       .filter(([, child]) => child !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
       .join(',')}}`;
   return JSON.stringify(value);

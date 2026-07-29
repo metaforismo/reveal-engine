@@ -9,6 +9,7 @@ import { countingProbability, factorial, fallingFactorial } from '../src/core/co
 import { assertClaimBudget, assertLoggedChoices } from '../src/core/module.js';
 import { CommandLedger, commandFingerprint } from '../src/core/ledger.js';
 import { rational } from '../src/core/rational.js';
+import { snapshotHash, stableJson } from '../src/core/snapshot.js';
 import {
   RandomTape,
   uniformBigInt,
@@ -302,6 +303,41 @@ describe('shared command ledger', () => {
     );
   });
 
+  /**
+   * A restored log keyed by idempotency key would silently collapse duplicates:
+   * a dense revision chain of three receipts sharing one key would visit the
+   * module three times but install one receipt, leaving that key live for
+   * replay. Duplicate rejection is a generic invariant, so it belongs here and
+   * not in each module's state machine.
+   */
+  it('refuses a restored receipt log that reuses one idempotency key', () => {
+    const book = ledger();
+    const entry = (revision: number, key: string) => {
+      const fingerprint = commandFingerprint('open', [0, revision, 1n]);
+      return { fingerprint, receipt: book.mint(key, fingerprint, 'open', 0, 1n, 0n, false) };
+    };
+    const dense = [entry(1, 'k'), entry(2, 'k'), entry(3, 'k')].map((stored, index) => ({
+      ...stored,
+      receipt: { ...stored.receipt, ledgerRevision: index + 1 },
+    }));
+    let visits = 0;
+    expect(() =>
+      book.install(dense, 0, () => {
+        visits += 1;
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+    expect(visits).toBe(1);
+    expect(book.receiptCount).toBe(1);
+
+    const distinct = [entry(1, 'a'), entry(2, 'b'), entry(3, 'c')].map((stored, index) => ({
+      ...stored,
+      receipt: { ...stored.receipt, ledgerRevision: index + 1 },
+    }));
+    const clean = ledger();
+    clean.install(distinct, 0, () => {});
+    expect(clean.receiptCount).toBe(3);
+  });
+
   it('stops accepting new commands once the receipt budget is exhausted', async () => {
     const book = new CommandLedger({ maxWinMultiple: 1n, maxReceipts: 1 });
     const fingerprint = commandFingerprint('open', [0]);
@@ -398,6 +434,29 @@ describe('contract guards core actually enforces', () => {
     expect(() => assertLoggedChoices('a' as never, 'before-step')).toThrowError(
       expect.objectContaining({ code: 'INVALID_CHOICE' }),
     );
+  });
+
+  /**
+   * `snapshotHash` is the integrity anchor every module's `restore()` checks, so
+   * its key order must be a property of the bytes. `localeCompare` is neither
+   * stable across ICU builds nor total — it reports `'ab'` and `'áb'` as
+   * distinct but orders `'Zeta'` before `'alpha'`, the opposite of code-unit
+   * order, and can report two different keys as equal.
+   */
+  it('orders canonical JSON keys by code unit, not by locale collation', () => {
+    expect(stableJson({ Zeta: 1, alpha: 2 })).toBe('{"Zeta":1,"alpha":2}');
+    expect(Object.keys({ Zeta: 1, alpha: 2 }).sort((a, b) => a.localeCompare(b))).toEqual([
+      'alpha',
+      'Zeta',
+    ]);
+    const keys = ['áb', 'ab', 'aé', 'ae', 'B', 'a', '_x', 'Z'];
+    const encoded = stableJson(Object.fromEntries(keys.map((key, index) => [key, index])));
+    expect(Object.keys(JSON.parse(encoded) as object)).toEqual([...keys].sort());
+    // Insertion order must not reach the digest, whichever way the object was built.
+    const forward = Object.fromEntries(keys.map((key, index) => [key, index]));
+    const backward = Object.fromEntries([...keys].reverse().map((key) => [key, keys.indexOf(key)]));
+    expect(snapshotHash(forward)).toBe(snapshotHash(backward));
+    expect(stableJson({ a: undefined, b: [1, { d: 2, c: 3 }] })).toBe('{"b":[1,{"c":3,"d":2}]}');
   });
 
   it('bounds simultaneous claims against the declared budget', () => {

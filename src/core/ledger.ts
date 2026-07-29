@@ -334,9 +334,15 @@ export class CommandLedger {
    * Rebuilds ledger state from a snapshot.
    *
    * Generic invariants are enforced here: canonical ledger ordering, stored
-   * fingerprints matching the receipt they index, and no receipt fenced to a
-   * step the round never reached. `visit` receives every receipt in ledger order
-   * so the module can replay its own state machine on top.
+   * fingerprints matching the receipt they index, no receipt fenced to a step
+   * the round never reached, and **one distinct idempotency key per receipt**.
+   * `visit` receives every receipt in ledger order so the module can replay its
+   * own state machine on top.
+   *
+   * The idempotency key is the receipt map's primary key, so a log that reuses
+   * one would install fewer receipts than it declared while still presenting a
+   * dense revision chain — a snapshot claiming three commands but leaving one
+   * key live for replay. It is rejected here rather than left to each module.
    */
   install<Action extends string>(
     stored: readonly StoredReceipt<Action>[],
@@ -345,6 +351,7 @@ export class CommandLedger {
   ): void {
     if (stored.length > this.#maxReceipts)
       fail('INVALID_SNAPSHOT', 'Snapshot receipt count exceeds the ledger budget');
+    const installedBefore = this.#receipts.size;
     const ordered = [...stored].sort(
       (left, right) => left.receipt.ledgerRevision - right.receipt.ledgerRevision,
     );
@@ -356,9 +363,17 @@ export class CommandLedger {
         entry.fingerprint !== entry.receipt.commandFingerprint
       )
         fail('INVALID_SNAPSHOT', 'Receipt revisions are not canonical');
+      if (this.#receipts.has(entry.receipt.idempotencyKey))
+        fail(
+          'INVALID_SNAPSHOT',
+          'Receipt log reuses an idempotency key',
+          `$.receipts[${index}].receipt.idempotencyKey`,
+        );
       visit(entry.receipt, index);
       this.#receipts.set(entry.receipt.idempotencyKey, Object.freeze({ ...entry }));
     }
+    if (this.#receipts.size !== installedBefore + ordered.length)
+      fail('INVALID_SNAPSHOT', 'Receipt log did not install one receipt per entry');
   }
 
   /** Installs the reconstructed money state and rejects any accounting that does not close. */
