@@ -104,6 +104,11 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     ['position entry count', ['position', 'entryCount'], bump],
     ['position opened-at revision', ['position', 'openedAtFrameRevision'], () => 99],
     ['receipt fingerprint', ['receipts', 0, 'fingerprint'], () => 'cd'.repeat(32)],
+    [
+      'reused receipt idempotency key',
+      ['receipts', 1, 'receipt', 'idempotencyKey'],
+      () => readAt(valid, ['receipts', 0, 'receipt', 'idempotencyKey']),
+    ],
     ['receipt schema', ['receipts', 0, 'receipt', 'schema'], () => 'reveal-engine/receipt-v2'],
     ['receipt action', ['receipts', 0, 'receipt', 'action'], () => 'sell'],
     ['receipt ledger revision', ['receipts', 0, 'receipt', 'ledgerRevision'], bump],
