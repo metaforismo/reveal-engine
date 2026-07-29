@@ -1,0 +1,542 @@
+# `staged-survival`
+
+`N` entities advance through `S` stages. Before each stage the player picks one
+**stage contract** from an adapter-defined menu, and may bank any subset of the
+entities still running. The stage then resolves to a subset of survivors drawn
+from a committed distribution. A contract changes the distribution the stage is
+read under; it can never change a draw.
+
+This is the second lifecycle module on the shared core, alongside
+`progressive-market`. The normative description of the boundary it implements is
+[`../lifecycle-modules.md`](../lifecycle-modules.md); the executable version is
+`src/modules/staged-survival/`.
+
+| Declaration           | Value                                                          |
+| --------------------- | -------------------------------------------------------------- |
+| `truth.kind`          | `composite` — the truth is a random tape                       |
+| `steps.choiceTiming`  | `before-step`                                                  |
+| `steps.beliefSpace`   | `marginal` — claims are priced by `price()`, not by the vector |
+| `book.positions`      | `multi`                                                        |
+| `book.settlement`     | `partial`                                                      |
+| `book.actions`        | `enter`, `choose`, `bank`, `settle`                            |
+| `transcript.schema`   | `staged-survival/transcript-v1`                                |
+| `book.snapshotSchema` | `staged-survival/book-v1`                                      |
+
+---
+
+## 1. The adapter surface
+
+```ts
+interface LaneProfile {
+  readonly laneFailure: Rational; // q, in [0, 1)
+  readonly entitySurvival: Rational; // c, in (0, 1]
+}
+
+interface StageContract {
+  readonly id: string;
+  readonly label: string; // cosmetic; not fingerprinted
+  readonly laneWidth: number; // entities per lane
+  readonly minEntities: number; // smallest field it is offered to
+  readonly profile: LaneProfile;
+  readonly multiplier: Rational; // mu
+}
+
+interface SurvivalDefinition {
+  readonly apiVersion: 'reveal-engine/api-v1';
+  readonly id: string;
+  readonly version: string;
+  readonly entities: number; // N
+  readonly stages: number; // S
+  readonly contracts: readonly StageContract[];
+  readonly drawModulus: bigint; // M
+  readonly pricing: {
+    readonly entryReturn: Rational; // charged once, in (0, 1]
+    readonly continuationReturn: Rational; // pinned to exactly 1
+    readonly rounding: 'floor';
+  };
+  readonly risk: {
+    readonly maxWinMultiple: bigint;
+    readonly capBasis: 'round-external-stake';
+    readonly capMustBeUnreachable: boolean;
+  };
+}
+```
+
+`defineSurvivalGame()` is the only supported construction path: it validates,
+clones, deep-freezes, and runs both mechanical obligations eagerly, so a
+configuration that could pay wrongly cannot reach a round.
+
+The **menu** at a stage is every contract whose `minEntities` is at most the live
+field size, in declaration order. It shrinks as entities are lost or banked, and
+`contractMenu(definition, liveCount)` is what a host renders from.
+
+---
+
+## 2. The lane model, and where correlation lives
+
+A stage resolves in two exact steps per lane:
+
+1. one **shared** draw fires with probability `q` and takes the whole lane;
+2. otherwise each entity of the lane clears **independently** with probability `c`.
+
+So for any lane geometry, one entity's marginal survival is
+
+```
+p = (1 - q) * c
+```
+
+and it does not depend on the geometry at all. The geometry moves the **joint**
+law. `laneFailure = 0` is legal and load-bearing: it is how a contract declares
+that its entities are exactly independent — zero, not an epsilon.
+
+**Lane sizes.** The live field, ascending by entity index, is cut into
+consecutive lanes of `laneWidth`; the last lane carries the remainder. Five
+entities at width 3 give `[3, 2]`; at width 2, `[2, 2, 1]`.
+
+**The law of one lane** of size `s`, for `j` survivors:
+
+```
+P_lane(0) = q + (1 - q) * (1 - c)^s
+P_lane(j) = (1 - q) * C(s, j) * c^j * (1 - c)^(s - j)     for 1 <= j <= s
+```
+
+Lanes are independent of each other, so the field law over `k` survivors is the
+convolution of the per-lane laws. `survivorDistribution()` computes it in exact
+rationals; `distributionTotal()` is the assertion that it sums to exactly `1`,
+and conformance runs it over every contract and every reachable field size rather
+than trusting the algebra.
+
+Two contracts can share a marginal and have completely different survivor
+distributions. That difference is the product: a wide lane concentrates the
+outcome (all or nothing together), a narrow one spreads it.
+
+---
+
+## 3. The tape, and counterfactual completeness
+
+The truth is the whole random tape, derived from the seed and the round pair
+before the round opens:
+
+```
+draws = stages x contracts x entities x 2
+```
+
+For every stage, **every contract on the menu**, there is one lane draw per lane
+slot and one entity draw per entity — including the routes the player will not
+take. Two consequences, both deliberate:
+
+1. No operator can adapt an outcome to a decision. The decision only selects
+   which pre-committed draws are consumed, and because a draw exists for every
+   slot of every geometry, changing the contract re-selects draws that were
+   already committed rather than requiring new ones.
+2. The unchosen branches stay verifiable after the reveal.
+
+**Addressing.** The tape is emitted in one fixed order — lane slots, then entity
+slots, per `(stage, contract)` block — so the sampler counter of a draw is its
+position in the tape:
+
+```
+block(stage, c)      = (stage * |contracts| + c) * N * 2
+lane draw (slot j)   = label 'staged-survival/lane',   counter block + j
+entity draw (e)      = label 'staged-survival/entity', counter block + N + e
+```
+
+`deriveSteps` recomputes that address and compares it against the draw's own
+recorded `(label, counter, modulus)`, so a truncated, reordered or hand-assembled
+truth object fails closed with `DERIVATION_FAILED` rather than resolving a stage
+against the wrong randomness.
+
+**The entity draw is addressed by the entity's own index**, not by its position
+in the live field. That is what keeps the tape independent of history: whether an
+entity runs in lane 0 or lane 2, and whichever entities died before it, it reads
+the same committed draw.
+
+---
+
+## 4. Exactness argument
+
+Every number in a money or probability path is a `Rational` over `BigInt`,
+reduced by `gcd` on construction. There is no `number` in any of them and no
+rounding anywhere except one place, named below.
+
+**4.1 The draws are exactly uniform.** `core/random.ts:uniformBigInt` is
+rejection sampling over 256 bits: it retries until the HMAC output falls below
+`2^256 - (2^256 mod M)` and then reduces mod `M`. Every residue is therefore
+equally likely; there is no modulo bias to bound because there is none.
+
+**4.2 The survival test is an exact comparison, not a rounded one.** For a
+reduced probability `n/k`, the threshold is `t = n * (M / k)` and the event is
+`draw < t`. Its probability is exactly `t / M = n / k` **provided `k` divides
+`M`** — which is why `drawModulus % denominator === 0` is a definition-level
+obligation checked in `assertSurvivalDefinition`, for every `laneFailure` and
+every `entitySurvival` on the menu, and not a convenience. A definition that
+fails it cannot be constructed, so no round can ever compare a draw against a
+truncated threshold.
+
+**4.3 The joint law is computed, not approximated.** `C(s, j)` comes from core's
+exact `fallingFactorial / factorial`; `c^j` and `(1-c)^(s-j)` are repeated exact
+rational multiplication; the convolution is exact rational addition. Nothing is
+normalised after the fact, so `sum_k P(k) = 1` is a fact to be checked rather
+than an artifact of dividing by a total.
+
+**4.4 Claim value is exact for the whole round.** An entity's claim opens at
+`stake * entryReturn` and is multiplied by `mu` for each stage it survives. It is
+floored **only** at a credit boundary — a `bank` or a `settle` — never between
+stages. So a five-stage ride loses nothing to repeated rounding; the round's
+entire rounding loss is at most one minor unit per credit event, and the number
+of credit events is bounded by the ledger's receipt budget.
+
+**4.5 The continuation identity is exact.** `assertSurvivalDefinition` requires,
+for every contract, using `equal()` on reduced rationals:
+
+```
+(1 - q) * c * mu  ==  pricing.continuationReturn  ==  1
+```
+
+Both halves are refusals, not warnings: a contract that does not cancel its own
+hazard, or a `continuationReturn` other than `1`, fails to define.
+
+**4.6 The cap bound is exact, and attained for both references.** A claim opens
+at `stake * entryReturn` and is multiplied once per survived stage by at most
+`max(mu)`, and flooring only ever reduces it, so
+`entryReturn * max(mu)^stages` is a sound upper bound on the credit one unit of
+external stake can produce. It is **attained** — and so the check is not merely
+conservative — whenever the highest-multiplier contract is available at the full
+field, because every entity surviving every stage under it is a
+positive-probability outcome and the field never shrinks along that path. Both
+shipped references satisfy that, so for them the bound is the exact supremum; for
+a definition whose highest multiplier is gated behind a small field it remains
+sound and may be loose, and the check errs on the side of refusing.
+
+When `risk.capMustBeUnreachable` is declared, `defineSurvivalGame()` requires
+that value to sit **strictly below** `risk.maxWinMultiple`, in exact rational
+comparison. For the shipped reference: `191/200 * 4^3 = 1528/25 = 61.12 < 100`.
+
+**4.7 Elimination is exactly zero.** A failed entity's claim value is set to
+`rational(0n)`, and its belief weight is the BigInt `0n`. `weightVector` accepts
+zero weights and rejects an all-zero vector, so "the field is empty" is modelled
+as a terminal outcome slot of its own rather than as an impossible vector.
+
+---
+
+## 5. The money model
+
+```
+value_0(e)            = stake_e * entryReturn                       (margin, once)
+value_{t+1}(e)        = value_t(e) * mu(C_t)      if e survives stage t
+                      = 0                          if e fails
+credit(bank B at t)   = payableWithinCap(sum_{e in B} value_t(e), basis, cap, liquid)
+credit(settle)        = payableWithinCap(sum_{e live} value(e),   basis, cap, liquid)
+basis                 = sum of every externally funded entry
+```
+
+**The cap basis is the round's accumulated external stake.** Every `enter` calls
+`fundStake(stake, 'external')`, so a round holding five funded entities has a
+ceiling proportional to all five — which is what the player actually risked.
+Nothing a player wins inside the round ever grows the basis, so the ceiling cannot
+compound.
+
+**Every credit goes through `creditClaim()`.** Banking happens repeatedly inside
+one round, which is exactly the shape that punishes a forgotten `applyCredit`:
+`creditWithinCap` is a pure query and a book that performs it without the
+matching mutation would credit its full ceiling once per bank, with
+`capped: false` on every receipt. `creditClaim` cannot be half-performed, so each
+banked subset is measured against the balance the last one left behind, and the
+invariant `liquidBalance <= basis * maxWinMultiple` holds across the whole chain.
+`tests/staged-survival-oracle.test.ts` enumerates it.
+
+### 5.1 The invariance theorem
+
+> Under `p * mu = 1` for every contract, the expected total claim value of a
+> round is `sum_e stake_e * entryReturn` for **every** policy: every contract
+> path, every banking decision, every stopping point.
+
+_Proof._ Fix an entity `e` running stage `t` under contract `C`. Its value after
+the stage is `value_t(e) * mu(C)` with probability `p(C)` and `0` otherwise, so
+`E[value_{t+1}(e)] = value_t(e) * p(C) * mu(C) = value_t(e)`. Claim value is
+therefore a martingale in the stage index, and it is a martingale _per entity_,
+so correlation between entities inside a lane changes the variance of the round
+total and never its mean. Banking removes an entity's value from the at-risk pool
+and credits exactly that amount, so it is value-neutral. The total is a finite sum
+of per-entity martingales stopped at policy-chosen times, and optional stopping
+over a bounded horizon gives the claim. Only `entryReturn`, charged once at entry,
+separates the expectation from the stake. ∎
+
+The oracle test proves it by enumeration rather than by citing the proof: it
+enumerates every elementary event of a three-entity, two-stage instance, and
+checks `sum_k P(k) * k * mu == n` for every contract and every reachable field,
+plus the round total for every `(contract, contract, banking policy)` triple.
+
+---
+
+## 6. The round pair and the two-phase commitment
+
+A choice-timed round's body does not exist until the round is over, so one
+commitment cannot cover both "the seed predates every decision" and "this
+settlement is the settlement of that decision log". The scheme is two-phase and
+both phases are mandatory.
+
+| Phase                   | Published                             | Binds                                                                                                                                       |
+| ----------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — seed pre-commitment | before the round opens                | seed, module id, definition id **and fingerprint**, the operator round id, proof version                                                    |
+| 2 — body commitment     | at settlement, with the revealed seed | the definition identity, the round **pair**, the tape digest, every logged decision (contract _and_ banked subset), and every resolved step |
+
+**A round is identified by a pair**: the operator's round id and the player's
+entropy. Its canonical form is `<roundId>|<clientEntropy>`, and that is what
+`truth.derive` and `RoundIdentity.roundId` carry. Both halves reach the sampler
+scope, so both are inside every draw.
+
+Phase 1 binds **only the operator half**, and that omission is the mechanism: the
+entropy does not exist yet. The operator seals a seed against a round it has
+already named; the player then contributes 32 bytes the operator could not have
+predicted; every draw is a function of both. An operator grinding seeds before
+publication is grinding against an unknown, so the grind buys nothing.
+`SEED_PRECOMMITMENT_BROKEN` asserts the pre-commitment does not move when the
+entropy does — a commitment that moved with it could not have been published
+first.
+
+[`../adr/0005-round-entropy-without-a-core-change.md`](../adr/0005-round-entropy-without-a-core-change.md)
+records why the pair rides inside the contract's `roundId: string` rather than
+through a widened core signature, and what that costs.
+
+---
+
+## 7. Wire formats and verification
+
+### 7.1 `staged-survival/transcript-v1`
+
+```jsonc
+{
+  "schema": "staged-survival/transcript-v1",
+  "definitionId": "...",
+  "definitionVersion": "...",
+  "definitionFingerprint": "<64 hex>",
+  "roundId": "...", // operator half
+  "clientEntropy": "<64 hex>", // player half
+  "seedCommitment": "<64 hex>",
+  "tapeDigest": "<64 hex>",
+  "choices": [{ "contractId": "wide", "banked": [0] }],
+  "steps": [
+    {
+      "index": 0,
+      "contractId": "wide",
+      "banked": [0],
+      "lanes": [{ "entities": [1, 2, 3], "collapsed": false }],
+      "survivors": [1, 2],
+      "failed": [3],
+    },
+  ],
+  "commitment": "<64 hex>",
+}
+```
+
+`banked` is part of the **decision**, not a separate log, because withdrawing an
+entity changes which entities are at risk and therefore the step. A transcript
+that omitted it would replay a different round from the one that was played.
+
+A step binds its lane geometry and its failure list as well as its survivors: a
+body that bound only the survivors would let a lane be re-cut, or a failure
+re-attributed, under an unchanged commitment.
+
+### 7.2 Verification, in the contract's required phase order
+
+1. decode the wire form (`deserializeTranscript` — exact key sets, bounded
+   lengths, no coercion, unknown schema fails `UNSUPPORTED_VERSION`);
+2. check the definition id, version **and fingerprint**;
+3. re-derive the seed pre-commitment from the revealed seed and compare in
+   constant time;
+4. re-derive the tape and compare its digest in constant time;
+5. re-derive the steps from the transcript's **own** logged choices and compare;
+6. re-seal the commitment body and compare in constant time.
+
+Every failure is one of `INVALID_TRANSCRIPT`, `UNSUPPORTED_VERSION`,
+`DEFINITION_MISMATCH`, `DERIVATION_FAILED`, `TRANSCRIPT_MISMATCH`,
+`COMMITMENT_MISMATCH`. Nothing throws; an incidental exception is routed through
+`classifyVerificationError`. A choice log naming a contract the menu never
+offered is `INVALID_TRANSCRIPT` — it is not a disagreement about randomness, it
+is a transcript that could not have been played.
+
+### 7.3 `staged-survival/book-v1`
+
+`restore()` re-validates rather than trusting, and **nothing money-bearing is
+read out of the snapshot**:
+
+- every claim's value and liveness are re-derived from the entry stakes and the
+  replayed steps;
+- every credited figure is recomputed with the same `payableWithinCap` the live
+  path used, in ledger order, and compared against its receipt — including the
+  `capped` flag;
+- every receipt's `commandFingerprint` is recomputed from the restored state, so
+  a rewritten entry, decision, or bank subset cannot survive its own ledger;
+- the withdrawn set is recorded twice — in the decision log and in the bank
+  command log — and the two must agree;
+- each step is checked against the field it must have run, the lane partition
+  that field produces under the chosen contract, and the rule that a collapsed
+  lane takes every entity in it.
+
+The checksum is not the control. It detects corruption, not tampering: anyone who
+can rewrite a field can recompute the hash over it. Every tamper case in
+`tests/security/staged-survival-hostile-input.test.ts` and in the
+`SNAPSHOT_NOT_REVALIDATED` conformance check therefore **re-seals** its mutation
+before restoring it, so what is under test is the semantic validation. One case
+deliberately does not re-seal, and says so on the line above it.
+
+What `restore()` cannot check is stated rather than implied: it holds no seed, so
+it cannot verify a step against the tape. A step rewrite that changes no credited
+figure is caught at settlement instead, where the revealed seed exists and the
+transcript must match the book's own log.
+
+### 7.4 Versioning
+
+| Change                                      | Required                                   |
+| ------------------------------------------- | ------------------------------------------ |
+| Any replay-visible declarative field        | new `version`, new fingerprint             |
+| Any change to tape addressing or resolution | new transcript schema + a frozen fixture   |
+| Any change to the transcript fields         | new transcript schema + a frozen fixture   |
+| Any change to the commitment body layout    | new commitment version, old verify-only    |
+| Any change to snapshot fields               | new snapshot schema; unknown ones rejected |
+
+`tests/fixtures/staged-survival-transcript-v1.json` and
+`staged-survival-book-v1.json` are committed files compared field for field, not
+round trips generated at run time. Regenerate with `npm run fixtures:update`,
+deliberately.
+
+**The fingerprint enumerates lane sizes, not only the width that generates
+them.** The width names the geometry; the sizes are what determine the survivor
+distribution. Binding only the width would leave a hole: keep `laneWidth` and
+redefine how the remainder lane is cut, and every correlated price in the round
+moves under an unchanged fingerprint. Cosmetic `label` fields stay out, so a
+rename cannot change the identity of the game being played.
+
+---
+
+## 8. The reference adapter
+
+`fiveRunnerReference` — five runners, three stages, three contracts. A toy, and
+deliberately the _shape_ the two real consumers need rather than either of them.
+
+| contract | lane width | `q`    | `c`   | marginal `p` | `mu`    | offered from |
+| -------- | ---------- | ------ | ----- | ------------ | ------- | ------------ |
+| `wide`   | 3          | `1/25` | `7/8` | `21/25`      | `25/21` | 3 runners    |
+| `split`  | 2          | `0`    | `3/4` | `3/4`        | `4/3`   | 2 runners    |
+| `narrow` | 1          | `1/2`  | `1/2` | `1/4`        | `4/1`   | 1 runner     |
+
+- `wide` is the safest per entity and the most correlated: three runners share
+  one collapse draw.
+- `split` cuts the field into pairs with `q` **exactly zero**, so its entities
+  are exactly independent and its joint law is a clean product.
+- `narrow` is one runner per lane: correlation is structurally absent, the
+  marginal is lowest, and the multiplier is largest.
+
+`drawModulus = 1,200,000`, divisible by every reduced denominator on the menu
+(25, 8, 4, 2, 1). `entryReturn = 191/200`; `continuationReturn = 1`. Exact
+maximum round return `191/200 * 4^3 = 1528/25 = 61.12`, so `maxWinMultiple: 100`
+is declared unreachable and the arithmetic says so. Tape size `3 * 3 * 5 * 2 = 90`
+draws.
+
+`oracleTrialReference` — three entities, two stages, `pair` (width 2, `q = 1/3`,
+`c = 3/4`, `mu = 2`) and `solo` (width 1, `q = 0`, `c = 2/3`, `mu = 3/2`),
+`drawModulus = 12`, `entryReturn = 9/10`, `maxWinMultiple: 4` against an exact
+maximum of `18/5`. It is small enough that the whole elementary-event space is
+enumerable, which is what the oracle test does.
+
+---
+
+## 9. Conformance and evidence
+
+Twelve declared checks, all synchronous, all run by `reveal-conformance` and
+therefore by CI over both references:
+
+| Code                         | Scope      | What it establishes                                                               |
+| ---------------------------- | ---------- | --------------------------------------------------------------------------------- |
+| `NOT_DEEP_FROZEN`            | definition | the declarative graph is frozen                                                   |
+| `CONTINUATION_NOT_FAIR`      | definition | `p * mu == 1` per entity **and** `sum_k P(k)(k/n) mu == 1` over the joint law     |
+| `DISTRIBUTION_NOT_EXACT`     | definition | `sum_k P(k) == 1` exactly and the mean matches `n(1-q)c`                          |
+| `LANE_GEOMETRY_UNSTABLE`     | definition | lane sizes tile the field, are stable, and never exceed the width                 |
+| `CAP_REACHABLE`              | definition | a cap declared unreachable strictly exceeds the exact maximum return              |
+| `TAPE_NOT_DETERMINISTIC`     | round      | the tape is fixed by the seed and moves with **either** half of the round pair    |
+| `CHOICES_DO_NOT_DRIVE_STEPS` | round      | steps are a pure function of (tape, choices) and move when the choices do         |
+| `COMMITMENT_IGNORES_CHOICES` | round      | the body binds the contract **and** the banked subset of every decision           |
+| `SEED_PRECOMMITMENT_BROKEN`  | round      | the pre-commitment re-derives, is seed-specific, and is **entropy-independent**   |
+| `TRANSCRIPT_ROUND_TRIP`      | round      | a built transcript verifies; a rewritten survivor list is a `TRANSCRIPT_MISMATCH` |
+| `SNAPSHOT_NOT_REVALIDATED`   | round      | `restore()` accepts a re-derived staked snapshot and rejects re-sealed rewrites   |
+| `BANKING_LOSES_VALUE`        | round      | exact value is conserved across every prefix/suffix split, with floor loss <= 1   |
+
+`stakedSnapshotFor()` re-derives a staked mid-round snapshot from the module's own
+primitives, because checks are synchronous and the book's command API is not. A
+contract test pins it field for field against a genuinely driven round, so the
+re-derivation cannot drift into something `restore()` would reject for the wrong
+reason.
+
+### Residual risks this module does not close
+
+- **Publication ordering.** The entropy control depends on the seed
+  pre-commitment being durably published _before_ the entropy is collected.
+  Wall-clock ordering is not a property of the arguments and no library can check
+  it. See [`../threat-model.md`](../threat-model.md).
+- **Entropy that is not the player's.** If the client echoes a value the server
+  suggested, the control is gone and nothing in the transcript shows it.
+- **Selective non-reveal.** Nothing in commit-reveal forces an operator to
+  settle. This module has no expiry or reconciliation path; closing an abandoned
+  round is an operator concern and is not modelled here.
+- **Seed custody and grinding before publication.** Outside this library.
+
+---
+
+## 10. Compatibility with the two build-ready consumers
+
+Both `branchfall/docs/ENGINE.md` and `swarm/docs/ENGINE.md` were written against
+an imagined engine before this contract existed. What they need and what this
+module provides, stated plainly in both directions.
+
+### Provided
+
+| Requirement                                                                | Where                                              |
+| -------------------------------------------------------------------------- | -------------------------------------------------- |
+| Choice-timed lifecycle, decision before the stage resolves                 | `choiceTiming: 'before-step'`, `choose()`          |
+| Two-phase commitment, mandatory                                            | `seedCommitment()` + `commitmentBody()`            |
+| Player entropy in every draw, chosen after phase 1                         | `RoundRef.clientEntropy` (§6, ADR 0005)            |
+| Counterfactually complete hazard table                                     | the tape (§3)                                      |
+| Explicit correlation: shared lane collapse + independent per-entity checks | `LaneProfile` (§2)                                 |
+| Lane geometry fingerprinted **by size**                                    | `definitionFields()` (§7.4) — closes BRANCHFALL §8 |
+| `continuationRtp` pinned to exactly 1                                      | `pricing.continuationReturn`, a refusal            |
+| Margin charged once per ticket                                             | `pricing.entryReturn`                              |
+| `SHELTER` / `HARVEST`: credit part of the claim mid-round                  | `bank(subset)` (§5)                                |
+| Mechanical fairness identity checked at define time                        | `assertSurvivalDefinition` (§4.5)                  |
+| Mechanical risk-headroom check, cap unreachable                            | `assertCapIsUnreachable` (§4.6)                    |
+| Multiplier derived from the declaration, never hand-entered                | `p * mu == 1` refusal makes a typo undefinable     |
+| Exact rational money, floor only at a credit boundary                      | §4.4                                               |
+| Frame fence, idempotency, receipts, re-validating restore                  | `SurvivalBook` (§7.3)                              |
+| Stable machine-branchable failure codes                                    | §7.2                                               |
+
+BRANCHFALL's player-chosen **lane balance** is expressible as one contract per
+balance, with `minEntities` as the availability window — which is what an
+adapter-defined menu is for, and it is why the fingerprint enumerates the lane
+sizes of every reachable field rather than only the widths.
+
+### Not provided, and named rather than implied
+
+- **Side bets** (`SideBetSpec`, `SideBetDefinition`). Both games want per-arena
+  or per-line tickets priced from the committed geometry, each with its **own**
+  cap basis. This module has one cap basis per round — `round-external-stake` —
+  and declares it. Per-line caps and side-bet pricing are a separate concern and
+  would need either a second module or an extension with its own proof.
+- **SWARM's branching population.** SWARM's organisms _split_: its population
+  grows, and its draw consumption per stage is the population. This module
+  resolves a shrinking subset of a fixed entity set and cannot express offspring.
+  Everything else in SWARM's §6 conformance list is covered here; the cohort model
+  itself is not, and a `branching-population` module is the honest answer.
+- **Speed of play, expiry, seed chains** (`minGameCycleMs`, `expire()`,
+  `buildSeedChain`). These are operator-protocol concerns that sit above a
+  lifecycle module. Nothing here prevents them; nothing here implements them.
+
+---
+
+## 11. Certification boundary
+
+This is a specification and an implementation of a derivation and replay path. It
+is not a fairness certificate, an RNG certificate, a mathematical certification,
+regulatory approval, or proof of a deployed game's RTP. The conformance suite
+produces **evidence**, not certification: it establishes the mechanical
+properties listed in §9 over the seeds it swept, and nothing beyond them. See
+[`../certification-boundary.md`](../certification-boundary.md).

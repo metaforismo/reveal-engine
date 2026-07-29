@@ -1,6 +1,6 @@
 {
   "name": "@axiom-games/reveal-engine",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Provably-fair casino game engine: exact-arithmetic core plus lifecycle modules",
   "type": "module",
@@ -35,6 +35,10 @@
     "./modules/progressive-market": {
       "types": "./dist/modules/progressive-market/index.d.ts",
       "default": "./dist/modules/progressive-market/index.js"
+    },
+    "./modules/staged-survival": {
+      "types": "./dist/modules/staged-survival/index.d.ts",
+      "default": "./dist/modules/staged-survival/index.js"
     },
     "./protocol": {
       "types": "./dist/protocol/index.d.ts",

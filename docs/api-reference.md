@@ -9,6 +9,7 @@
 | `/core`                                     | game-agnostic primitives and the lifecycle-module contract           |
 | `/modules`                                  | module registry: `listModules`, `findModule`, `requireModule`        |
 | `/modules/progressive-market`               | the progressive-market lifecycle module in full                      |
+| `/modules/staged-survival`                  | the staged-survival lifecycle module in full                         |
 | `/conformance`                              | module conformance runner and reports                                |
 | `/integration`                              | illustrative, non-durable RGS boundary                               |
 | `/protocol`, `/serialization`, `/reference` | **deprecated** aliases into `/modules/progressive-market`            |

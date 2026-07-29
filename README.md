@@ -61,8 +61,8 @@ library. See [`docs/threat-model.md`](docs/threat-model.md).
 | -------------------- | ------------------------------------------------------------------------------------------------------------------ | ------- |
 | **core**             | RNG, commitments, exact math, payments, ledger, limits, wire safety                                                | shipped |
 | `progressive-market` | one hidden truth, a Bayesian evidence stream, a single-position book with fair-value sell and re-entry             | shipped |
+| `staged-survival`    | N entities through S stages; a contract chosen per stage before it resolves; per-entity partial claims and banking | shipped |
 | `sequential-cards`   | committed deck shuffle; reveals that eliminate outcomes to exactly zero; multiple simultaneous positions           | next    |
-| `staged-survival`    | N entities through S stages; a contract chosen per stage before it resolves; per-entity partial claims and banking | next    |
 | `permutation`        | structured truth (an ordering of n items) with multi-bet paytable settlement                                       | next    |
 | `grid-pattern`       | spatial reveal over a committed grid                                                                               | later   |
 | `graph-propagation`  | reveal that spreads along a committed graph                                                                        | later   |
@@ -72,7 +72,7 @@ The contract every module implements is documented in
 [`docs/lifecycle-modules.md`](docs/lifecycle-modules.md) and typed in
 `src/core/module.ts`.
 
-The three `next` modules are not built yet, but the properties that make them
+The remaining `next` modules are not built yet, but the properties that make them
 hard are already executable. `tests/support/ordering-fixture-module.ts` carries
 the permutation truth, the reveals that drive an outcome to posterior exactly
 zero, the combinatorial paytable, and the several simultaneous positions;

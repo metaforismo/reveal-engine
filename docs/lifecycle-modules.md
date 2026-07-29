@@ -483,20 +483,22 @@ The contract was designed against four shapes, not one.
 | -------------------- | --------------------------- | ------------------------------ | ----------- | -------------------------------------------------------- | ---------------------------------------------- |
 | `progressive-market` | `scalar-index`              | Bayesian evidence stream       | none        | `outcomes`; `belief()` is the price, ≤ 64 outcomes       | single position, winner-takes-claim            |
 | `sequential-cards`   | `permutation` (deck order)  | reveals that zero out outcomes | none        | `marginal`; omit `belief()` if the shoe exceeds 64 cards | multi position, independent sells and switches |
-| `staged-survival`    | `composite` (a random tape) | stage resolutions              | before-step | `marginal`; `price()` over surviving entities            | multi claim, partial banking                   |
+| `staged-survival`    | `composite` (a random tape) | correlated stage resolutions   | before-step | `marginal`; `price()` over surviving entities            | multi claim, partial banking                   |
 | `permutation`        | `permutation` of n items    | ordering reveals               | none        | `marginal`; `price()` by exact counting                  | multi bet, paytable settlement                 |
 
-Only `progressive-market` ships today. The other three are the immediate next
-modules and are named here so the contract is judged against them.
+Two ship today: `progressive-market` and `staged-survival`
+([`modules/staged-survival.md`](modules/staged-survival.md)). The other two are
+the immediate next modules and are named here so the contract is judged against
+them.
 
 Two **test-only** modules under `tests/support/` — not registered, not games —
 exercise the parts of the contract the progressive market does not use, so the
 contract is proved by something other than its first client:
 
-| Fixture                             | Proves                                                                                                                                                                                                                |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ordering-fixture-module.ts`        | permutation truth, steps that reach posterior exactly zero, a `marginal` belief space priced by exact counting, a multi-claim paytable book whose positions each raise the cap basis, and a re-validating `restore()` |
-| `staged-survival-fixture-module.ts` | `choiceTiming: 'before-step'`, a `RandomTape` truth, a commitment body that binds the choice log, a seed pre-commitment published before the first decision, and per-entity partial claims banked in subsets          |
+| Fixture                             | Proves                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ordering-fixture-module.ts`        | permutation truth, steps that reach posterior exactly zero, a `marginal` belief space priced by exact counting, a multi-claim paytable book whose positions each raise the cap basis, and a re-validating `restore()`                                                                                                                                                                                                        |
+| `staged-survival-fixture-module.ts` | `choiceTiming: 'before-step'`, a `RandomTape` truth, a commitment body that binds the choice log, a seed pre-commitment published before the first decision, and per-entity partial claims banked in subsets. Retained after the real `staged-survival` module shipped: it exercises the contract with a second, deliberately minimal implementation, so the contract is not proved only by the module that consumes it most |
 
 ## Adding a module
 

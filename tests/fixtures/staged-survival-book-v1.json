@@ -1,0 +1,454 @@
+{
+  "note": "Frozen staged-survival/book-v1 snapshots: one mid-round, one settled.",
+  "seed": "4545454545454545454545454545454545454545454545454545454545454545",
+  "roundId": "frozen-survival-round",
+  "clientEntropy": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+  "midSnapshot": {
+    "schema": "staged-survival/book-v1",
+    "definition": {
+      "id": "five-runner-trial-v1",
+      "fingerprint": "f2390641bd8254e89510c7eb63a5b23f6e013d25b1a4d29d9af3c3769f5950d1"
+    },
+    "terminal": false,
+    "stageRevision": 1,
+    "ledgerRevision": 7,
+    "choices": [
+      {
+        "contractId": "wide",
+        "banked": []
+      }
+    ],
+    "steps": [
+      {
+        "index": 0,
+        "contractId": "wide",
+        "banked": [],
+        "lanes": [
+          {
+            "entities": [0, 1, 2],
+            "collapsed": false
+          },
+          {
+            "entities": [3, 4],
+            "collapsed": false
+          }
+        ],
+        "survivors": [0, 2, 3, 4],
+        "failed": [1]
+      }
+    ],
+    "pendingBanked": [0],
+    "entries": [
+      {
+        "entity": 0,
+        "stake": "100"
+      },
+      {
+        "entity": 1,
+        "stake": "200"
+      },
+      {
+        "entity": 2,
+        "stake": "300"
+      },
+      {
+        "entity": 3,
+        "stake": "400"
+      },
+      {
+        "entity": 4,
+        "stake": "500"
+      }
+    ],
+    "banks": [
+      {
+        "stage": 1,
+        "entities": [0]
+      }
+    ],
+    "settlementCommitment": null,
+    "liquidBalance": "113",
+    "capBasisStake": "1500",
+    "receipts": [
+      {
+        "fingerprint": "e8d346be8c105b640d0836a6b8960d4e0f65d43ab165c9465a6526173263da62",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-0",
+          "commandFingerprint": "e8d346be8c105b640d0836a6b8960d4e0f65d43ab165c9465a6526173263da62",
+          "action": "enter",
+          "ledgerRevision": 1,
+          "frameRevision": 0,
+          "debited": "100",
+          "credited": "0",
+          "balanceDelta": "-100",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "c99a5aa1bda591b09c99bc7d0faf73c1df47092aaa86a513b091ed4d00b4a04b",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-1",
+          "commandFingerprint": "c99a5aa1bda591b09c99bc7d0faf73c1df47092aaa86a513b091ed4d00b4a04b",
+          "action": "enter",
+          "ledgerRevision": 2,
+          "frameRevision": 0,
+          "debited": "200",
+          "credited": "0",
+          "balanceDelta": "-200",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "dbe229ebd316ad98b1850820bc8ea94af47845190cfc1f27bc81c897ec40c0ae",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-2",
+          "commandFingerprint": "dbe229ebd316ad98b1850820bc8ea94af47845190cfc1f27bc81c897ec40c0ae",
+          "action": "enter",
+          "ledgerRevision": 3,
+          "frameRevision": 0,
+          "debited": "300",
+          "credited": "0",
+          "balanceDelta": "-300",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "2c3757b78422b401b7115cfaa7b305bacfeb08a734624124f7aedf5fa52e1beb",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-3",
+          "commandFingerprint": "2c3757b78422b401b7115cfaa7b305bacfeb08a734624124f7aedf5fa52e1beb",
+          "action": "enter",
+          "ledgerRevision": 4,
+          "frameRevision": 0,
+          "debited": "400",
+          "credited": "0",
+          "balanceDelta": "-400",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "1ddb148bc452400e74b268dbd32acace586da50506e6ae38c3dec916d8bf4111",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-4",
+          "commandFingerprint": "1ddb148bc452400e74b268dbd32acace586da50506e6ae38c3dec916d8bf4111",
+          "action": "enter",
+          "ledgerRevision": 5,
+          "frameRevision": 0,
+          "debited": "500",
+          "credited": "0",
+          "balanceDelta": "-500",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "ccae99addbacc778a2f29df0cd40407a352b06466ab8c8cabb20fbd824f338a4",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-choose-0",
+          "commandFingerprint": "ccae99addbacc778a2f29df0cd40407a352b06466ab8c8cabb20fbd824f338a4",
+          "action": "choose",
+          "ledgerRevision": 6,
+          "frameRevision": 0,
+          "debited": "0",
+          "credited": "0",
+          "balanceDelta": "0",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-bank-1",
+          "commandFingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+          "action": "bank",
+          "ledgerRevision": 7,
+          "frameRevision": 1,
+          "debited": "0",
+          "credited": "113",
+          "balanceDelta": "113",
+          "capped": false
+        }
+      }
+    ],
+    "snapshotHash": "c96b8424932ef7b413b3126a138d834f9ac7282a2dfe2fe6ad5ad9d9780b1490"
+  },
+  "snapshot": {
+    "schema": "staged-survival/book-v1",
+    "definition": {
+      "id": "five-runner-trial-v1",
+      "fingerprint": "f2390641bd8254e89510c7eb63a5b23f6e013d25b1a4d29d9af3c3769f5950d1"
+    },
+    "terminal": true,
+    "stageRevision": 3,
+    "ledgerRevision": 11,
+    "choices": [
+      {
+        "contractId": "wide",
+        "banked": []
+      },
+      {
+        "contractId": "wide",
+        "banked": [0]
+      },
+      {
+        "contractId": "split",
+        "banked": [2]
+      }
+    ],
+    "steps": [
+      {
+        "index": 0,
+        "contractId": "wide",
+        "banked": [],
+        "lanes": [
+          {
+            "entities": [0, 1, 2],
+            "collapsed": false
+          },
+          {
+            "entities": [3, 4],
+            "collapsed": false
+          }
+        ],
+        "survivors": [0, 2, 3, 4],
+        "failed": [1]
+      },
+      {
+        "index": 1,
+        "contractId": "wide",
+        "banked": [0],
+        "lanes": [
+          {
+            "entities": [2, 3, 4],
+            "collapsed": false
+          }
+        ],
+        "survivors": [2, 3, 4],
+        "failed": []
+      },
+      {
+        "index": 2,
+        "contractId": "split",
+        "banked": [2],
+        "lanes": [
+          {
+            "entities": [3, 4],
+            "collapsed": false
+          }
+        ],
+        "survivors": [3, 4],
+        "failed": []
+      }
+    ],
+    "pendingBanked": [],
+    "entries": [
+      {
+        "entity": 0,
+        "stake": "100"
+      },
+      {
+        "entity": 1,
+        "stake": "200"
+      },
+      {
+        "entity": 2,
+        "stake": "300"
+      },
+      {
+        "entity": 3,
+        "stake": "400"
+      },
+      {
+        "entity": 4,
+        "stake": "500"
+      }
+    ],
+    "banks": [
+      {
+        "stage": 1,
+        "entities": [0]
+      },
+      {
+        "stage": 2,
+        "entities": [2]
+      }
+    ],
+    "settlementCommitment": "5e9ba776f01d8191218240d32ab9eef5aea1b6832fd630b74cdad93b12e8c118",
+    "liquidBalance": "2143",
+    "capBasisStake": "1500",
+    "receipts": [
+      {
+        "fingerprint": "e8d346be8c105b640d0836a6b8960d4e0f65d43ab165c9465a6526173263da62",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-0",
+          "commandFingerprint": "e8d346be8c105b640d0836a6b8960d4e0f65d43ab165c9465a6526173263da62",
+          "action": "enter",
+          "ledgerRevision": 1,
+          "frameRevision": 0,
+          "debited": "100",
+          "credited": "0",
+          "balanceDelta": "-100",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "c99a5aa1bda591b09c99bc7d0faf73c1df47092aaa86a513b091ed4d00b4a04b",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-1",
+          "commandFingerprint": "c99a5aa1bda591b09c99bc7d0faf73c1df47092aaa86a513b091ed4d00b4a04b",
+          "action": "enter",
+          "ledgerRevision": 2,
+          "frameRevision": 0,
+          "debited": "200",
+          "credited": "0",
+          "balanceDelta": "-200",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "dbe229ebd316ad98b1850820bc8ea94af47845190cfc1f27bc81c897ec40c0ae",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-2",
+          "commandFingerprint": "dbe229ebd316ad98b1850820bc8ea94af47845190cfc1f27bc81c897ec40c0ae",
+          "action": "enter",
+          "ledgerRevision": 3,
+          "frameRevision": 0,
+          "debited": "300",
+          "credited": "0",
+          "balanceDelta": "-300",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "2c3757b78422b401b7115cfaa7b305bacfeb08a734624124f7aedf5fa52e1beb",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-3",
+          "commandFingerprint": "2c3757b78422b401b7115cfaa7b305bacfeb08a734624124f7aedf5fa52e1beb",
+          "action": "enter",
+          "ledgerRevision": 4,
+          "frameRevision": 0,
+          "debited": "400",
+          "credited": "0",
+          "balanceDelta": "-400",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "1ddb148bc452400e74b268dbd32acace586da50506e6ae38c3dec916d8bf4111",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-enter-4",
+          "commandFingerprint": "1ddb148bc452400e74b268dbd32acace586da50506e6ae38c3dec916d8bf4111",
+          "action": "enter",
+          "ledgerRevision": 5,
+          "frameRevision": 0,
+          "debited": "500",
+          "credited": "0",
+          "balanceDelta": "-500",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "ccae99addbacc778a2f29df0cd40407a352b06466ab8c8cabb20fbd824f338a4",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-choose-0",
+          "commandFingerprint": "ccae99addbacc778a2f29df0cd40407a352b06466ab8c8cabb20fbd824f338a4",
+          "action": "choose",
+          "ledgerRevision": 6,
+          "frameRevision": 0,
+          "debited": "0",
+          "credited": "0",
+          "balanceDelta": "0",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-bank-1",
+          "commandFingerprint": "c69299ae08daee97e29ad4c29b79fe7bf0a65e6f0fc0101a8c0fae2bf56d4ba1",
+          "action": "bank",
+          "ledgerRevision": 7,
+          "frameRevision": 1,
+          "debited": "0",
+          "credited": "113",
+          "balanceDelta": "113",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "997337ab27d37a4862fa424f775dc7ee312e233a9445e621f6eebd7ba492f11f",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-choose-1",
+          "commandFingerprint": "997337ab27d37a4862fa424f775dc7ee312e233a9445e621f6eebd7ba492f11f",
+          "action": "choose",
+          "ledgerRevision": 8,
+          "frameRevision": 1,
+          "debited": "0",
+          "credited": "0",
+          "balanceDelta": "0",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "a0df1e4d1b54bf6abd20ef86cddbaf426157999de2305cc33b821d4fb9dd9189",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-bank-2",
+          "commandFingerprint": "a0df1e4d1b54bf6abd20ef86cddbaf426157999de2305cc33b821d4fb9dd9189",
+          "action": "bank",
+          "ledgerRevision": 9,
+          "frameRevision": 2,
+          "debited": "0",
+          "credited": "406",
+          "balanceDelta": "406",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "1771380e628e75a98733d15d59b9426f5d7ec6f0677bab860a67b547dccd1878",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-choose-2",
+          "commandFingerprint": "1771380e628e75a98733d15d59b9426f5d7ec6f0677bab860a67b547dccd1878",
+          "action": "choose",
+          "ledgerRevision": 10,
+          "frameRevision": 2,
+          "debited": "0",
+          "credited": "0",
+          "balanceDelta": "0",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "ce9e8458a494739ec3837db92d526d83b527ae9b6efcdebe0b26b53fe1eca6de",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-settle",
+          "commandFingerprint": "ce9e8458a494739ec3837db92d526d83b527ae9b6efcdebe0b26b53fe1eca6de",
+          "action": "settle",
+          "ledgerRevision": 11,
+          "frameRevision": 3,
+          "debited": "0",
+          "credited": "1624",
+          "balanceDelta": "1624",
+          "capped": false
+        }
+      }
+    ],
+    "snapshotHash": "347641684425f950fca2df43e02c6244ac07d964ca9b2be63e6940e1f8af167a"
+  }
+}

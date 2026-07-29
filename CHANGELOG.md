@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.0 — 2026-07-29
+
+The second lifecycle module: `staged-survival`.
+
+### Added
+
+- `staged-survival` (`src/modules/staged-survival/`, documented in
+  `docs/modules/staged-survival.md`): N entities through S stages, a stage
+  contract chosen from an adapter-defined menu **before** the stage resolves, and
+  per-entity contingent claims banked in subsets between stages. Registered in
+  `src/modules/index.ts` and exported at `./modules/staged-survival`, so it runs
+  in `reveal-conformance` and in the package smoke test without either being
+  edited for it.
+- **Correlation is a declared property.** A `LaneProfile` is a shared per-lane
+  shock `q` plus an independent per-entity clear `c`: the marginal
+  `p = (1 - q)c` is the same for every geometry while the joint law is a
+  convolution of per-lane binomials mixed with a point mass at zero.
+  `q = 0` is exactly zero, so a contract can declare exact independence.
+- **A counterfactually complete tape.** The seed expands into a draw for every
+  stage, every contract on the menu, every lane slot and every entity —
+  `stages x contracts x entities x 2` — before the round opens. A decision
+  selects which committed draws are read, never which draws exist, and the
+  unchosen routes stay verifiable after the reveal.
+- **Player entropy in every draw.** A round is identified by the pair
+  `(roundId, clientEntropy)`; the seed pre-commitment binds only the operator
+  half, because the entropy does not exist when it is published. See
+  `docs/adr/0005-round-entropy-without-a-core-change.md` for why this rides in
+  the contract's `roundId: string` rather than through a widened core signature,
+  and what that costs.
+- **Two mechanical refusals at define time.**
+  `marginalSurvival * multiplier === pricing.continuationReturn === 1` for every
+  contract, so every route through a round returns the same and the entry margin
+  is the whole edge; and, when `risk.capMustBeUnreachable` is declared, the exact
+  maximum round return `entryReturn * max(mu)^stages` must sit strictly below
+  `risk.maxWinMultiple`.
+- Wire formats `staged-survival/transcript-v1` and `staged-survival/book-v1`,
+  with frozen fixtures in `tests/fixtures/` compared field for field.
+- A mandatory oracle test (`tests/staged-survival-oracle.test.ts`): a
+  three-entity, two-stage instance enumerated **exhaustively** against an
+  independently coded model — every elementary draw pattern of every reachable
+  field, the survivor distribution term for term, the expected value of every
+  contract path under every banking policy, and the round cap held across the
+  whole chain and shown to bind exactly where the arithmetic says it must.
+- Two reference definitions: `fiveRunnerReference` (five runners, three stages,
+  `wide`/`split`/`narrow`) and `oracleTrialReference`.
+
+### Changed
+
+- `docs/lifecycle-modules.md`, `README.md` and `docs/api-reference.md` record
+  that two modules ship. **No core file was modified.**
+
 ## 0.3.0 — 2026-07-29
 
 Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.

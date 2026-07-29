@@ -32,7 +32,10 @@ import { seed } from './helpers.js';
 
 describe('lifecycle module contract', () => {
   it('registers progressive-market as a module, not as the engine spine', () => {
-    expect(listModules().map((module) => module.id)).toEqual(['progressive-market']);
+    expect(listModules().map((module) => module.id)).toEqual([
+      'progressive-market',
+      'staged-survival',
+    ]);
     expect(findModule('progressive-market')).toBe(progressiveMarket);
     expect(requireModule('progressive-market').moduleApiVersion).toBe(MODULE_API_VERSION);
     expect(progressiveMarket.truth.kind).toBe('scalar-index');

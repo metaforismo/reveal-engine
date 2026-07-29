@@ -9,8 +9,15 @@
  */
 import { writeFileSync } from 'node:fs';
 import { buildFrozenRound, FROZEN_ROUND_ID, FROZEN_SEED } from '../tests/support/frozen-round.js';
+import {
+  buildFrozenSurvivalRound,
+  FROZEN_SURVIVAL_ENTROPY,
+  FROZEN_SURVIVAL_ROUND,
+  FROZEN_SURVIVAL_SEED,
+} from '../tests/support/staged-survival-frozen-round.js';
 
 const round = await buildFrozenRound();
+const survival = await buildFrozenSurvivalRound();
 
 const files: readonly [string, unknown][] = [
   [
@@ -29,6 +36,27 @@ const files: readonly [string, unknown][] = [
       seed: FROZEN_SEED,
       roundId: FROZEN_ROUND_ID,
       receipts: round.receipts,
+    },
+  ],
+  [
+    'tests/fixtures/staged-survival-transcript-v1.json',
+    {
+      note: 'Frozen staged-survival/transcript-v1 proof. Regenerate with npm run fixtures:update.',
+      seed: FROZEN_SURVIVAL_SEED,
+      roundId: FROZEN_SURVIVAL_ROUND,
+      clientEntropy: FROZEN_SURVIVAL_ENTROPY,
+      transcript: survival.wire,
+    },
+  ],
+  [
+    'tests/fixtures/staged-survival-book-v1.json',
+    {
+      note: 'Frozen staged-survival/book-v1 snapshots: one mid-round, one settled.',
+      seed: FROZEN_SURVIVAL_SEED,
+      roundId: FROZEN_SURVIVAL_ROUND,
+      clientEntropy: FROZEN_SURVIVAL_ENTROPY,
+      midSnapshot: survival.midSnapshot,
+      snapshot: survival.snapshot,
     },
   ],
 ];
