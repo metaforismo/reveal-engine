@@ -54,6 +54,18 @@ Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.
 - `deriveMaxContinuations`, adopted from the adoption-bridge branch
   (`docs/adr/0001-branch-adoption.md`).
 - Package subpaths `./modules` and `./modules/progressive-market`.
+- `CommandLedger.creditClaim(theoretical, mint)`: prices a claim against the
+  remaining ceiling, mints its receipt, and applies the credit as one step, so
+  the cap chain cannot be half-performed. `creditWithinCap()` is a pure query
+  and `applyCredit()` is the only call that moves the balance — a book that made
+  the first without the second credited its full ceiling once per claim, with
+  `capped: false` on every receipt. Both halves are now documented as mandatory
+  in `docs/lifecycle-modules.md` §5, and `progressive-market` plus both fixtures
+  go through the atomic call. See `docs/adr/0004`.
+- `ModuleConformanceReport.ran`: how many times each declared check actually
+  executed. `checks` states what was declared; `ran` states what was proved.
+- `ENGINE_LIMITS.maxConformanceSeeds` (4,096), which was already the conformance
+  runner's hard-coded bound.
 
 ### Changed
 
@@ -97,7 +109,29 @@ Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.
   (`assertRecord`, `assertExactKeys`, `assertRevision`); the snapshot family
   they duplicated is unchanged.
 - `./core` is game-agnostic. `./protocol`, `./serialization`, and `./reference`
-  remain as deprecated aliases into the module.
+  remain as deprecated aliases into the module, and every progressive-market
+  symbol re-exported from the package root now carries the same `@deprecated`
+  marker naming the subpath that owns it. The root barrel mixes engine surface
+  with one module's API for 0.2 compatibility; nothing there said which was
+  which. The README quickstart imports from the module subpath.
+- `defineLifecycleModule()` validates every declaration it can reach: all five
+  declared enums (`truth.kind`, `steps.choiceTiming`, `steps.beliefSpace`,
+  `book.positions`, `book.settlement`), every mandatory hook, every optional
+  hook that is present, `conformance.defaultSeeds`, and each conformance check's
+  `code`, `description`, `scope`, and `run`. It previously accepted arbitrary
+  strings for four of the enums — a `positions` or `settlement` typo routed a
+  host down the wrong reserve-maths branch silently — and accepted a module with
+  no `transcript.fromWire`, which is the untrusted-input boundary.
+- `StepModel.maxSteps` is enforced: a derivation that returns more steps than the
+  module declared fails with `DERIVATION_FAILED`. It previously had no consumer
+  beyond its own range check.
+- `TruthModel.encode` and `StepModel.encode` are load-bearing rather than
+  decorative. `canonicalTranscriptBytes` composes the commitment body out of the
+  same two functions the module declares, so the declared encoding _is_ the
+  proof-bearing one; both test fixtures do the same, and a contract test rebuilds
+  the sealed body from the declared encoders alone. No proof bytes moved.
+- `checkModuleConformance` requires `seedCount >= 1`. Zero skipped every
+  round-scoped check and still returned `ok: true` with all check codes listed.
 - `blackSignalReference` derives its continuation policy instead of declaring
   it: `maxRides` 1 → 2, `adapterVersion` 1.0.0 → 1.1.0, and therefore a new
   fingerprint. This is the only intended replay-visible behavior change.
@@ -133,6 +167,19 @@ Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.
   attacker-shaped wire data produces a typed failure rather than a `TypeError`.
 - `deriveMaxContinuations` rejects a base round already below its floor instead
   of returning zero, which was indistinguishable from "no rides permitted".
+- `assertClaimBudget` validated `openClaims` strictly and `maxOpenClaims` not at
+  all, so `(5, undefined)`, `(5, NaN)`, and `(5, Infinity)` all passed:
+  `openClaims >= maxOpenClaims` is `false` for every non-number. It was the only
+  core assert in the repository that failed open, and the only core-side bound on
+  simultaneous open claims. The budget is now validated as strictly as the count.
+- A conformance check whose `scope` was neither `definition` nor `round` never
+  ran, while `report.checks` still listed its code and `report.ok` was `true`. It
+  is rejected at definition time and by the runner.
+- Snapshot tamper cases in `tests/frozen-fixtures.test.ts`,
+  `tests/replay-serialization.test.ts`, and the ordering fixture's
+  `SNAPSHOT_NOT_REVALIDATED` check kept the original `snapshotHash`, so they were
+  rejected by the checksum rather than on their merits — the weaker claim, and
+  not the one the contract makes. They re-seal now.
 
 ### Unchanged (verified)
 

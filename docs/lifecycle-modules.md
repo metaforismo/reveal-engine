@@ -61,13 +61,27 @@ host persists all five per round.
 `kind`, `derive`, `encode`, `equal`, optional `enumerate`.
 
 The truth is **not** required to be a scalar index. `kind` is one of
-`scalar-index`, `permutation`, `vector`, `composite`. `derive(seed, definition,
+`scalar-index`, `permutation`, `vector`, `composite`, and
+`defineLifecycleModule()` rejects anything else. `derive(seed, definition,
 roundId)` must be a pure function of the seed and the definition, so an operator
 who has published a commitment cannot change what it means — and so that no
-player decision can change it either. `encode()` returns the canonical fields
-that bind the truth into the commitment body. `enumerate()` is optional and
-exists so tests can be exhaustive rather than statistical when the truth space
-is small.
+player decision can change it either. `enumerate()` is optional and exists so
+tests can be exhaustive rather than statistical when the truth space is small.
+
+`encode()` returns the canonical fields that bind the truth into the commitment
+body — and the module is responsible for making that true, because **core never
+calls it**. Core seals whatever bytes `commitmentBody` returns; it cannot know
+where inside them a truth section begins. So a module that writes its body
+layout inline and its `encode` separately has declared one thing and proved
+another, and nothing will notice when the two drift apart. The rule this
+repository follows, and the one to copy: **define the encoder once and compose
+the body out of it.** `canonicalTranscriptBytes` spreads `encodeTruth(truth)`
+and `encodeEvent(event)`, and those same two functions are what the module
+declares as `truth.encode` and `steps.encode`; both `tests/support/` fixtures do
+the same. Then the declared encoding _is_ the proof-bearing one, by construction
+rather than by review, and
+`tests/lifecycle-module-contract.test.ts` pins it by rebuilding the body from the
+declared encoders alone.
 
 Randomness comes from `core/random.ts` only:
 
@@ -85,6 +99,14 @@ Randomness comes from `core/random.ts` only:
 
 `maxSteps`, `choiceTiming`, `beliefSpace`, `count`, `derive`, `encode`, `equal`,
 `belief` when the belief space is `outcomes`, and `price` when it is `marginal`.
+
+`maxSteps` is the round's step budget and it is enforced, not decorative:
+`defineLifecycleModule()` wraps `derive` and fails a derivation that returns more
+steps than the module declared, with `DERIVATION_FAILED`. `count(definition)` is
+what a host sizes storage against; `maxSteps` is the ceiling over every
+definition, bounded by `ENGINE_LIMITS.maxSteps`. `encode(step)` is subject to the
+same rule as `truth.encode`: define it once and compose the commitment body out
+of it.
 
 `derive(seed, definition, round, truth, choices)` receives the logged player
 choices. A module whose steps depend on decisions — pick a contract, _then_
@@ -218,6 +240,16 @@ economic field, and must keep a frozen fixture verifying.
 calls anything: a single-position market and a multi-position card game need
 different reserve maths and different receipt volumes.
 
+`maxOpenClaims` is a declaration; `assertClaimBudget(openClaims, maxOpenClaims)`
+is the enforcement, and it is the **only** core-side bound on how many claims a
+round may hold open at once. Call it before admitting a claim. A book may pass
+its own per-definition field (a field size, a paytable's bet limit) rather than
+`module.book.maxOpenClaims` — core never sees that field, so the helper
+validates the budget as strictly as the count and rejects anything it cannot
+read as a number in `1..ENGINE_LIMITS.maxRoundClaims` with `CLAIM_REJECTED`. It
+fails closed: a budget that arrived as `undefined` or `NaN` would otherwise make
+`openClaims >= maxOpenClaims` false and admit every claim.
+
 A book must build its money behaviour on `CommandLedger`, and there is exactly
 **one ledger per round** however many positions it holds — per-position ledgers
 would fork both the command serialization order and the dense ledger-revision
@@ -230,7 +262,14 @@ chain that the snapshot format depends on.
   `IDEMPOTENCY_CONFLICT`, never a silently wrong receipt;
 - `mint()` — compute the receipt **before** mutating module state, so a
   rejection leaves the round untouched;
-- `fundStake(amount, funding)` / `creditWithinCap()` — the cap chain.
+- `fundStake(amount, funding)` — the basis half of the cap chain;
+- `creditClaim(theoretical, mint)` — the credit half, in one call: it prices the
+  claim against the remaining ceiling, hands the payable to `mint`, and applies
+  the credit once `mint` returns;
+- `creditWithinCap(theoretical)` + `applyCredit(amount)` — the same operation
+  split into a query and a mutation, for a path that needs to quote a claim
+  without crediting it. **Both halves are mandatory.** Performing only the first
+  is the failure the next section describes.
 
 #### The cap chain, and why funding source is the only thing that matters
 
@@ -259,6 +298,31 @@ distinction:
 Crediting a round that has taken no stake at all is a module state-machine bug
 and fails loudly with `CLAIM_REJECTED`; it does not silently pay zero.
 
+#### The credit is two halves, and both are mandatory
+
+`creditWithinCap()` is a **pure query**. It reads `liquidBalance` to compute
+`remaining = ceiling - liquidBalance`, and it never moves it. `applyCredit()` is
+the only call that does. A book that performs the first without the second keeps
+measuring every claim against a balance that never grows:
+
+> a ledger with `fundStake(100n, 'external')` and `maxWinMultiple: 10n` has a
+> ceiling of 1,000. Call `creditWithinCap(rational(1000n))` five times without
+> `applyCredit` and it credits 1,000 five times over — 5,000 paid against a
+> 1,000 ceiling, with `capped: false` on every receipt, and the round's stated
+> invariant `liquidBalance <= capBasisStake * maxWinMultiple` silently void.
+
+Nothing in the type of either call enforces the pairing, so **prefer
+`creditClaim(theoretical, mint)`**, which the ledger cannot half-perform: it
+prices, calls `mint` to build the receipt (and to mutate module state), and
+applies the credit only once `mint` has returned. `progressive-market`'s sell and
+settle paths and both `tests/support/` fixtures go through it, and
+`tests/cap-chain-invariant.test.ts` enumerates the ceiling it holds.
+
+This bites hardest on exactly the multi-credit shapes the contract is designed
+for: staged-survival banks subsets repeatedly, sequential-cards sells positions
+independently. A single-credit round can get away with the mistake for a while;
+those cannot.
+
 `restore()` must re-validate rather than trust: replay the steps, check the
 definition identity, run the receipt log through `install()` with the module's
 own state-machine rules, and reconcile the reconstructed balance against the
@@ -285,9 +349,20 @@ field the same way: if it is derivable from the receipt log and the replayed
 steps, derive it.
 
 The checksum is not the control. It detects corruption, not tampering — anyone
-who can rewrite a field can recompute the hash over it. Every snapshot test in
-this repository therefore re-seals its mutation before restoring it, so what is
-under test is the semantic validation and not the hash.
+who can rewrite a field can recompute the hash over it. Every snapshot-tamper
+case in this repository therefore **re-seals** its mutation with a freshly
+computed `snapshotHash` before restoring it, so what is under test is the
+semantic validation and not the hash:
+`tests/security/snapshot-mutation.test.ts` (31 fields plus the two money-bearing
+position rewrites), `tests/frozen-fixtures.test.ts`,
+`tests/replay-serialization.test.ts`, `tests/lifecycle-module-contract.test.ts`,
+`tests/choice-timed-contract.test.ts`, and both modules'
+`SNAPSHOT_NOT_REVALIDATED` checks. Four cases deliberately do **not** re-seal,
+and each says so in its own name or in a comment on the line above it: they exist
+to prove the checksum still catches plain corruption, and none of them stands in
+for a merits-based rejection. (An unknown or missing key is the one exception
+that needs no re-seal: `assertSnapshotKeys` runs in `parseSnapshotInput`, before
+the checksum is compared at all.)
 
 ### 6. Verifier
 
@@ -325,6 +400,13 @@ context supplies the module, the definition, a deterministic seed, a round
 identity, and a `count()` sink for module-specific evidence. Checks are
 synchronous.
 
+A run sweeps at least one seed: `checkModuleConformance` rejects a `seedCount`
+below 1 or above `ENGINE_LIMITS.maxConformanceSeeds`, because a zero-seed run
+skips every round-scoped check and would still return `ok: true` with all the
+check codes listed. The report's `ran` map closes the same gap from the other
+side — it records how many times each declared check actually executed, so a
+reader can tell "ran and passed" from "never ran" without trusting the caller.
+
 `references` is the list of `{id, definition}` pairs the module ships as its own
 conformance subjects. `src/cli/conformance.ts` iterates the registry and runs
 every module's references, so a new module appears in `reveal-conformance` — and
@@ -347,7 +429,39 @@ rather than driving the book. That is what
 it field for field against a real staked round so the re-derivation cannot drift
 into something `restore()` would reject for the wrong reason.
 
-### What `defineLifecycleModule()` cannot check
+### What `defineLifecycleModule()` checks
+
+Declarations, exhaustively — every declaration it can reach, not a sample:
+
+- **the API version**, and that `id`, `version`, `summary`, `transcript.schema`,
+  `book.snapshotSchema`, and every `book.actions` entry are bounded identifiers;
+- **all five declared enums** — `truth.kind`, `steps.choiceTiming`,
+  `steps.beliefSpace`, `book.positions`, `book.settlement`. A typo in
+  `positions` or `settlement` would otherwise route a host down the wrong
+  reserve-maths branch, silently, and those are documented above as declarations
+  a host branches on _before_ it calls anything;
+- **every mandatory hook is a function** — `definitions.{define, assert,
+fingerprint, identity}`, `truth.{derive, encode, equal}`, `steps.{count,
+derive, encode, equal}`, `transcript.{build, commitmentBody, toWire, fromWire}`,
+  `book.{create, restore, snapshot}` — and every optional one
+  (`truth.enumerate`, `steps.belief`, `steps.price`,
+  `transcript.seedCommitment`, `transcript.choicesOf`) is either absent or a
+  function. This is not tidiness: `transcript.fromWire` is the untrusted-input
+  boundary, and a module missing it would turn a hostile payload into a raw
+  `TypeError` instead of the typed `RevealEngineError` the whole security suite
+  exists to guarantee;
+- **the conditional obligations** — `belief()` for an `outcomes` space,
+  `price()` for a `marginal` one, `seedCommitment` and `choicesOf` for a
+  choice-timed one, exactly one open claim for a `single` book;
+- **the numeric budgets** — `steps.maxSteps`, `book.maxOpenClaims`, and
+  `conformance.defaultSeeds`, each against its `ENGINE_LIMITS` bound;
+- **every conformance check** — a bounded `code` and `description`, a `run`
+  function, and a `scope` of `definition` or `round`. An out-of-range scope is
+  rejected here rather than being silently skipped by the runner: a check that
+  matches neither branch never executes, yet its code would still appear in the
+  report, which is a report claiming evidence it did not produce.
+
+### What it cannot check
 
 It validates declarations, not behaviour. A module that passes it may still be
 wrong in ways only conformance checks and tests can catch:

@@ -9,6 +9,7 @@
 - [x] Keep every frozen wire fixture verifying and the stress correctness digest identical.
 - [x] Record the branch-adoption decision in `docs/adr/0001-branch-adoption.md`.
 - [x] Rewrite the README for a public audience with an honest certification boundary.
+- [x] Close the contract's guard rails: an atomic `creditClaim`, a fail-closed `assertClaimBudget`, complete declaration validation in `defineLifecycleModule`, and a conformance report that cannot claim a check it did not run (`docs/adr/0004`).
 
 ## Next modules (other agents)
 
@@ -18,7 +19,7 @@
 
 ## Deferred
 
-- [ ] Retire the deprecated `./protocol`, `./serialization`, `./reference` aliases once no consumer depends on them.
+- [ ] Retire the deprecated `./protocol`, `./serialization`, `./reference` aliases **and the progressive-market re-exports from the package root** (`RoundBook`, `makeTranscript`, `deriveTruth`, `initialPosterior`, `quote`, `defineGame`, `adapterFingerprint`, the transcript codec, the adapter conformance view, `progressiveMarket`, the three references) once no consumer depends on them. All of them carry `@deprecated` markers today; see ADR 0004.
 - [ ] Decide whether the module contract should become an out-of-tree plugin API (needs a published canonical encoder, a `MODULE_API_VERSION` compatibility policy, and a third-party-code trust decision).
 - [ ] Revive the BLACK SIGNAL compatibility corpus in the title repository or a dedicated artifact repository; see ADR 0001.
 - [ ] Hosted Actions execution (externally blocked by the account billing/spending limit; no runner steps execute).

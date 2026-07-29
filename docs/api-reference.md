@@ -64,6 +64,12 @@ lifecycle.verify(seed, definition, wire); // VerificationResult
 `checkAdapterConformance(game, seeds)` is the progressive-market view of the same
 run and keeps the `reveal-engine/adapter-conformance-v1` shape.
 
+`seeds` must be at least 1 and at most `ENGINE_LIMITS.maxConformanceSeeds`
+(4,096); a zero-seed run would skip every round-scoped check and still report
+`ok: true`, so it is rejected. The report's `ran` map records how many times each
+declared check executed — once for a `definition` check, once per seed for a
+`round` check — so `checks` can never be read as evidence a check produced.
+
 ## Proof verification
 
 `verifyTranscriptDetailed()` never exposes incidental parser or crypto
