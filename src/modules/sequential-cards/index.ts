@@ -41,6 +41,7 @@ export {
   cardsIdentity,
   cardsRoundOf,
   defineCardsGame,
+  defineCardsGameAsync,
   freezeCardsDefinition,
 } from './adapter.js';
 
@@ -110,9 +111,11 @@ export {
 } from './pricing.js';
 
 export {
+  CARDS_ANALYSIS_YIELD_INTERVAL,
   CARDS_MAX_ANALYSIS_CELLS,
   CARDS_MAX_ANALYSIS_OPS,
   analyseDefinition,
+  analyseDefinitionAsync,
   estimateAnalysisCells,
   estimateAnalysisWork,
   forEachCanonicalState,
@@ -159,7 +162,20 @@ export {
   cascadeMiddleReference,
   duoMiddleReference,
   triadMiddleReference,
+  triadStochasticReference,
 } from './references.js';
+
+export {
+  CARDS_CREDIT_LABEL,
+  convertToCredits,
+  creditDraw,
+  creditsFromDraw,
+  deriveRoundingSeed,
+  roundingCommitment,
+  type CreditConversion,
+  type CreditEvent,
+  type CreditTape,
+} from './credits.js';
 
 export { sequentialCards } from './module.js';
 export type { SequentialCardsShape } from './shape.js';

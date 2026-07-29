@@ -4,7 +4,7 @@ import type { DefinitionIdentity, RoundIdentity } from '../../core/module.js';
 import { compare, rational } from '../../core/rational.js';
 import { COMMITMENT_VERSION } from '../../core/versions.js';
 import { encodeFields, type CanonicalField } from '../../internal/canonical.js';
-import { analyseDefinition } from './analysis.js';
+import { analyseDefinition, analyseDefinitionAsync, type CardsAnalysis } from './analysis.js';
 import {
   SEQUENTIAL_CARDS_MODULE_ID,
   SEQUENTIAL_CARDS_MODULE_VERSION,
@@ -107,10 +107,48 @@ export function cardsRoundOf(
  * later as a paytable that does not pay what it says.
  */
 export function defineCardsGame(input: SequentialCardsDefinition): SequentialCardsDefinition {
+  const definition = prepareCardsDefinition(input);
+  assertCardsEconomics(definition, analyseDefinition(definition));
+  return definition;
+}
+
+/**
+ * The same construction, with the event loop given back during the proof.
+ *
+ * `defineCardsGame` is synchronous and proves its economics by exhaustion, so
+ * the slowest definition the §11 ceilings admit blocks its thread for about
+ * thirteen seconds. That is not an exploit — definitions are operator-authored
+ * and not player-reachable — but a host that builds one on a request thread has
+ * no way to yield, and "bounded" is not the same as "interruptible". This awaits
+ * between batches of lines instead.
+ *
+ * It proves **exactly** what the synchronous path proves, from the same
+ * generator and against the same cached result, and it is no faster: the work is
+ * the work, and the ceilings that bound it are unchanged. Only the blocking
+ * changes.
+ */
+export async function defineCardsGameAsync(
+  input: SequentialCardsDefinition,
+  options: { readonly yieldEvery?: number } = {},
+): Promise<SequentialCardsDefinition> {
+  const definition = prepareCardsDefinition(input);
+  assertCardsEconomics(definition, await analyseDefinitionAsync(definition, options));
+  return definition;
+}
+
+/** The declarative half: validate, freeze, and validate what came out. */
+function prepareCardsDefinition(input: SequentialCardsDefinition): SequentialCardsDefinition {
   assertCardsDefinition(input);
   const definition = freezeCardsDefinition(input);
   assertCardsDefinition(definition);
-  const analysis = analyseDefinition(definition);
+  return definition;
+}
+
+/** The economic half, in one place so both construction paths assert the same thing. */
+function assertCardsEconomics(
+  definition: SequentialCardsDefinition,
+  analysis: CardsAnalysis,
+): void {
   if (!analysis.priorUniform)
     fail(
       'INVALID_ADAPTER',
@@ -130,18 +168,21 @@ export function defineCardsGame(input: SequentialCardsDefinition): SequentialCar
       '$.pricing.minStakeCredits',
       'STAKE_BELOW_MINIMUM',
     );
+  // The cap is measured against the largest **credited** amount, not the largest
+  // claim: under `rounding: 'stochastic'` the settlement draw pays up to one
+  // whole credit more than the claim's whole part, and at the minimum stake that
+  // extra credit is proportionally largest.
   if (
     definition.risk.capMustNotBind &&
-    compare(analysis.maxPayoutMultiple, rational(definition.risk.maxWinMultiple)) >= 0
+    compare(analysis.creditCeilingMultiple, rational(definition.risk.maxWinMultiple)) >= 0
   )
     reject(
       'INVALID_ADAPTER',
-      `A reachable payout of ${analysis.maxPayoutMultiple.numerator}/${analysis.maxPayoutMultiple.denominator} stake reaches the ${definition.risk.maxWinMultiple}x cap`,
+      `A reachable payout of ${analysis.creditCeilingMultiple.numerator}/${analysis.creditCeilingMultiple.denominator} stake reaches the ${definition.risk.maxWinMultiple}x cap`,
       '$.risk.maxWinMultiple',
       'CAP_WOULD_BIND',
     );
   cardsFingerprint(definition);
-  return definition;
 }
 
 /** Deep-freezes a definition without touching its declarative content. */

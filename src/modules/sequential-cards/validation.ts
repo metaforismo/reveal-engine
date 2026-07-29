@@ -342,13 +342,15 @@ function assertPricing(definition: SequentialCardsDefinition): void {
       '$.pricing.liquidationSpread',
       'INVALID_LIQUIDATION_SPREAD',
     );
-  // `'ceiling'` and `'stochastic'` are declarable so a definition written
-  // against them fails here with a reason a host can branch on, rather than in
-  // a type-checker inside somebody else's build. Neither is implemented; see
-  // docs/adr/0005-sequential-cards-scope-and-the-credit-boundary.md.
-  if (pricing.rounding !== 'floor')
+  // `'floor'` and `'stochastic'` are implemented; `'ceiling'` is declarable so a
+  // definition written against it fails here with a reason a host can branch on
+  // rather than in a type-checker inside somebody else's build. It is refused on
+  // its merits and not for want of effort: it publishes an RTP the game does not
+  // pay — `floor`'s defect with the sign flipped — and it is farmable at the
+  // minimum stake. See docs/adr/0006-the-settlement-draw-and-the-closure-round.md.
+  if (pricing.rounding !== 'floor' && pricing.rounding !== 'stochastic')
     rejectDefinition(
-      `Rounding rule '${String(pricing.rounding)}' is declarable but not implemented; this version credits with 'floor'`,
+      `Rounding rule '${String(pricing.rounding)}' is declarable but not implemented; this version credits with 'floor' or 'stochastic'`,
       '$.pricing.rounding',
       'INVALID_ROUNDING_POLICY',
     );

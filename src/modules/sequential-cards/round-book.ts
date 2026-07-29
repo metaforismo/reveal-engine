@@ -15,12 +15,7 @@ import { assertClaimBudget } from '../../core/module.js';
 import { payableWithinCap, type Payable } from '../../core/payments.js';
 import { constantTimeHexEqual, sealCommitment } from '../../core/commitment.js';
 import { normalizeSeed } from '../../core/random.js';
-import {
-  equal as rationalEqual,
-  floor as floorRational,
-  rational,
-  type Rational,
-} from '../../core/rational.js';
+import { equal as rationalEqual, rational, type Rational } from '../../core/rational.js';
 import {
   assertSnapshotKeys,
   assertSnapshotRecord,
@@ -46,6 +41,12 @@ import {
   type RevealStep,
   type SequentialCardsDefinition,
 } from './contracts.js';
+import {
+  convertToCredits,
+  deriveRoundingSeed,
+  roundingCommitment,
+  type CreditTape,
+} from './credits.js';
 import { cardsBelief, objectivePositionOf, objectiveRankOf, type CardsBelief } from './deck.js';
 import { deriveDeal } from './truth.js';
 import {
@@ -96,6 +97,19 @@ export interface OpenRequest {
    */
   readonly roundId: string;
   readonly selections: readonly TicketSelection[];
+  /**
+   * The round's committed rounding tape, required exactly when
+   * `pricing.rounding` is `'stochastic'` and refused otherwise.
+   *
+   * `deriveRoundingSeed(seed, fingerprint, roundId)` produces it from the sealed
+   * round seed under a label disjoint from the deal and the selectors, so the
+   * book can draw a settlement credit without ever holding the seed the reveals
+   * come from. Its commitment is bound into the open receipt, and `settle`
+   * re-derives it from the revealed seed and refuses a round whose credits came
+   * from a different tape. It is a **round secret** until then: see `credits.ts`
+   * for the one-credit edge a party who knows it early can take.
+   */
+  readonly roundingSeed?: string;
 }
 export interface TransformRequest {
   readonly idempotencyKey: string;
@@ -205,6 +219,19 @@ export interface CardsBookSnapshot {
     readonly positions: readonly number[];
   }[];
   readonly settlement: CardsSettlementRecord | null;
+  /**
+   * The round's committed rounding tape.
+   *
+   * Present exactly when the definition declares `rounding: 'stochastic'`, and
+   * `null` until the ticket that carries it is open. A `'floor'` snapshot has no
+   * such key and is byte-identical to the ones this module wrote before the
+   * settlement draw existed — the field is not optional decoration, it is a
+   * function of the definition, and `snapshot.definition.fingerprint` pins which
+   * one applies. It is a **round secret**, like the seed it derives from: a
+   * snapshot store that leaks it hands out a bounded one-credit edge per credit
+   * event, which is why §6.3's trusted-storage obligation covers it.
+   */
+  readonly roundingSeed?: string | null;
   readonly liquidBalance: string;
   readonly capBasisStake: string | null;
   readonly receipts: readonly { readonly fingerprint: string; readonly receipt: WireReceipt }[];
@@ -228,6 +255,22 @@ const SNAPSHOT_KEYS = Object.freeze([
   'receipts',
   'snapshotHash',
 ]);
+
+/**
+ * The exact key set a snapshot of this definition must carry.
+ *
+ * A stochastic definition credits from a committed tape, so its snapshot carries
+ * one; a deterministic one has nothing to carry and must not present a key the
+ * round would then have to decide what to do with. Keying the shape off the
+ * definition rather than off the payload is what keeps `assertSnapshotKeys`
+ * exact in both directions — a `'floor'` snapshot with a `roundingSeed` is
+ * refused, and so is a stochastic one without.
+ */
+function snapshotKeysFor(definition: SequentialCardsDefinition): readonly string[] {
+  return definition.pricing.rounding === 'stochastic'
+    ? [...SNAPSHOT_KEYS, 'roundingSeed']
+    : SNAPSHOT_KEYS;
+}
 
 const SELECTION_KEYS = Object.freeze([
   'id',
@@ -282,6 +325,7 @@ export class CardsBook {
   readonly #steps: RevealStep[] = [];
   readonly #decisions: CardsDecision[] = [];
   #roundId: string | undefined;
+  #roundingSeed: string | undefined;
   #settlement: CardsSettlementRecord | null = null;
   #terminal = false;
 
@@ -322,6 +366,20 @@ export class CardsBook {
   }
   get capBasisStake(): bigint | undefined {
     return this.#ledger.capBasisStake;
+  }
+
+  /**
+   * The committed tape this round's settlement draws come from, if it has one.
+   *
+   * `undefined` under `rounding: 'floor'`, where the conversion is
+   * deterministic and needs no draw at all.
+   */
+  #tape(): CreditTape | undefined {
+    if (this.#roundingSeed === undefined || this.#roundId === undefined) return undefined;
+    return Object.freeze({
+      roundingSeed: this.#roundingSeed,
+      round: cardsRoundOf(this.definition, this.#roundId),
+    });
   }
 
   /** Exact belief after every reveal applied so far. */
@@ -368,7 +426,32 @@ export class CardsBook {
     assertRevisionInput(expected);
     assertIdentifier(roundId, '$.roundId', 'CLAIM_REJECTED');
     const rows = this.#assertTicketShape(request.selections);
-    const fingerprint = openFingerprint(roundId, rows);
+    // Read once, like every other field of the request, and required exactly
+    // where the declared economics need it. A stochastic definition without a
+    // tape is refused rather than credited under the other rule: both rules are
+    // inside the definition fingerprint and they pay differently.
+    const declaredSeed: unknown = request.roundingSeed;
+    const stochastic = this.definition.pricing.rounding === 'stochastic';
+    if (!stochastic && declaredSeed !== undefined)
+      fail(
+        'CLAIM_REJECTED',
+        'This definition credits deterministically and takes no rounding tape',
+        '$.roundingSeed',
+        { reason: 'INVALID_ROUNDING_POLICY' },
+      );
+    if (stochastic && typeof declaredSeed !== 'string')
+      fail(
+        'CLAIM_REJECTED',
+        'This definition credits with the settlement draw and needs its committed tape',
+        '$.roundingSeed',
+        { reason: 'INVALID_ROUNDING_POLICY' },
+      );
+    const roundingSeed = stochastic ? normalizeSeed(declaredSeed as string) : undefined;
+    const fingerprint = openFingerprint(
+      roundId,
+      rows,
+      roundingSeed === undefined ? undefined : roundingCommitment(roundingSeed),
+    );
     return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
       this.#assertStepRevision(expected);
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is terminal');
@@ -425,6 +508,7 @@ export class CardsBook {
       // multiple of the whole ticket rather than of whichever row came first.
       this.#ledger.fundStake(total, 'external');
       this.#roundId = roundId;
+      this.#roundingSeed = roundingSeed;
       for (const selection of priced) this.#selections.set(selection.id, selection);
       for (const selection of priced)
         if (selection.kind === 'position') {
@@ -548,7 +632,18 @@ export class CardsBook {
         selection.claim,
         coverProbability(belief, selection.positions),
       );
-      return this.#ledger.creditClaim(value, (payable) => {
+      // The one place a rational becomes an integer for this selection. The
+      // conversion is handed the exact claim and the event that identifies it,
+      // and what goes to the cap chain is the whole number it produced — so
+      // `payableWithinCap` only ever caps, and the rounding rule is applied
+      // exactly once, here, under the policy the definition declared.
+      const credits = convertToCredits(
+        this.definition,
+        value,
+        { selectionId: selection.id, sequence: this.#ledger.ledgerRevision + 1 },
+        this.#tape(),
+      ).credits;
+      return this.#ledger.creditClaim(rational(credits), (payable) => {
         const receipt = this.#mint(key, fingerprint, 'cash', 0n, payable.credited, payable.capped);
         this.#selections.set(
           selection.id,
@@ -612,11 +707,30 @@ export class CardsBook {
         !revealStepsEqual(transcript.steps, this.#steps)
       )
         fail('TRANSCRIPT_MISMATCH', 'Settlement proof is for a different round', '$.choices');
+      // The revealed seed is public at this point, so the tape a mid-round
+      // cash-out was credited from is finally checkable: it must be the one the
+      // sealed seed produces. A round whose credits came from another tape is
+      // refused here, which is the same shape of boundary as the reveal in §6.2
+      // — validated during the round, authenticated at settlement.
+      if (this.#roundingSeed !== undefined) {
+        const expectedTape = deriveRoundingSeed(
+          revealedSeed,
+          cardsFingerprint(this.definition),
+          this.#roundId as string,
+        );
+        if (!constantTimeHexEqual(expectedTape, this.#roundingSeed))
+          fail(
+            'TRANSCRIPT_MISMATCH',
+            'The rounding tape this round credited from does not derive from the revealed seed',
+            '$.revealedSeed',
+          );
+      }
       const total = settlementTotal(
         this.definition,
         this.selections,
         objectivePosition,
         objectiveRank,
+        { tape: this.#tape(), sequence: this.#ledger.ledgerRevision + 1 },
       );
       const close = (payable: Payable): CardsReceipt => {
         const receipt = this.#mint(
@@ -691,6 +805,9 @@ export class CardsBook {
         ),
       ),
       settlement: this.#settlement === null ? null : Object.freeze({ ...this.#settlement }),
+      ...(this.definition.pricing.rounding === 'stochastic'
+        ? { roundingSeed: this.#roundingSeed ?? null }
+        : {}),
       liquidBalance: String(this.#ledger.liquidBalance),
       capBasisStake: capBasisStake === undefined ? null : String(capBasisStake),
       receipts: Object.freeze(
@@ -747,7 +864,7 @@ export class CardsBook {
    */
   static restore(definition: SequentialCardsDefinition, input: string | object): CardsBook {
     assertCardsDefinition(definition);
-    const raw = parseCardsSnapshot(input);
+    const raw = parseCardsSnapshot(definition, input);
     if (raw.snapshotHash !== snapshotHash({ ...raw, snapshotHash: undefined }))
       fail('INVALID_SNAPSHOT', 'Snapshot hash is invalid', '$.snapshotHash');
     if (
@@ -768,6 +885,13 @@ export class CardsBook {
     if (raw.stepRevision !== book.#steps.length)
       fail('INVALID_SNAPSHOT', 'Step revision does not match the reveal log', '$.stepRevision');
     book.#terminal = raw.terminal;
+    // The tape is installed before the replay because every credited integer
+    // below is re-derived through it. It is not money-bearing on its own — it
+    // is the input the money is re-derived *from*, and the open receipt's
+    // fingerprint is what stops a snapshot swapping it for one whose draws pay
+    // better.
+    book.#roundingSeed =
+      typeof raw.roundingSeed === 'string' ? normalizeSeed(raw.roundingSeed) : undefined;
 
     const beliefAt = (revision: number): CardsBelief =>
       cardsBelief(definition, book.#steps.slice(0, revision));
@@ -891,7 +1015,17 @@ export class CardsBook {
             'An opened round must name the round it belongs to',
             '$.roundId',
           );
-        const expected = openFingerprint(book.#roundId, rows);
+        if ((definition.pricing.rounding === 'stochastic') !== (book.#roundingSeed !== undefined))
+          fail(
+            'INVALID_SNAPSHOT',
+            'An open round credits from the tape its definition declares, or from none',
+            '$.roundingSeed',
+          );
+        const expected = openFingerprint(
+          book.#roundId,
+          rows,
+          book.#roundingSeed === undefined ? undefined : roundingCommitment(book.#roundingSeed),
+        );
         const total = rows.reduce((sum, row) => sum + row.stake, 0n);
         if (receipt.commandFingerprint !== expected || receipt.debited !== total)
           fail(
@@ -1067,7 +1201,14 @@ export class CardsBook {
             '$.receipts',
           );
         const payable = payableWithinCap(
-          fairValue(definition, selection.claim, coverProbability(belief, selection.positions)),
+          rational(
+            convertToCredits(
+              definition,
+              fairValue(definition, selection.claim, coverProbability(belief, selection.positions)),
+              { selectionId: selection.id, sequence: receipt.ledgerRevision },
+              book.#tape(),
+            ).credits,
+          ),
           capBasis as bigint,
           definition.risk.maxWinMultiple,
           liquid,
@@ -1144,12 +1285,26 @@ export class CardsBook {
           'The settled commitment does not re-seal from the revealed seed',
           '$.settlement',
         );
+      if (book.#roundingSeed !== undefined) {
+        const expectedTape = deriveRoundingSeed(
+          record.revealedSeed,
+          cardsFingerprint(definition),
+          book.#roundId as string,
+        );
+        if (!constantTimeHexEqual(expectedTape, book.#roundingSeed))
+          fail(
+            'INVALID_SNAPSHOT',
+            'The rounding tape does not re-derive from the revealed seed',
+            '$.roundingSeed',
+          );
+      }
       const payable = payableWithinCap(
         settlementTotal(
           definition,
           [...book.#selections.values()],
           record.objectivePosition,
           record.objectiveRank,
+          { tape: book.#tape(), sequence: receipt.ledgerRevision },
         ),
         capBasis as bigint,
         definition.risk.maxWinMultiple,
@@ -1184,6 +1339,12 @@ export class CardsBook {
       fail('INVALID_SNAPSHOT', 'Settlement record disagrees with the receipt log', '$.settlement');
     if (opened !== (book.#roundId !== undefined))
       fail('INVALID_SNAPSHOT', 'Round identity disagrees with the receipt log', '$.roundId');
+    if (!opened && book.#roundingSeed !== undefined)
+      fail(
+        'INVALID_SNAPSHOT',
+        'A round that never opened a ticket carries no rounding tape',
+        '$.roundingSeed',
+      );
     if (opened !== raw.selections.length > 0)
       fail(
         'INVALID_SNAPSHOT',
@@ -1481,6 +1642,7 @@ export function settlementTotal(
   selections: readonly CardsSelection[],
   objectivePosition: number,
   objectiveRank: number,
+  event?: { readonly tape: CreditTape | undefined; readonly sequence: number },
 ): Rational {
   let credits = 0n;
   for (const selection of selections) {
@@ -1491,7 +1653,16 @@ export function settlementTotal(
         : (definition.sideMarkets
             .find((market) => market.id === selection.marketId)
             ?.winningRanks.includes(objectiveRank) ?? false);
-    if (wins) credits += floorRational(selection.claim);
+    if (!wins) continue;
+    // Each row draws under its own selection id, so one settlement receipt
+    // crediting several rows still gives each of them an independent draw —
+    // and, as under `'floor'`, no row's remainder can finance another's.
+    credits += convertToCredits(
+      definition,
+      selection.claim,
+      { selectionId: selection.id, sequence: event?.sequence ?? 0 },
+      event?.tape,
+    ).credits;
   }
   return rational(credits);
 }
@@ -1621,13 +1792,28 @@ export function assertTicketComposition(
     );
 }
 
-/** The `open` command fingerprint: the round it belongs to, plus every priced row. */
-export function openFingerprint(roundId: string, rows: readonly TicketSelection[]): string {
+/**
+ * The `open` command fingerprint: the round, every priced row, and — when the
+ * definition credits with the settlement draw — the commitment to the tape those
+ * credits will be drawn from.
+ *
+ * The commitment is appended rather than interleaved, and omitted entirely under
+ * a deterministic rule, so a `'floor'` definition's fingerprints, receipts and
+ * snapshots are byte-identical to the ones this module minted before the draw
+ * existed. What it buys where it is present: a snapshot cannot swap the tape a
+ * round's credits came from without the open receipt noticing.
+ */
+export function openFingerprint(
+  roundId: string,
+  rows: readonly TicketSelection[],
+  tapeCommitment?: string,
+): string {
   return commandFingerprint('open', [
     stepDigest([]),
     roundId,
     rows.length,
     ...rows.flatMap((row) => ticketRowFields(row)),
+    ...(tapeCommitment === undefined ? [] : [tapeCommitment]),
   ]);
 }
 
@@ -1699,10 +1885,15 @@ function assertTargetShape(
   return Object.freeze(cover.sort((left, right) => left - right));
 }
 
-function parseCardsSnapshot(input: string | object): CardsBookSnapshot {
+function parseCardsSnapshot(
+  subject: SequentialCardsDefinition,
+  input: string | object,
+): CardsBookSnapshot {
   const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
   const candidate = assertSnapshotRecord(value, '$');
-  assertSnapshotKeys(candidate, SNAPSHOT_KEYS, '$');
+  assertSnapshotKeys(candidate, snapshotKeysFor(subject), '$');
+  if (candidate.roundingSeed !== undefined && candidate.roundingSeed !== null)
+    assertWireHex(candidate.roundingSeed, '$.roundingSeed');
   if (
     candidate.schema !== CARDS_BOOK_SCHEMA ||
     typeof candidate.terminal !== 'boolean' ||

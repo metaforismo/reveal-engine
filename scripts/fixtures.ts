@@ -11,12 +11,15 @@ import { writeFileSync } from 'node:fs';
 import { buildFrozenRound, FROZEN_ROUND_ID, FROZEN_SEED } from '../tests/support/frozen-round.js';
 import {
   buildFrozenCardsRound,
+  buildFrozenStochasticCardsRound,
   FROZEN_CARDS_ROUND_ID,
   FROZEN_CARDS_SEED,
+  FROZEN_STOCHASTIC_ROUND_ID,
 } from '../tests/support/frozen-cards-round.js';
 
 const round = await buildFrozenRound();
 const cards = await buildFrozenCardsRound();
+const drawn = await buildFrozenStochasticCardsRound();
 
 const files: readonly [string, unknown][] = [
   [
@@ -54,6 +57,16 @@ const files: readonly [string, unknown][] = [
       roundId: FROZEN_CARDS_ROUND_ID,
       snapshot: cards.snapshot,
       receipts: cards.receipts,
+    },
+  ],
+  [
+    'tests/fixtures/cards-book-stochastic-v1.json',
+    {
+      note: "Frozen reveal-engine/cards-book-v1 snapshot under rounding: 'stochastic' — it carries the committed rounding tape and its credits come from the settlement draw.",
+      seed: FROZEN_CARDS_SEED,
+      roundId: FROZEN_STOCHASTIC_ROUND_ID,
+      snapshot: drawn.snapshot,
+      receipts: drawn.receipts,
     },
   ],
 ];

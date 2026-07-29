@@ -12,6 +12,7 @@ import type { RevealStep, SequentialCardsDefinition } from './contracts.js';
 import {
   cardsBelief,
   combinationCount,
+  combinationsOf,
   forEachCombination,
   objectiveIndex,
   type CardsBelief,
@@ -85,7 +86,7 @@ import { CARDS_MAX_DEALT, eligibleSetSize, reject } from './validation.js';
  * Reachable `(state, covered set)` pairs one analysis may visit.
  *
  * Checked twice: `estimateAnalysisCells` closes an upper bound on it from the
- * declaration alone and `runAnalysis` refuses **before** the walk starts, and
+ * declaration alone and `analysisWalk` refuses **before** the walk starts, and
  * `budget()` counts the realised cells and refuses during the walk if the
  * a-priori bound were ever wrong. The first is what makes the refusal cheap; the
  * second is what makes it sound.
@@ -127,7 +128,7 @@ export const CARDS_MAX_ANALYSIS_OPS = 20_000_000n;
 /**
  * The walk's shape, closed from the declaration in BigInt.
  *
- * `runAnalysis` visits a reveal tree. At revision `i` it holds `nodes` distinct
+ * `analysisWalk` visits a reveal tree. At revision `i` it holds `nodes` distinct
  * `(hand, backed set, backed start, reveal prefix)` contexts, each carrying a
  * map of incoming cover sets, and it pays for one cell per entry of that map.
  * Both factors are bounded per revision rather than at their widest, which is
@@ -182,7 +183,7 @@ function walkShape(definition: SequentialCardsDefinition): { cells: bigint; ops:
  * **This is the term round two's estimate did not have**, and the shape it
  * misses is the one where a deck is much wider than the hand. `cardsBelief`
  * enumerates `C(|pool|, m)` ascending subsets per distinct belief — `|pool| =
- * size − i` and `m = dealt − i` after `i` reveals — and `runAnalysis` memoises
+ * size − i` and `m = dealt − i` after `i` reveals — and `analysisWalk` memoises
  * beliefs on the revealed `(position, rank)` prefix, so the cost is the number
  * of distinct prefixes times the enumeration each one runs. At `size 100 /
  * dealt 3` that is 1.6M completions against 1.5M cells: a term of the same order
@@ -259,6 +260,19 @@ export interface CardsAnalysis {
   readonly terminalCells: number;
   /** Largest payout any reachable line produces, as a multiple of one stake. */
   readonly maxPayoutMultiple: Rational;
+  /**
+   * The largest **credited integer** a reachable line produces, per unit of
+   * stake, under the declared rounding rule.
+   *
+   * Under `'floor'` this is `maxPayoutMultiple`, because flooring never pays
+   * above the claim. Under `'stochastic'` a credit event can pay one whole
+   * credit more than the claim's whole part, so the ceiling the cap has to clear
+   * is `maxPayoutMultiple + 1/minStakeCredits` — the minimum stake being the one
+   * at which that extra credit is proportionally largest, which is why the
+   * comparison is made there and not at some larger stake where it would look
+   * harmless.
+   */
+  readonly creditCeilingMultiple: Rational;
   /** Smallest strictly positive payout any reachable line produces. */
   readonly minPositivePayoutMultiple: Rational;
   /** `ceil(1 / minPositivePayoutMultiple)`: below this a live claim can credit zero. */
@@ -428,16 +442,80 @@ export function forEachCanonicalState(
 
 /** Cached per definition object identity; the walk is pure and several callers want it. */
 const CACHE = new WeakMap<SequentialCardsDefinition, CardsAnalysis>();
+/** In-flight async walks, so two concurrent callers share one rather than racing two. */
+const PENDING = new WeakMap<SequentialCardsDefinition, Promise<CardsAnalysis>>();
 
 export function analyseDefinition(definition: SequentialCardsDefinition): CardsAnalysis {
   const cached = CACHE.get(definition);
   if (cached !== undefined) return cached;
-  const analysis = runAnalysis(definition);
-  CACHE.set(definition, analysis);
-  return analysis;
+  const walk = analysisWalk(definition);
+  let step = walk.next();
+  while (step.done !== true) step = walk.next();
+  CACHE.set(definition, step.value);
+  return step.value;
 }
 
-function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
+/** Lines the async walk completes between two turns of the event loop. */
+export const CARDS_ANALYSIS_YIELD_INTERVAL = 64;
+
+/**
+ * The same proof, with the event loop given back between batches of lines.
+ *
+ * The economics are proved by exhaustion, so the work is what it is — the
+ * ceilings in §11 are what bound it, and this changes neither of them. What it
+ * changes is who waits: a host that constructs definitions on a request thread
+ * blocks that thread for the whole walk, and the slowest shape the ceilings
+ * admit walks in about thirteen seconds. Yielding does not make that faster, and
+ * it is not offered as if it did; it makes the process able to do something else
+ * meanwhile, which is a different property and the one an operator actually
+ * needs.
+ *
+ * The unit is a **line** — one `(hand, backed set, backed position)` context and
+ * the reveal tree under it — because that is the granularity at which the walk
+ * carries no state across the boundary. `yieldEvery` batches them; the default
+ * keeps a pause at a few milliseconds on the shapes §11 measures.
+ */
+export async function analyseDefinitionAsync(
+  definition: SequentialCardsDefinition,
+  options: { readonly yieldEvery?: number } = {},
+): Promise<CardsAnalysis> {
+  const cached = CACHE.get(definition);
+  if (cached !== undefined) return cached;
+  const inFlight = PENDING.get(definition);
+  if (inFlight !== undefined) return inFlight;
+  const every = options.yieldEvery ?? CARDS_ANALYSIS_YIELD_INTERVAL;
+  if (!Number.isSafeInteger(every) || every < 1)
+    fail('INVALID_ADAPTER', 'Analysis yield interval must be a positive integer', '$.yieldEvery');
+  const run = (async (): Promise<CardsAnalysis> => {
+    const walk = analysisWalk(definition);
+    let lines = 0;
+    let step = walk.next();
+    while (step.done !== true) {
+      lines += 1;
+      if (lines % every === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      step = walk.next();
+    }
+    CACHE.set(definition, step.value);
+    return step.value;
+  })();
+  PENDING.set(definition, run);
+  try {
+    return await run;
+  } finally {
+    PENDING.delete(definition);
+  }
+}
+
+/**
+ * The walk itself, as a generator that yields once per completed line.
+ *
+ * `analyseDefinition` drains it in one go and `analyseDefinitionAsync` drains it
+ * with the event loop in between. There is one implementation because two would
+ * be two chances to prove different economics for the same definition.
+ */
+function* analysisWalk(
+  definition: SequentialCardsDefinition,
+): Generator<void, CardsAnalysis, void> {
   // Refused before the walk starts, not after it has burned minutes discovering
   // its own budgets. **Both** ceilings are checked here: the operations bound
   // catches the split-combinatorics axis, and the cell bound catches the wide
@@ -721,11 +799,11 @@ function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
     }
   };
 
-  forEachCombination(size, dealt, (handIndices) => {
+  for (const handIndices of combinationsOf(size, dealt)) {
     const hand = handIndices.map((index) => index + 1);
-    forEachCombination(dealt, backingWidth, (backedIndices) => {
+    for (const backedIndices of combinationsOf(dealt, backingWidth)) {
       const backed = new Set(backedIndices);
-      for (const start of backedIndices)
+      for (const start of backedIndices) {
         walk(
           hand,
           backed,
@@ -736,8 +814,12 @@ function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
           ]),
           { mask: 1 << start, claim: entryClaimPerStake, settled: undefined },
         );
-    });
-  });
+        // One line done, and no state crosses this boundary: the belief memo is
+        // a cache, and every accumulator is a scalar or a running extreme.
+        yield;
+      }
+    }
+  }
 
   // A side market never transforms and never liquidates: its only payout is the
   // settlement of the claim its entry price bought.
@@ -782,6 +864,14 @@ function runAnalysis(definition: SequentialCardsDefinition): CardsAnalysis {
     decisionCells,
     terminalCells,
     maxPayoutMultiple: maxPayout,
+    // The settlement draw pays at most one whole credit above the claim's whole
+    // part, so it moves the ceiling by exactly `1 / minStakeCredits` and by
+    // nothing else. Adding it here rather than at the comparison keeps one
+    // number for a caller to check the cap against under either rule.
+    creditCeilingMultiple:
+      definition.pricing.rounding === 'stochastic'
+        ? add(maxPayout, rational(1n, definition.pricing.minStakeCredits))
+        : maxPayout,
     minPositivePayoutMultiple,
     nonZeroCreditThreshold,
     minStakeThreshold,

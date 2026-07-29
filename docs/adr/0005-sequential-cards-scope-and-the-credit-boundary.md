@@ -83,6 +83,12 @@ arrives with the ticket rather than with the constructor.
 
 ## Decision 4 — `rounding: 'stochastic'` is declarable and not implemented
 
+> **Superseded by ADR 0006 Decision 3.** It is implemented. The reasoning below
+> is kept because the way it was wrong is instructive: the premise — a book holds
+> no seed — is correct, and the conclusion drawn from it was not. What a book
+> cannot hold is the _round_ seed; a one-way derivative of it under a disjoint
+> label is a different object, and the draw takes that.
+
 `triad/docs/MATH.md` §13 specifies an unbiased **settlement draw**: a claim of
 `q + r/d` credits pays `q + 1` with probability `r/d`, drawn from the sealed
 round seed, so the realised return in credits equals the exact return at every
@@ -229,6 +235,11 @@ stake in particular has no anchor inside the round, because it came from a walle
 the module cannot see. `restore`'s docstring and
 `docs/modules/sequential-cards.md` §6.3 previously implied more than that and now
 say exactly this, and name snapshot integrity as a deployment obligation.
+**Amended by ADR 0006 Decision 1:** the replacement text overcorrected in the
+other direction — it claimed re-derivation defeated every _illegal_ rewrite too,
+and named the stake as the sole residual. Both halves were false while it said
+so. §6.3 now names two residuals, the stake and the reveal, because those are
+exactly the inputs `restore()` can neither re-derive nor replay.
 
 **Fixed by narrowing — the worst-policy figure was not an argmin.** With a
 non-zero `liquidationSpread` the analysis's worst-policy walk picked an arbitrary
@@ -290,6 +301,11 @@ self-consistent snapshots — receipts recomputed, claims re-priced, checksum
 re-sealed — restored a claim onto a face-up card, two decisions inside one
 decision window, and an unsorted cover no command could write. The ticket rules
 and the decision guards now live in one place each and both boundaries run them.
+**Amended by ADR 0006 Decision 1:** "the decision guards" meant the
+`switch`/`split` guards. The `cash` branch replayed none of them and nothing
+constrained a receipt's frame, so the fix landed on the branch that moves no
+money and skipped the one that does. Both are closed there, with the frame rule
+that makes the pair of them sound.
 
 **Fixed — a raw `TypeError` escaped `restore()`.** `decisions[].positions` was
 the one untrusted array `parseCardsSnapshot` did not type, and it reached
@@ -376,6 +392,11 @@ finding is worth more than the line it lands on.
   are refused at definition time with documented reasons rather than
   approximated or dropped, and `docs/modules/sequential-cards.md` §12.1 lists
   every remaining divergence from the consumer's specification.
+  **Amended by ADR 0006 Decision 3:** `rounding: 'stochastic'` is implemented.
+  Decision 4 below recorded it as a contract limitation — a book holds no seed,
+  a draw needs committed randomness — and the conclusion did not follow from the
+  premise: what a book cannot hold is the _round_ seed, and a one-way derivative
+  of it is a different object. `dormancy` is still refused by name.
 - Two holes that the contract's prose did not prevent — an unsigned reveal log
   and an unbound round identity — are closed inside the module, and both are
   worth reading back into `docs/lifecycle-modules.md` as guidance for the next

@@ -16,7 +16,12 @@
  */
 import { toWireReceipt, type WireReceipt } from '../../src/core/ledger.js';
 import type { CardsTranscript } from '../../src/modules/sequential-cards/contracts.js';
-import { triadMiddleReference } from '../../src/modules/sequential-cards/references.js';
+import {
+  triadMiddleReference,
+  triadStochasticReference,
+} from '../../src/modules/sequential-cards/references.js';
+import { deriveRoundingSeed } from '../../src/modules/sequential-cards/credits.js';
+import { cardsFingerprint } from '../../src/modules/sequential-cards/adapter.js';
 import {
   CardsBook,
   type CardsBookSnapshot,
@@ -32,6 +37,8 @@ import { deriveDeal } from '../../src/modules/sequential-cards/truth.js';
 export const FROZEN_CARDS_SEED = `${'00'.repeat(31)}2a`;
 export const FROZEN_CARDS_ROUND_ID = 'frozen-cards-round-1';
 export const frozenCardsDefinition = triadMiddleReference;
+export const FROZEN_STOCHASTIC_ROUND_ID = 'frozen-cards-draw-1';
+export const frozenStochasticDefinition = triadStochasticReference;
 
 export interface FrozenCardsRound {
   readonly snapshot: CardsBookSnapshot;
@@ -41,25 +48,60 @@ export interface FrozenCardsRound {
 }
 
 export async function buildFrozenCardsRound(): Promise<FrozenCardsRound> {
-  const definition = frozenCardsDefinition;
+  return buildRound(frozenCardsDefinition, FROZEN_CARDS_ROUND_ID);
+}
+
+/**
+ * The same sequence under `rounding: 'stochastic'`, frozen separately.
+ *
+ * The settlement draw changes the wire format in two visible ways — the book
+ * snapshot carries the committed tape, and the `open` receipt's fingerprint
+ * binds a commitment to it — and it changes the credited integers, which is the
+ * point of the rule. Freezing the shape means a future revision cannot alter
+ * how a tape is bound, or which draw a credit event takes, without the committed
+ * bytes stopping matching.
+ *
+ * The stake is deliberately 110 rather than the lattice's 100: `72/25 · S` is
+ * whole on every multiple of 25, so a round staked on the lattice never reaches
+ * the draw at all on its main line, and a fixture that never exercises the
+ * mechanism would freeze nothing about it.
+ */
+export async function buildFrozenStochasticCardsRound(): Promise<FrozenCardsRound> {
+  return buildRound(frozenStochasticDefinition, FROZEN_STOCHASTIC_ROUND_ID);
+}
+
+async function buildRound(
+  definition: typeof triadMiddleReference,
+  roundId: string,
+): Promise<FrozenCardsRound> {
   const book = new CardsBook(definition);
   const receipts: WireReceipt[] = [];
+  const stochastic = definition.pricing.rounding === 'stochastic';
 
   receipts.push(
     toWireReceipt(
       await book.open({
         idempotencyKey: 'frozen-open',
         expectedStepRevision: 0,
-        roundId: FROZEN_CARDS_ROUND_ID,
+        roundId,
         selections: [
           { id: 'MIDDLE', kind: 'position', position: 0, stake: 100n },
           { id: 'BAND', kind: 'market', marketId: 'BAND:CORE', stake: 25n },
         ],
+        ...(stochastic
+          ? {
+              roundingSeed: deriveRoundingSeed(
+                FROZEN_CARDS_SEED,
+                cardsFingerprint(definition),
+                roundId,
+              ),
+            }
+          : {}),
       }),
     ),
   );
 
-  const deal = deriveDeal(FROZEN_CARDS_SEED, definition, FROZEN_CARDS_ROUND_ID);
+  const deal = deriveDeal(FROZEN_CARDS_SEED, definition, roundId);
   const steps = deriveRevealSteps(definition, deal, book.choices);
   receipts.push(
     toWireReceipt(
@@ -88,7 +130,7 @@ export async function buildFrozenCardsRound(): Promise<FrozenCardsRound> {
   const domainTranscript = buildCardsTranscript(
     FROZEN_CARDS_SEED,
     definition,
-    FROZEN_CARDS_ROUND_ID,
+    roundId,
     book.choices,
   );
   receipts.push(

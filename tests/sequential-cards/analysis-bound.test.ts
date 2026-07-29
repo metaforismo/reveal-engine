@@ -5,11 +5,17 @@ import {
   CARDS_MAX_ANALYSIS_CELLS,
   CARDS_MAX_ANALYSIS_OPS,
   analyseDefinition,
+  analyseDefinitionAsync,
   estimateAnalysisCells,
   estimateAnalysisWork,
   forEachCanonicalState,
 } from '../../src/modules/sequential-cards/analysis.js';
-import { defineCardsGame } from '../../src/modules/sequential-cards/adapter.js';
+import {
+  cardsFingerprint,
+  defineCardsGame,
+  defineCardsGameAsync,
+  freezeCardsDefinition,
+} from '../../src/modules/sequential-cards/adapter.js';
 import {
   SEQUENTIAL_CARDS_MODULE_ID,
   type CardsAction,
@@ -78,7 +84,7 @@ function draft(shape: Shape): SequentialCardsDefinition {
 /**
  * The completions the walk really enumerates.
  *
- * `runAnalysis` memoises `cardsBelief` on the revealed `(position, rank)`
+ * `analysisWalk` memoises `cardsBelief` on the revealed `(position, rank)`
  * prefix, and `forEachCanonicalState` walks the identical tree, so summing
  * `belief.completions` once per distinct prefix reproduces the belief cost
  * exactly rather than modelling it.
@@ -243,5 +249,101 @@ describe('a definition over either ceiling is refused before the walk', () => {
         }),
       ),
     ).toThrowError(/exact-rational operations/);
+  });
+});
+
+/**
+ * The proof is the same proof whether or not the thread is given back.
+ *
+ * `defineCardsGame` is synchronous and proves its economics by exhaustion, so a
+ * host that constructs a definition on a request thread blocks it for the whole
+ * walk — thirteen seconds at the ceiling. `defineCardsGameAsync` awaits between
+ * batches of lines. The risk in offering two paths is that they prove different
+ * things, so what is pinned here is that they do not: same numbers, same
+ * refusals, same ceilings, and the event loop demonstrably alive in between.
+ */
+describe('sequential-cards: the definition-time walk can yield', () => {
+  it('reaches the identical analysis, and lets the event loop run while it does', async () => {
+    const shape = draft({ label: 'async-parity', size: 12, dealt: 3, actions: ['switch', 'cash'] });
+    const sync = analyseDefinition(defineCardsGame(shape));
+
+    let turns = 0;
+    const ticker = setInterval(() => {
+      turns += 1;
+    }, 1);
+    let asynchronous;
+    try {
+      // A fresh object identity, so the shared cache cannot answer for it, and
+      // the async path is the one that actually walks it.
+      const built = await defineCardsGameAsync(
+        { ...shape, id: 'bound-async-parity-b' },
+        { yieldEvery: 1 },
+      );
+      asynchronous = analyseDefinition(built);
+    } finally {
+      clearInterval(ticker);
+    }
+    // The point of the exercise: a timer scheduled before the walk started got
+    // to run during it. The synchronous path cannot produce this.
+    expect(turns).toBeGreaterThan(0);
+
+    // Every figure the module publishes about a definition, not a sample of them.
+    expect(asynchronous.lines).toBe(sync.lines);
+    expect(asynchronous.cells).toBe(sync.cells);
+    expect(asynchronous.decisionCells).toBe(sync.decisionCells);
+    expect(asynchronous.terminalCells).toBe(sync.terminalCells);
+    expect(asynchronous.identicalActionCells).toBe(sync.identicalActionCells);
+    expect(asynchronous.maxPayoutMultiple).toEqual(sync.maxPayoutMultiple);
+    expect(asynchronous.minPositivePayoutMultiple).toEqual(sync.minPositivePayoutMultiple);
+    expect(asynchronous.nonZeroCreditThreshold).toBe(sync.nonZeroCreditThreshold);
+    expect(asynchronous.minStakeThreshold).toBe(sync.minStakeThreshold);
+    expect(asynchronous.bestPolicyReturn).toEqual(sync.bestPolicyReturn);
+    expect(asynchronous.worstPolicyReturn).toEqual(sync.worstPolicyReturn);
+    expect(asynchronous.priorUniform).toBe(sync.priorUniform);
+    expect(asynchronous.pricingIdentityHolds).toBe(sync.pricingIdentityHolds);
+  });
+
+  it('constructs a real definition asynchronously, and walks it once per definition', async () => {
+    const declaration = { ...triadMiddleReference, id: 'triad-async-v1' };
+    const built = await defineCardsGameAsync(declaration);
+    expect(cardsFingerprint(built)).toBe(cardsFingerprint(defineCardsGame(declaration)));
+    expect(analyseDefinition(built).bestPolicyReturn).toEqual(rational(24n, 25n));
+
+    // Two callers racing one definition share the walk rather than running two:
+    // the walk is pure, so the only observable is the object identity of the
+    // result, and both callers must get the same one.
+    const fresh = freezeCardsDefinition({ ...triadMiddleReference, id: 'triad-async-shared-v1' });
+    const [one, two] = await Promise.all([
+      analyseDefinitionAsync(fresh),
+      analyseDefinitionAsync(fresh),
+    ]);
+    expect(one).toBe(two);
+  });
+
+  it('refuses the same definitions the synchronous path refuses, and before walking', async () => {
+    // Above the cell ceiling: the refusal is closed from the declaration, so it
+    // must arrive without a line being walked on either path.
+    const oversized = draft({ label: 'async-oversized', size: 100, dealt: 3 });
+    expect(estimateAnalysisCells(oversized)).toBeGreaterThan(BigInt(CARDS_MAX_ANALYSIS_CELLS));
+    const started = process.hrtime.bigint();
+    await expect(defineCardsGameAsync(oversized)).rejects.toThrowError(
+      expect.objectContaining({
+        details: expect.objectContaining({ reason: 'ANALYSIS_SPACE_TOO_LARGE' }),
+      }),
+    );
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2_000);
+    expect(() => defineCardsGame(oversized)).toThrowError(
+      expect.objectContaining({
+        details: expect.objectContaining({ reason: 'ANALYSIS_SPACE_TOO_LARGE' }),
+      }),
+    );
+
+    // A declarative fault is refused before the walk is even constructed.
+    await expect(
+      defineCardsGameAsync({ ...triadMiddleReference, id: '' } as never),
+    ).rejects.toThrowError(expect.objectContaining({ code: 'INVALID_ADAPTER' }));
+    await expect(
+      defineCardsGameAsync(triadMiddleReference, { yieldEvery: 0 }),
+    ).rejects.toThrowError(expect.objectContaining({ code: 'INVALID_ADAPTER' }));
   });
 });

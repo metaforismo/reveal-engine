@@ -336,6 +336,24 @@ under a recomputed checksum. A choice-timed module has to do this — its
 settlement proof is a function of the decision log, so the log is money-bearing
 state.
 
+**And to what a receipt was fenced to.** `CommandLedger.install` bounds a
+receipt's `frameRevision` by the step log's length and can do no more, because
+it knows nothing about beliefs — so a snapshot is otherwise free to pair a claim
+with any belief the round ever held. That is not an inconsistency any arithmetic
+notices: a claim grown at a post-reveal belief and liquidated at the pre-reveal
+one re-derives exactly at both revisions. If your module mints commands at the
+round's live step revision — most will — then assert it in your `visit`: a
+receipt's frame is the number of steps the log has already installed, never an
+earlier one. `sequential-cards` shipped without that rule and could be made to
+credit 4,320 on a 100-credit stake where the honest liquidation was 196; ADR
+0006 in that module has the case.
+
+**Replay the rules of every command, not of the interesting ones.** The guards a
+module replays on the commands that transform state are worth nothing if the
+command that _credits_ replays none: a forged receipt log is worth writing on
+exactly one branch. Whatever `cash`, `sell` or `bank` is called in your module,
+its restored form has to clear the guards its live form clears.
+
 The same applies to anything a snapshot asserts about _what a claim is worth_. A
 price is a function of the belief at the step the claim was opened at, and
 `restore()` has already replayed the steps, so recompute it. `progressive-market`

@@ -363,9 +363,12 @@ describe('sequential-cards: the lifecycle contract', () => {
       'CAP_WOULD_BIND',
     ],
     [
+      // `'floor'` and `'stochastic'` are implemented; `'ceiling'` is declarable
+      // and refused on its merits, so a definition written against it fails here
+      // rather than in somebody else's type-checker.
       'a rounding rule this version does not implement',
       (draft: Record<string, unknown>) => {
-        (draft.pricing as Record<string, unknown>).rounding = 'stochastic';
+        (draft.pricing as Record<string, unknown>).rounding = 'ceiling';
       },
       'INVALID_ROUNDING_POLICY',
     ],
@@ -649,6 +652,8 @@ describe('sequential-cards: the lifecycle contract', () => {
         'CARDS_MARKET_REACHABLE',
         'CARDS_MIN_STAKE_SUFFICIENT',
         'CARDS_ROUNDING_NEVER_UNDERPAYS',
+        'CARDS_ROUNDING_UNBIASED',
+        'CARDS_ROUNDING_BOUNDED',
         'CARDS_CAP_NEVER_BINDS',
         'CARDS_BELIEF_EXHAUSTIVE',
         'CARDS_BELIEF_NORMALISED',
@@ -671,6 +676,8 @@ describe('sequential-cards: the lifecycle contract', () => {
         CARDS_MARKET_REACHABLE: 1,
         CARDS_MIN_STAKE_SUFFICIENT: 1,
         CARDS_ROUNDING_NEVER_UNDERPAYS: 1,
+        CARDS_ROUNDING_UNBIASED: 1,
+        CARDS_ROUNDING_BOUNDED: 1,
         CARDS_CAP_NEVER_BINDS: 1,
         CARDS_BELIEF_EXHAUSTIVE: 3,
         CARDS_BELIEF_NORMALISED: 3,

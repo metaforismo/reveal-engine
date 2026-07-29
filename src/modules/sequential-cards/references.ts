@@ -148,8 +148,40 @@ export const cascadeMiddleReference: SequentialCardsDefinition = defineCardsGame
   seed: { operatorSeedScope: 'per-round', clientEntropy: 'required', clientSeedBytes: 16 },
 });
 
+/**
+ * The same three-card game, credited with the **settlement draw**.
+ *
+ * `triad/docs/ENGINE.md` §4.1 declares `rounding: 'stochastic'` and
+ * `triad/docs/MATH.md` §13.3 is the argument for it: flooring is biased against
+ * the player by `r/d` at every credit event, so the realised return in credits
+ * is strictly below `entryRtp` at every finite stake, while the draw pays
+ * `q + 1` with probability exactly `r/d` and is therefore unbiased at every
+ * stake and under every policy.
+ *
+ * It ships as a reference rather than as a code path with no subject, because
+ * `CARDS_ROUNDING_UNBIASED` and `CARDS_ROUNDING_BOUNDED` have nothing to bite on
+ * under a deterministic rule: a check that only ever runs where it cannot fail
+ * is not evidence. Every other field is `triad-middle-v1`'s, so the two
+ * references differ in exactly the parameter under test — and, `rounding` being
+ * inside the fingerprint, they are different adapters that cannot share a
+ * commitment.
+ *
+ * Its cap headroom is the one figure the draw moves: the reachable maximum is
+ * still `648/5` of stake, but the credited ceiling is `648/5 + 1/25` = `3241/25`
+ * = 129.64×, because the draw can pay one whole credit above the claim's whole
+ * part and the minimum stake is where that credit is proportionally largest.
+ * Still strictly below the 200× rail, and `defineCardsGame` checks it there
+ * rather than at a larger stake where it would look harmless.
+ */
+export const triadStochasticReference: SequentialCardsDefinition = defineCardsGame({
+  ...triadMiddleReference,
+  id: 'triad-stochastic-v1',
+  pricing: { ...triadMiddleReference.pricing, rounding: 'stochastic' },
+});
+
 export const SEQUENTIAL_CARDS_REFERENCES: readonly SequentialCardsDefinition[] = Object.freeze([
   triadMiddleReference,
+  triadStochasticReference,
   duoMiddleReference,
   cascadeMiddleReference,
 ]);

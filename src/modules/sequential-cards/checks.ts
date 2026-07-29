@@ -2,6 +2,7 @@ import { RevealEngineError } from '../../api/errors.js';
 import { RECEIPT_SCHEMA, commandFingerprint, toWireReceipt } from '../../core/ledger.js';
 import type { ConformanceFailure, ModuleConformanceCheck } from '../../core/module.js';
 import {
+  add,
   compare,
   equal as rationalEqual,
   floor as floorRational,
@@ -29,6 +30,14 @@ import {
   type CardsBelief,
 } from './deck.js';
 import { payableWithinCap } from '../../core/payments.js';
+import {
+  convertToCredits,
+  creditsFromDraw,
+  deriveRoundingSeed,
+  roundingCommitment,
+  type CreditTape,
+} from './credits.js';
+import { cardsRoundOf } from './adapter.js';
 import {
   coverProbability,
   entryMultiplier,
@@ -109,7 +118,19 @@ export function stakedCardsSnapshot(
   const steps = deriveRevealSteps(definition, deal, choices).slice(0, 1);
   const prior = cardsBelief(definition, []);
   const total = rows.reduce((sum, row) => sum + row.stake, 0n);
-  const openFingerprint = openTicketFingerprint(roundId, rows);
+  // A stochastic definition credits from a committed tape, and the tape is a
+  // one-way derivative of the same seed this round is derived from — so the
+  // snapshot a conformance check hand-builds is the snapshot a real round of
+  // that definition writes, tape and all.
+  const roundingSeed =
+    definition.pricing.rounding === 'stochastic'
+      ? deriveRoundingSeed(seedHex, cardsFingerprint(definition), roundId)
+      : undefined;
+  const openFingerprint = openTicketFingerprint(
+    roundId,
+    rows,
+    roundingSeed === undefined ? undefined : roundingCommitment(roundingSeed),
+  );
   const revealFingerprint = commandFingerprint('reveal', [
     stepDigest([]),
     ...encodeRevealStep(steps[0] as RevealStep),
@@ -148,6 +169,7 @@ export function stakedCardsSnapshot(
     }),
     decisions: [] as never[],
     settlement: null,
+    ...(roundingSeed === undefined ? {} : { roundingSeed }),
     liquidBalance: '0',
     capBasisStake: String(total),
     receipts: [
@@ -1210,24 +1232,48 @@ const ticketIsWellFormed: Check = {
   },
 };
 
+/** A definition-scoped tape, so a rule-aware check can convert without a round. */
+function probeTape(definition: SequentialCardsDefinition): CreditTape | undefined {
+  if (definition.pricing.rounding !== 'stochastic') return undefined;
+  const roundId = 'conformance-rounding';
+  return {
+    roundingSeed: deriveRoundingSeed(`${'0'.repeat(63)}1`, cardsFingerprint(definition), roundId),
+    round: cardsRoundOf(definition, roundId),
+  };
+}
+
+/** Every reachable payout multiple at every probe stake, as an exact claim. */
+function* roundingProbeClaims(
+  definition: SequentialCardsDefinition,
+): Generator<{ readonly stake: bigint; readonly claim: Rational }, void, void> {
+  const analysis = analyseDefinition(definition);
+  const step = definition.pricing.stakeStepCredits;
+  for (const multiple of [analysis.maxPayoutMultiple, analysis.minPositivePayoutMultiple])
+    for (let index = 0n; index < 8n; index += 1n) {
+      const stake = definition.pricing.minStakeCredits + index * step;
+      yield { stake, claim: multiply(rational(stake), multiple) };
+    }
+}
+
 /**
  * The credited integer is never below the whole part of the claim.
  *
  * It is a property of the **conversion**, not a promise that a control pays: an
  * outcome that does not settle credits nothing. What it does mean is that when a
- * claim settles, the whole part a player was shown is a floor on the credit — so
- * `settlementTotal` must agree with `floor` on every reachable payout at every
- * stake on the lattice, and must never be more than one credit short of the
- * exact rational.
+ * claim settles, the whole part a player was shown is a floor on the credit —
+ * under `'floor'` because that is what flooring is, and under `'stochastic'`
+ * because the draw pays `q` or `q + 1` and never `q − 1`. `triad/docs/MATH.md`
+ * §13.3 property 2 states exactly that, and it is what makes the integer on a
+ * control a floor on the credit rather than an estimate of it.
  */
 const roundingNeverUnderpays: Check = {
   code: 'CARDS_ROUNDING_NEVER_UNDERPAYS',
-  description: 'The credited integer equals the whole part of the claim on every reachable payout',
+  description: 'The credited integer is the whole part of the claim, or one credit above it',
   scope: 'definition',
   run({ definition, count }) {
     const failures: ConformanceFailure[] = [];
-    const analysis = analyseDefinition(definition);
-    const step = definition.pricing.stakeStepCredits;
+    const tape = probeTape(definition);
+    const stochastic = definition.pricing.rounding === 'stochastic';
     const probe = (id: string, stake: bigint, claim: Rational): CardsSelection =>
       Object.freeze({
         id,
@@ -1241,52 +1287,331 @@ const roundingNeverUnderpays: Check = {
         status: 'live' as const,
         credited: 0n,
       });
-    for (const multiple of [analysis.maxPayoutMultiple, analysis.minPositivePayoutMultiple])
-      for (let index = 0n; index < 8n; index += 1n) {
-        count('roundingProbes');
-        const stake = definition.pricing.minStakeCredits + index * step;
-        const claim = multiply(rational(stake), multiple);
-        const whole = floorRational(claim);
-        const credited = settlementTotal(definition, [probe('one', stake, claim)], 0, 0);
-        if (credited.denominator !== 1n || credited.numerator !== whole)
-          failures.push(
-            failure(
-              'CARDS_ROUNDING_NEVER_UNDERPAYS',
-              '$.pricing.rounding',
-              `A settled claim of ${claim.numerator}/${claim.denominator} credited ${credited.numerator}/${credited.denominator}, not its whole part ${whole}`,
-            ),
-          );
-        // The whole part is a floor, never a rounding: it is at most the exact
-        // claim and never more than one credit short of it.
-        if (compare(rational(whole), claim) > 0 || compare(rational(whole + 1n), claim) <= 0)
-          failures.push(
-            failure(
-              'CARDS_ROUNDING_NEVER_UNDERPAYS',
-              '$.pricing.rounding',
-              `${whole} is not the whole part of ${claim.numerator}/${claim.denominator}`,
-            ),
-          );
-        // The part that is not a tautology, and the defect ADR 0005 Decision 6
-        // records: two winning selections must credit the sum of their own
-        // floors, never the floor of their sum. Flooring the aggregate lets one
-        // selection's fractional part finance another's, so settling two rows
-        // together would pay a credit that cashing them one at a time does not.
-        const together = settlementTotal(
-          definition,
-          [probe('one', stake, claim), probe('two', stake, claim)],
-          0,
-          0,
+    for (const { stake, claim } of roundingProbeClaims(definition)) {
+      count('roundingProbes');
+      const whole = floorRational(claim);
+      const event = { tape, sequence: 7 };
+      const credited = settlementTotal(definition, [probe('one', stake, claim)], 0, 0, event);
+      const bonus = convertToCredits(
+        definition,
+        claim,
+        { selectionId: 'one', sequence: 7 },
+        tape,
+      ).credits;
+      if (credited.denominator !== 1n || credited.numerator !== bonus)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_NEVER_UNDERPAYS',
+            '$.pricing.rounding',
+            `A settled claim of ${claim.numerator}/${claim.denominator} credited ${credited.numerator}/${credited.denominator}, not the ${bonus} its declared rounding rule converts it to`,
+          ),
         );
-        count('roundingPairProbes');
-        if (together.denominator !== 1n || together.numerator !== whole * 2n)
+      // Never below the whole part, and never more than one credit above it.
+      if (credited.numerator < whole || credited.numerator > whole + (stochastic ? 1n : 0n))
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_NEVER_UNDERPAYS',
+            '$.pricing.rounding',
+            `${credited.numerator} is not the whole part of ${claim.numerator}/${claim.denominator}, nor one credit above it`,
+          ),
+        );
+      // The whole part is a floor, never a rounding: it is at most the exact
+      // claim and never more than one credit short of it.
+      if (compare(rational(whole), claim) > 0 || compare(rational(whole + 1n), claim) <= 0)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_NEVER_UNDERPAYS',
+            '$.pricing.rounding',
+            `${whole} is not the whole part of ${claim.numerator}/${claim.denominator}`,
+          ),
+        );
+      // The part that is not a tautology, and the defect ADR 0005 Decision 6
+      // records: two winning selections must credit the sum of their **own**
+      // conversions, never the conversion of their sum. Aggregating first lets
+      // one selection's fractional part finance another's, so settling two rows
+      // together would pay a credit that cashing them one at a time does not —
+      // and under the draw each row must get its own draw, under its own id,
+      // rather than one draw applied twice.
+      const together = settlementTotal(
+        definition,
+        [probe('one', stake, claim), probe('two', stake, claim)],
+        0,
+        0,
+        event,
+      );
+      const separately =
+        bonus +
+        convertToCredits(definition, claim, { selectionId: 'two', sequence: 7 }, tape).credits;
+      count('roundingPairProbes');
+      if (together.denominator !== 1n || together.numerator !== separately)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_NEVER_UNDERPAYS',
+            '$.pricing.rounding',
+            `Two claims of ${claim.numerator}/${claim.denominator} credited ${together.numerator}/${together.denominator} together, not ${separately} — one row's remainder financed another's`,
+          ),
+        );
+    }
+    return failures;
+  },
+};
+
+/**
+ * The declared rounding rule's expected credit, computed exactly.
+ *
+ * `triad/docs/ENGINE.md` §5.6 asks for this by name under
+ * `rounding: 'stochastic'`: `E[credits] = claim` exactly, for every reachable
+ * payout at every stake in the ladder. The evidence is a **count over the whole
+ * draw space**, not a restatement of the comparison the conversion performs:
+ * for each probe claim `q + r/d` this sweeps every `u` in `[0, d)` through
+ * `creditsFromDraw` and requires that exactly `r` of them pay `q + 1`. A
+ * conversion that used `<=`, or compared against `d − r`, or drew against the
+ * wrong denominator, changes that count and fails here.
+ *
+ * With the count at `r` and the draw uniform on `[0, d)` — `uniformBigInt`'s
+ * own property, covered by core's tests — the expectation is
+ * `q·(d−r)/d + (q+1)·r/d = q + r/d`, the claim itself. Under `'floor'` the same
+ * sweep establishes the other exact statement: the expected credit is `q` and
+ * the bias is exactly `−r/d`, which is why that rule needs a minimum stake and
+ * this one does not.
+ */
+const roundingIsUnbiased: Check = {
+  code: 'CARDS_ROUNDING_UNBIASED',
+  description:
+    "Expected credits equal the claim exactly under 'stochastic', and the whole part under 'floor'",
+  scope: 'definition',
+  run({ definition, count }) {
+    const failures: ConformanceFailure[] = [];
+    const stochastic = definition.pricing.rounding === 'stochastic';
+    const tape = probeTape(definition);
+    const sweep = (claim: Rational): void => {
+      const whole = floorRational(claim);
+      const remainder = claim.numerator - whole * claim.denominator;
+      const denominator = claim.denominator;
+      count('roundingDrawSweeps');
+      // The conversion the round would really perform on this claim, decomposed.
+      // Every branch below is about `credits`, so the decomposition it is
+      // measured against has to come from the conversion rather than from this
+      // check computing the same thing a second time and agreeing with itself.
+      const conversion = convertToCredits(
+        definition,
+        claim,
+        { selectionId: 'sweep', sequence: 0 },
+        tape,
+      );
+      if (
+        conversion.whole !== whole ||
+        conversion.remainder !== remainder ||
+        conversion.denominator !== denominator
+      )
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_UNBIASED',
+            '$.pricing.rounding',
+            `The conversion of ${claim.numerator}/${claim.denominator} decomposes as ${conversion.whole} + ${conversion.remainder}/${conversion.denominator}`,
+          ),
+        );
+      if (!stochastic) {
+        // A deterministic rule takes no draw at all, and that is the property:
+        // a `'floor'` definition that silently drew would be paying an
+        // economics its fingerprint does not describe.
+        count('roundingDraws');
+        if (conversion.draw !== null || conversion.credits !== whole)
           failures.push(
             failure(
-              'CARDS_ROUNDING_NEVER_UNDERPAYS',
+              'CARDS_ROUNDING_UNBIASED',
               '$.pricing.rounding',
-              `Two claims of ${claim.numerator}/${claim.denominator} credited ${together.numerator}/${together.denominator} together, not ${whole * 2n} — one row's remainder financed another's`,
+              `Flooring ${claim.numerator}/${claim.denominator} credited ${conversion.credits} with draw ${String(conversion.draw)}`,
             ),
           );
+        if (whole * denominator + remainder !== claim.numerator)
+          failures.push(
+            failure(
+              'CARDS_ROUNDING_UNBIASED',
+              '$.pricing.rounding',
+              `Flooring ${claim.numerator}/${denominator} loses ${remainder}/${denominator}, which is not what its decomposition says`,
+            ),
+          );
+        return;
       }
+      // The realised conversion has to be the same function of its own draw as
+      // the sweep below walks, or the sweep would be measuring something the
+      // round never runs.
+      if (
+        conversion.draw !== null &&
+        conversion.credits !== creditsFromDraw(claim, conversion.draw)
+      )
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_UNBIASED',
+            '$.pricing.rounding',
+            `The realised draw ${conversion.draw} credited ${conversion.credits} rather than ${creditsFromDraw(claim, conversion.draw)}`,
+          ),
+        );
+      if (conversion.draw === null && remainder !== 0n)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_UNBIASED',
+            '$.pricing.rounding',
+            `A claim of ${claim.numerator}/${denominator} has a fractional part and took no draw`,
+          ),
+        );
+      let paysExtra = 0n;
+      for (let draw = 0n; draw < denominator; draw += 1n) {
+        count('roundingDraws');
+        const credits = creditsFromDraw(claim, draw);
+        if (credits === whole + 1n) paysExtra += 1n;
+        else if (credits !== whole) {
+          failures.push(
+            failure(
+              'CARDS_ROUNDING_UNBIASED',
+              '$.pricing.rounding',
+              `Draw ${draw} on ${claim.numerator}/${claim.denominator} credited ${credits}, which is neither ${whole} nor ${whole + 1n}`,
+            ),
+          );
+          return;
+        }
+      }
+      if (paysExtra !== remainder)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_UNBIASED',
+            '$.pricing.rounding',
+            `${paysExtra} of ${denominator} draws pay the extra credit on ${claim.numerator}/${claim.denominator}; an unbiased rule pays it on ${remainder}`,
+          ),
+        );
+      // E[credits] · d = q·(d − paysExtra) + (q+1)·paysExtra, which must be the
+      // claim's own numerator over the same denominator: bias exactly zero.
+      if (whole * denominator + paysExtra !== claim.numerator)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_UNBIASED',
+            '$.pricing.rounding',
+            `Expected credits of ${whole * denominator + paysExtra}/${denominator} are not the claim ${claim.numerator}/${denominator}`,
+          ),
+        );
+    };
+
+    // A definition's own reachable payouts are what the specification asks
+    // about, and on a real paytable they cluster: `triad-middle-v1`'s extremes
+    // reduce to denominators 1 and 11, so sweeping only those would leave the
+    // conversion tested over two shapes. The synthetic lattice below sweeps
+    // every `(whole, remainder, denominator)` up to 64 as well — 2,080 claims,
+    // every draw of each — so the count is held to the remainder across the
+    // whole small-denominator space rather than at the two points a paytable
+    // happens to reach.
+    for (let denominator = 1n; denominator <= 64n; denominator += 1n)
+      for (let remainder = 0n; remainder < denominator; remainder += 1n)
+        sweep(rational(7n * denominator + remainder, denominator));
+
+    for (const { claim } of roundingProbeClaims(definition)) {
+      // Above this the claim is reported rather than sampled, because a partial
+      // sweep presented as a full one is the overclaim these checks exist to
+      // avoid. Every reachable payout of every shipped reference is far inside.
+      if (claim.denominator > 100_000n) {
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_UNBIASED',
+            '$.pricing.rounding',
+            `A reachable payout has denominator ${claim.denominator}, above the ${100_000n} this check can sweep exhaustively`,
+          ),
+        );
+        continue;
+      }
+      sweep(claim);
+    }
+    return failures;
+  },
+};
+
+/**
+ * The extremal realised **credit** return, and what bounds it.
+ *
+ * `CARDS_POLICY_RETURN_EXTREMAL` settles the exact-rational return over the
+ * whole policy space. This is the other half of the same question, the one
+ * `triad/docs/ENGINE.md` §5.6 asks: what a player is actually credited. The two
+ * are joined by the conversion, and the join is different under each rule.
+ *
+ * Under `'stochastic'` the conversion is unbiased at every credit event
+ * (`CARDS_ROUNDING_UNBIASED` counts it), expectation is linear over the round
+ * tree, and the argmin and argmax of the exact return coincide at `entryRtp` —
+ * so the extremal realised credit return **is** `entryRtp`, exactly, at every
+ * stake. That is asserted here as the conjunction it is.
+ *
+ * Under `'floor'` the join is an inequality rather than an identity: each credit
+ * event loses strictly less than one credit, so a policy taking `k` of them
+ * realises more than `exact − k/stake` and at most `exact`. That bound is what
+ * the minimum stake is for, and it is checked at the minimum stake because that
+ * is where it is loosest.
+ */
+const roundingIsBounded: Check = {
+  code: 'CARDS_ROUNDING_BOUNDED',
+  description:
+    "The extremal realised credit return equals entryRtp exactly under 'stochastic', and is within one credit per credit event under 'floor'",
+  scope: 'definition',
+  run({ definition, count }) {
+    const failures: ConformanceFailure[] = [];
+    const analysis = analyseDefinition(definition);
+    const stochastic = definition.pricing.rounding === 'stochastic';
+    count('creditReturnBounds');
+    if (!rationalEqual(analysis.bestPolicyReturn, analysis.worstPolicyReturn))
+      failures.push(
+        failure(
+          'CARDS_ROUNDING_BOUNDED',
+          '$.pricing',
+          'The exact extremal returns differ, so no statement about credits can be made from them',
+        ),
+      );
+    else if (!rationalEqual(analysis.bestPolicyReturn, definition.pricing.entryRtp))
+      failures.push(
+        failure(
+          'CARDS_ROUNDING_BOUNDED',
+          '$.pricing.entryRtp',
+          `The exact extremal return is ${analysis.bestPolicyReturn.numerator}/${analysis.bestPolicyReturn.denominator}, not the declared ${definition.pricing.entryRtp.numerator}/${definition.pricing.entryRtp.denominator}`,
+        ),
+      );
+    const tape = probeTape(definition);
+    for (const { stake, claim } of roundingProbeClaims(definition)) {
+      count('creditReturnProbes');
+      const credits = convertToCredits(
+        definition,
+        claim,
+        { selectionId: 'one', sequence: 3 },
+        tape,
+      );
+      const credited = rational(credits.credits);
+      // Under either rule the credited integer is inside one credit of the
+      // claim, so no policy's realised return can leave that band.
+      if (compare(credited, claim) > 0 && !stochastic)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_BOUNDED',
+            '$.pricing.rounding',
+            `Flooring ${claim.numerator}/${claim.denominator} credited ${credits.credits}, above the claim`,
+          ),
+        );
+      if (
+        compare(credited, add(claim, rational(1n))) >= 0 ||
+        compare(add(credited, rational(1n)), claim) <= 0
+      )
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_BOUNDED',
+            '$.pricing.rounding',
+            `A credit of ${credits.credits} is more than one credit away from ${claim.numerator}/${claim.denominator} at stake ${stake}`,
+          ),
+        );
+      // The unbiased rule's statement is an identity, and it is the one the
+      // consuming specification asks to be exact: expected credits are the claim.
+      if (stochastic && credits.whole * credits.denominator + credits.remainder !== claim.numerator)
+        failures.push(
+          failure(
+            'CARDS_ROUNDING_BOUNDED',
+            '$.pricing.rounding',
+            `The conversion of ${claim.numerator}/${claim.denominator} does not decompose into a whole part and a remainder`,
+          ),
+        );
+    }
     return failures;
   },
 };
@@ -1349,8 +1674,12 @@ function forgeCash(
     coverProbability(belief, row.positions as number[]),
   );
   const liquid = BigInt(staked.liquidBalance);
+  const sequence = staked.receipts.length + 1;
   const payable = payableWithinCap(
-    value,
+    rational(
+      convertToCredits(definition, value, { selectionId, sequence }, tapeOf(definition, staked))
+        .credits,
+    ),
     BigInt(staked.capBasisStake as string),
     definition.risk.maxWinMultiple,
     liquid,
@@ -1390,6 +1719,16 @@ function forgeCash(
         : candidate,
     ),
   });
+}
+
+/** The committed tape a snapshot's round credits from, if its definition declares one. */
+function tapeOf(
+  definition: SequentialCardsDefinition,
+  staked: CardsBookSnapshot,
+): CreditTape | undefined {
+  const seed = staked.roundingSeed;
+  if (typeof seed !== 'string' || staked.roundId === null) return undefined;
+  return { roundingSeed: seed, round: cardsRoundOf(definition, staked.roundId) };
 }
 
 /** The first backed row of a snapshot's ticket; every reference opens one. */
@@ -1570,6 +1909,8 @@ export const SEQUENTIAL_CARDS_CHECKS: readonly Check[] = Object.freeze([
   marketsAreReachable,
   minStakeIsSufficient,
   roundingNeverUnderpays,
+  roundingIsUnbiased,
+  roundingIsBounded,
   capNeverBinds,
   beliefIsExhaustive,
   beliefIsNormalised,

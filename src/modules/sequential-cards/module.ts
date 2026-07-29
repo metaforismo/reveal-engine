@@ -15,6 +15,7 @@ import {
   cascadeMiddleReference,
   duoMiddleReference,
   triadMiddleReference,
+  triadStochasticReference,
 } from './references.js';
 import { CardsBook } from './round-book.js';
 import { deriveRevealSteps, encodeRevealStep, revealStepsEqual } from './steps.js';
@@ -116,6 +117,7 @@ export const sequentialCards: LifecycleModule<SequentialCardsShape> =
       checks: SEQUENTIAL_CARDS_CHECKS,
       references: [
         { id: triadMiddleReference.id, definition: triadMiddleReference },
+        { id: triadStochasticReference.id, definition: triadStochasticReference },
         { id: duoMiddleReference.id, definition: duoMiddleReference },
         { id: cascadeMiddleReference.id, definition: cascadeMiddleReference },
       ],

@@ -67,20 +67,24 @@ export function reachableObjectiveRanks(definition: SequentialCardsDefinition): 
   return Object.freeze(ranks);
 }
 
-/** Ascending `k`-subsets of `[0, n)`, streamed so nothing materialises the whole set. */
-export function forEachCombination(
-  n: number,
-  k: number,
-  visit: (indices: readonly number[]) => void,
-): void {
+/**
+ * Ascending `k`-subsets of `[0, n)`, streamed so nothing materialises the whole
+ * set — and **interruptible**, which is what an analysis that must be able to
+ * yield the event loop needs from its outermost loop.
+ *
+ * The yielded array is the odometer itself and is reused between yields. Every
+ * caller here copies or consumes it before resuming; a caller that wants to keep
+ * one has to copy it.
+ */
+export function* combinationsOf(n: number, k: number): Generator<readonly number[], void, void> {
   if (k < 0 || k > n) return;
   if (k === 0) {
-    visit([]);
+    yield [];
     return;
   }
   const indices = Array.from({ length: k }, (_value, index) => index);
   for (;;) {
-    visit(indices);
+    yield indices;
     let cursor = k - 1;
     while (cursor >= 0 && (indices[cursor] as number) === n - k + cursor) cursor -= 1;
     if (cursor < 0) return;
@@ -88,6 +92,15 @@ export function forEachCombination(
     for (let next = cursor + 1; next < k; next += 1)
       indices[next] = (indices[next - 1] as number) + 1;
   }
+}
+
+/** The same enumeration in callback form; one odometer serves both. */
+export function forEachCombination(
+  n: number,
+  k: number,
+  visit: (indices: readonly number[]) => void,
+): void {
+  for (const indices of combinationsOf(n, k)) visit(indices);
 }
 
 /**
