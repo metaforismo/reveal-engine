@@ -1049,6 +1049,7 @@ export const stagedSurvivalFixtureModule: LifecycleModule<SurvivalShape> =
       seedCommitment,
       toWire: (transcript) => ({ ...transcript }),
       fromWire,
+      choicesOf: (transcript) => transcript.choices,
     },
     book: {
       snapshotSchema: SNAPSHOT_SCHEMA,

@@ -166,7 +166,7 @@ describe('shape (b): a round whose transcript is a function of seed and choices'
     });
   });
 
-  it('rejects a settlement proof built from someone else&apos;s decisions', async () => {
+  it("rejects a settlement proof built from someone else's decisions", async () => {
     const roundId = 'r5';
     const truth = survival.truth.derive(seed(45), definition, roundId);
     const book = survival.book.create(definition);
@@ -271,6 +271,40 @@ describe('core enforces the choice limits it publishes', () => {
     expect(() =>
       survival.transcript.commitmentBody(definition, roundOf('r7'), truth, [], tooMany),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_CHOICE' }));
+  });
+
+  /**
+   * `verify()` is the only entry point that consumes a choice log straight off
+   * the wire, and the contract's phase order has it re-derive steps from the
+   * transcript's own log rather than through the guarded `steps.derive`. Core
+   * closes that path through `transcript.choicesOf`, so the bound holds where it
+   * actually matters instead of only on the paths a host already controls.
+   */
+  it('bounds the choice log a verifier reads off the wire', () => {
+    const honest = survival.transcript.build(seed(47), definition, 'r7', allStages('steady'));
+    expect(survival.verify(seed(47), definition, honest)).toMatchObject({ ok: true });
+
+    const flooded = {
+      ...honest,
+      choices: Array.from({ length: ENGINE_LIMITS.maxLoggedChoices + 1 }, () => 'steady'),
+    };
+    expect(survival.verify(seed(47), definition, flooded)).toMatchObject({
+      ok: false,
+      code: 'INVALID_TRANSCRIPT',
+      message: 'Logged choice count exceeds the engine limit',
+      path: '$.choices',
+    });
+    // A transcript that does not decode at all is still the module's to report.
+    expect(survival.verify(seed(47), definition, { schema: 'nope' })).toMatchObject({ ok: false });
+  });
+
+  it('refuses a choice-timed module that cannot expose its decoded choice log', () => {
+    expect(() =>
+      defineLifecycleModule({
+        ...survival,
+        transcript: { ...survival.transcript, choicesOf: undefined },
+      } as never),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_MODULE' }));
   });
 
   it('refuses to hand choices to a module that declares none', () => {

@@ -4,7 +4,7 @@ import type { CanonicalField } from '../internal/canonical.js';
 import type { Rational } from './rational.js';
 import type { SamplerScope } from './random.js';
 import { assertIdentifier, isRecord } from './validation.js';
-import type { VerificationResult } from './verification.js';
+import { classifyVerificationError, type VerificationResult } from './verification.js';
 import { MODULE_API_VERSION, type CommitmentVersion } from './versions.js';
 import type { WeightVector } from './weights.js';
 
@@ -61,9 +61,11 @@ export type ClaimSettlement = 'winner-takes-claim' | 'paytable' | 'partial';
  * vector (`5!` orderings already exceed the outcome limit, a trifecta over eight
  * runners is 336 events). `belief()` is then only a per-item marginal, useful
  * for display and for proving elimination reaches exactly zero, and is **not**
- * the pricing space. Such a module must implement `price()`, which returns the
- * exact probability of one module-defined claim event over the full space,
- * counted with `core/combinatorics.ts`.
+ * the pricing space; it is optional, because the per-item view is bound by the
+ * same 2..`maxOutcomes` window and a module with more items than that has no
+ * honest vector to return. Such a module must implement `price()`, which
+ * returns the exact probability of one module-defined claim event over the full
+ * space, counted with `core/combinatorics.ts`.
  */
 export type BeliefSpace = 'outcomes' | 'marginal';
 
@@ -100,7 +102,10 @@ export function samplerScopeOf(round: RoundIdentity): SamplerScope {
  * choice-timed module accepts, and a module with `choiceTiming: 'none'` must
  * never silently receive decisions it does not model. `defineLifecycleModule()`
  * applies this to every `steps.derive`, `transcript.build`, and
- * `transcript.commitmentBody` call, so a module author cannot forget it.
+ * `transcript.commitmentBody` call, and — through `transcript.choicesOf` — to
+ * the decoded choice log on the `verify()` path, which is the one place the
+ * list arrives from the wire. A module author cannot forget it: a choice-timed
+ * module that does not expose `choicesOf` fails to define.
  */
 export function assertLoggedChoices(
   choices: readonly unknown[] | undefined,
@@ -174,7 +179,13 @@ export interface TruthModel<S extends LifecycleShape> {
  *
  * `belief` returns exact non-negative weights over the definition's outcome
  * space after a step prefix. Zero is a legal weight: a step that eliminates an
- * outcome sets its weight to exactly zero, never to an epsilon.
+ * outcome sets its weight to exactly zero, never to an epsilon. It is mandatory
+ * when `beliefSpace` is `outcomes` — that vector *is* the pricing space — and
+ * optional when it is `marginal`, where pricing lives in `price()` and the
+ * vector is only a display view. The escape hatch is not cosmetic:
+ * `weightVector` admits between 2 and `ENGINE_LIMITS.maxOutcomes` entries, so a
+ * module whose per-item space is larger than that (a multi-deck shoe, a large
+ * field) has no honest vector to return and must omit it.
  */
 export interface StepModel<S extends LifecycleShape> {
   readonly maxSteps: number;
@@ -190,7 +201,7 @@ export interface StepModel<S extends LifecycleShape> {
   ): readonly S['step'][];
   encode(step: S['step']): readonly CanonicalField[];
   equal(left: readonly S['step'][], right: readonly S['step'][]): boolean;
-  belief(definition: S['definition'], steps: readonly S['step'][]): WeightVector;
+  belief?(definition: S['definition'], steps: readonly S['step'][]): WeightVector;
   /**
    * Exact price of one claim event after a step prefix.
    *
@@ -247,6 +258,18 @@ export interface TranscriptModel<S extends LifecycleShape> {
   seedCommitment?(seedHex: string, definition: S['definition'], round: RoundIdentity): string;
   toWire(transcript: S['transcript']): unknown;
   fromWire(input: unknown): S['transcript'];
+  /**
+   * The logged decision list a decoded transcript carries.
+   *
+   * Mandatory when `choiceTiming` is not `none`, and the reason is `verify()`:
+   * that is the one path where the choice log arrives from the wire, and the
+   * contract's phase order has the verifier re-derive steps from the
+   * transcript's own log rather than through `steps.derive`. Core cannot find
+   * the log without being told where it lives, so this accessor is how
+   * `defineLifecycleModule()` applies `assertLoggedChoices` to it before the
+   * module's verifier runs. Modules with `choiceTiming: 'none'` omit it.
+   */
+  choicesOf?(transcript: S['transcript']): readonly S['choice'][];
 }
 
 /**
@@ -369,6 +392,12 @@ export function defineLifecycleModule<S extends LifecycleShape>(
       'A marginal belief space must price claims exactly through price()',
       '$.steps.price',
     );
+  if (module.steps.beliefSpace === 'outcomes' && typeof module.steps.belief !== 'function')
+    fail(
+      'INVALID_MODULE',
+      'An outcome belief space is the pricing space and must expose belief()',
+      '$.steps.belief',
+    );
   if (
     module.steps.choiceTiming !== 'none' &&
     typeof module.transcript.seedCommitment !== 'function'
@@ -377,6 +406,12 @@ export function defineLifecycleModule<S extends LifecycleShape>(
       'INVALID_MODULE',
       'A choice-timed module must publish a seed pre-commitment',
       '$.transcript.seedCommitment',
+    );
+  if (module.steps.choiceTiming !== 'none' && typeof module.transcript.choicesOf !== 'function')
+    fail(
+      'INVALID_MODULE',
+      'A choice-timed module must expose its decoded choice log',
+      '$.transcript.choicesOf',
     );
   assertIdentifier(module.transcript.schema, '$.transcript.schema', 'INVALID_MODULE');
   assertIdentifier(module.book.snapshotSchema, '$.book.snapshotSchema', 'INVALID_MODULE');
@@ -417,9 +452,38 @@ export function defineLifecycleModule<S extends LifecycleShape>(
   const timing = module.steps.choiceTiming;
   const guard = (choices: readonly S['choice'][] | undefined): readonly S['choice'][] =>
     assertLoggedChoices(choices, timing) as readonly S['choice'][];
+  const choicesOf = module.transcript.choicesOf;
+
+  /**
+   * Applies the choice guard on the one path that consumes wire input.
+   *
+   * A verifier re-derives steps from the transcript's own log, so it never
+   * passes through the guarded `steps.derive`. Decoding here costs one extra
+   * pure `fromWire` and is dwarfed by the derivation that follows. A decode
+   * failure is handed back untouched: the module's own verifier reports it with
+   * its own message and path.
+   */
+  const verify: LifecycleModule<S>['verify'] = (seedHex, definition, input) => {
+    if (choicesOf) {
+      let decoded: S['transcript'] | undefined;
+      try {
+        decoded = module.transcript.fromWire(input);
+      } catch {
+        decoded = undefined;
+      }
+      if (decoded !== undefined)
+        try {
+          assertLoggedChoices(choicesOf.call(module.transcript, decoded), timing, '$.choices');
+        } catch (error) {
+          return classifyVerificationError(error);
+        }
+    }
+    return module.verify(seedHex, definition, input);
+  };
 
   return Object.freeze({
     ...module,
+    verify,
     definitions: Object.freeze({ ...module.definitions }),
     truth: Object.freeze({ ...module.truth }),
     steps: Object.freeze({
