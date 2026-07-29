@@ -71,11 +71,26 @@ export function lanePartition(
   return Object.freeze(lanes);
 }
 
-/** Exact `P(j survivors)` for one lane of `size`, indexed `0..size`. */
+/**
+ * Exact `P(j survivors)` for one lane of `size`, indexed `0..size`.
+ *
+ * `size` is bounded by the contract's own `laneWidth`, because that is the width
+ * `assertSurvivalDefinition` reserved arithmetic room for. This is an exported
+ * helper reachable with an arbitrary `size`, and the repeated `c^j` below is a
+ * power: a validated contract with a wide denominator would otherwise overflow
+ * the engine's BigInt limit here, raising `INVALID_RATIONAL` from the rational
+ * primitives instead of refusing an out-of-range argument. `lanePartition()`
+ * never produces a lane wider than the contract, so no internal caller can hit
+ * this.
+ */
 export function laneSurvivorDistribution(
   contract: StageContract,
   size: number,
 ): readonly Rational[] {
+  if (!Number.isSafeInteger(contract?.laneWidth) || contract.laneWidth < 1)
+    fail('INVALID_ADAPTER', 'Lane width must be a positive safe integer', '$.contract.laneWidth');
+  if (!Number.isSafeInteger(size) || size < 0 || size > contract.laneWidth)
+    fail('INVALID_CHOICE', 'Lane size must be in [0, laneWidth]', '$.size');
   const q = rational(
     contract.profile.laneFailure.numerator,
     contract.profile.laneFailure.denominator,

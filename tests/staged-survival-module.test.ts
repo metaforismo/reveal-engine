@@ -19,14 +19,18 @@ import {
   defineSurvivalGame,
   deriveSteps,
   deriveTruth,
+  distributionTotal,
+  expectedSurvivorsFromDistribution,
   fiveRunnerReference,
   laneSizes,
+  laneSurvivorDistribution,
   makeTranscript,
   marginalSurvival,
   maxRoundReturn,
   oracleTrialReference,
   parseRoundRefId,
   price,
+  survivorDistribution,
   roundIdentityOf,
   roundRefId,
   seedCommitment,
@@ -260,6 +264,120 @@ describe('staged-survival: the adapter surface', () => {
     expect(() =>
       defineSurvivalGame({ ...definition, id: 'huge-v1', entities: 32, stages: 64 }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_ADAPTER' }));
+  });
+
+  it('refuses a definition it could not price, as an adapter defect and at define time', () => {
+    // Every declared field here is legal on its own — the modulus is under
+    // 2^256, `p * mu == 1` holds exactly, the entity and lane widths are inside
+    // module limits — but `den(c)^laneWidth` and `mu^stages` are not declared
+    // fields, they are derived ones, and they are what overflows.
+    //
+    // Regression: these used to be accepted, and the overflow then surfaced from
+    // inside the rational primitives as `INVALID_RATIONAL` at the first
+    // derivation. That reads as an engine arithmetic failure rather than as the
+    // adapter defect it is, and it aborts a conformance run part way through.
+    const wide = 1n << 250n;
+    const overflowing: SurvivalDefinition = {
+      ...definition,
+      id: 'unpriceable-v1',
+      entities: 32,
+      stages: 1,
+      drawModulus: wide,
+      contracts: [
+        {
+          id: 'wide',
+          label: 'Wide',
+          laneWidth: 32,
+          minEntities: 1,
+          profile: { laneFailure: rational(0n, 1n), entitySurvival: rational(wide - 1n, wide) },
+          multiplier: rational(wide, wide - 1n),
+        },
+      ],
+      risk: { ...definition.risk, capMustBeUnreachable: false },
+    };
+    expect(() => defineSurvivalGame(overflowing)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_ADAPTER', path: '$.contracts[0].profile' }),
+    );
+    // Narrowing the field to a single lane of one puts the survivor law back
+    // inside the limit; the pricing chain is then the binding constraint, and it
+    // is reported against the multiplier that raises it to the stage count.
+    const narrow = 1n << 40n;
+    const priceable = {
+      ...overflowing,
+      id: 'unpriceable-v2',
+      entities: 1,
+      stages: 64,
+      drawModulus: narrow,
+      contracts: [
+        {
+          ...(overflowing.contracts[0] as SurvivalDefinition['contracts'][number]),
+          laneWidth: 1,
+          profile: { laneFailure: rational(0n, 1n), entitySurvival: rational(narrow - 1n, narrow) },
+          multiplier: rational(narrow, narrow - 1n),
+        },
+      ],
+    };
+    expect(() => defineSurvivalGame(priceable)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_ADAPTER', path: '$.contracts[0].multiplier' }),
+    );
+    // Same declaration over three stages instead of sixty-four is priceable, so
+    // the bound is a bound on the derived width and not a ban on wide rationals.
+    expect(defineSurvivalGame({ ...priceable, id: 'priceable-v1', stages: 3 }).stages).toBe(3);
+  });
+
+  it('does not refuse a high-resolution adapter whose arithmetic actually fits', () => {
+    // The bounds are sufficient rather than tight, so the risk they carry is a
+    // *false* refusal. This is the case that pins how much slack is acceptable:
+    // the whole 32-entity field in one lane, at 60-bit denominators — near the
+    // edge of what the engine limit allows, and it must define and derive.
+    const modulus = 1n << 60n;
+    const highResolution: SurvivalDefinition = {
+      ...definition,
+      id: 'high-resolution-v1',
+      entities: 32,
+      stages: 1,
+      drawModulus: modulus,
+      contracts: [
+        {
+          id: 'wide',
+          label: 'Wide',
+          laneWidth: 32,
+          minEntities: 1,
+          profile: {
+            laneFailure: rational(0n, 1n),
+            entitySurvival: rational(modulus - 1n, modulus),
+          },
+          multiplier: rational(modulus, modulus - 1n),
+        },
+      ],
+      risk: { ...definition.risk, capMustBeUnreachable: false },
+    };
+    const game = defineSurvivalGame(highResolution);
+    const law = survivorDistribution(game, game.contracts[0] as never, 32);
+    expect(law).toHaveLength(33);
+    expect(equal(distributionTotal(law), rational(1n))).toBe(true);
+    expect(
+      equal(
+        expectedSurvivorsFromDistribution(law),
+        multiply(rational(32n), marginalSurvival(game.contracts[0] as never)),
+      ),
+    ).toBe(true);
+  });
+
+  it('bounds the lane size of the exported per-lane law by the contract width', () => {
+    // `laneSurvivorDistribution` is reachable with an arbitrary size, and `c^j`
+    // below it is a power: a validated contract with a wide denominator would
+    // otherwise overflow the engine limit and raise `INVALID_RATIONAL` from the
+    // rational primitives rather than refusing an out-of-range argument.
+    const narrow = definition.contracts[2] as never;
+    expect(laneSurvivorDistribution(narrow, 1)).toHaveLength(2);
+    for (const size of [2, 100, -1, 1.5])
+      expect(() => laneSurvivorDistribution(narrow, size)).toThrowError(
+        expect.objectContaining({ code: 'INVALID_CHOICE' }),
+      );
+    // `lanePartition()` never produces a lane wider than the contract, so the
+    // internal path is unaffected: width 3 at a field of 5 stays inside it.
+    expect(laneSurvivorDistribution(definition.contracts[0] as never, 3)).toHaveLength(4);
   });
 
   it('fingerprints the enumerated lane sizes, not only the width that generates them', () => {
@@ -575,6 +693,73 @@ describe('staged-survival: the round book', () => {
     await book.choose('c', 'wide');
     await expect(book.enter('late', 0, 1_000n)).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
     await expect(book.bank('b', [1])).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
+  });
+
+  it('refuses a bank before every entity is funded, so a credited round always restores', async () => {
+    // Regression, and the reason `bank()` carries the same full-funding guard as
+    // `choose()`. `enter(0) -> bank([0])` used to be accepted and to credit real
+    // money, after which `enter(1..4)` was still legal — and `restore()` refuses
+    // an `enter` receipt that follows a `bank` one, so the round became
+    // permanently unreconnectable at that point and at every later point of its
+    // life. No value leaked (the cap basis only grows, so an early bank is
+    // measured against a strictly smaller ceiling); what leaked was availability.
+    const book = new SurvivalBook(definition);
+    await book.enter('enter-0', 0, 1_000_000n);
+    await expect(book.bank('bank-early', [0])).rejects.toMatchObject({
+      code: 'CLAIM_REJECTED',
+      path: '$.claims',
+    });
+    expect(book.liquidBalance).toBe(0n);
+    expect(SurvivalBook.restore(definition, book.snapshot()).liquidBalance).toBe(0n);
+
+    for (let entity = 1; entity < definition.entities; entity += 1)
+      await book.enter(`enter-${entity}`, entity, 1_000_000n);
+    // The same subset, banked once the field is complete: 1,000,000 * 191/200.
+    const receipt = await book.bank('bank-late', [0]);
+    expect(receipt.credited).toBe(955_000n);
+    expect(receipt.capped).toBe(false);
+    expect(book.capBasisStake).toBe(5_000_000n);
+    const restored = SurvivalBook.restore(definition, book.snapshot());
+    expect(restored.liquidBalance).toBe(955_000n);
+    expect(JSON.stringify(restored.snapshot())).toBe(JSON.stringify(book.snapshot()));
+    // No entry can follow a credited bank, which is what makes `restore()`'s
+    // receipt ordering rule agree with the live path. This is a *consequence*
+    // and the assertion says only that, not that it discriminates: a bank cannot
+    // run until every entity is funded, at which point every id is a duplicate.
+    for (let entity = 0; entity < definition.entities; entity += 1)
+      await expect(book.enter(`enter-late-${entity}`, entity, 1_000n)).rejects.toMatchObject({
+        code: 'CLAIM_REJECTED',
+      });
+  });
+
+  it('refuses a stake too wide for the round arithmetic, before it mutates anything', async () => {
+    // The stake is the one input to `stake * entryReturn * prod(mu)` that is a
+    // runtime argument rather than a declaration, and `enter()` used to check
+    // only its sign. A stake wide enough to overflow that product was accepted
+    // past `fundStake()` — which had already moved the cap basis and the entry
+    // list — and then threw `INVALID_RATIONAL` while building the claim, leaving
+    // an inflated basis, an entry with no claim, and no receipt. `restore()`
+    // could not even parse the result: it threw `INVALID_RATIONAL` too.
+    const book = new SurvivalBook(definition);
+    const widest = (1n << BigInt(SURVIVAL_LIMITS.maxStakeBits)) - 1n;
+    for (const stake of [widest + 1n, 1n << 4_090n]) {
+      await expect(book.enter('too-wide', 0, stake)).rejects.toMatchObject({
+        code: 'CLAIM_REJECTED',
+        path: '$.stake',
+      });
+      // Nothing moved: no claim, no receipt, and above all no cap basis.
+      expect(book.claims).toEqual([]);
+      expect(book.capBasisStake).toBeUndefined();
+      expect(book.ledgerRevision).toBe(0);
+      expect(SurvivalBook.restore(definition, book.snapshot()).claims).toEqual([]);
+    }
+    // The boundary itself is legal, and the round it opens still restores.
+    for (let entity = 0; entity < definition.entities; entity += 1)
+      await book.enter(`wide-${entity}`, entity, widest);
+    expect(book.capBasisStake).toBe(widest * BigInt(definition.entities));
+    expect(SurvivalBook.restore(definition, book.snapshot()).capBasisStake).toBe(
+      book.capBasisStake,
+    );
   });
 
   it('replays an exact retry and refuses a changed payload under the same key', async () => {

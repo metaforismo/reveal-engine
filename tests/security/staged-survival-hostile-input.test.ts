@@ -438,6 +438,103 @@ describe('staged-survival: the snapshot boundary', () => {
     }
   });
 
+  it('refuses a withdrawal set the live path could not have produced', async () => {
+    // Regression. `restore()` reconciled the withdrawn set as a *set union* of
+    // every decision's banked list plus `pendingBanked`, so an entity present in
+    // both collapsed to one element and passed the count check. `choose()`
+    // clears the pending subset and `bank()` is closed while a decision is
+    // pending, so the live path can never produce that state — and a round
+    // restored from it can never be settled: the next decision re-folds the
+    // stale entity, and `deriveSteps` then refuses it as a banked entity that
+    // was not running. It costs availability rather than value, but `restore()`
+    // is advertised as re-validating rather than trusting.
+    const book = await stakedBook();
+    const pending = (book.snapshot() as { pendingBanked: readonly number[] }).pendingBanked;
+    expect(pending.length).toBeGreaterThan(0);
+
+    await book.choose('choose-1', book.menu()[0] as string);
+    const committed = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
+    // The decision absorbed the subset: it is in the choice, and nowhere else.
+    expect(committed.pendingBanked).toEqual([]);
+    expect((committed.choices as { banked: number[] }[])[1]?.banked).toEqual([...pending]);
+    expect(SurvivalBook.restore(definition, committed).liquidBalance).toBe(book.liquidBalance);
+    expect(() =>
+      SurvivalBook.restore(definition, reseal({ ...committed, pendingBanked: [...pending] })),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+
+    // Same forgery once the decision has resolved. Here there is no pending
+    // decision at all, so only the disjointness of the two sources rejects it —
+    // and this is the shape the old set union accepted outright.
+    const second = makeTranscript(SEED, definition, ROUND_ID, book.choices);
+    await book.resolve(second.steps[1] as SurvivalStep);
+    const resolved = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
+    expect(resolved.pendingBanked).toEqual([]);
+    expect(SurvivalBook.restore(definition, resolved).liquidBalance).toBe(book.liquidBalance);
+    expect(() =>
+      SurvivalBook.restore(definition, reseal({ ...resolved, pendingBanked: [...pending] })),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  it('refuses a credited bank over a field that was never fully funded', async () => {
+    // `bank()` refuses until every entity is funded, so a bank receipt implies a
+    // complete entry list exactly as a logged decision does. The forgery below
+    // strips four entries, their four `enter` receipts and the cap basis
+    // together, so the surviving entry, its receipt and the bank credit all
+    // still reconcile with each other; it is refused for what it is rather than
+    // for an arithmetic mismatch. The ledger's own revision numbering refuses it
+    // independently, which is why the path is asserted and not only the code.
+    const book = new SurvivalBook(definition);
+    for (let entity = 0; entity < definition.entities; entity += 1)
+      await book.enter(`fund-${entity}`, entity, 1_000n);
+    await book.bank('bank-first', [0]);
+    const snapshot = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
+    expect(snapshot.choices).toEqual([]);
+    expect(SurvivalBook.restore(definition, snapshot).liquidBalance).toBe(955n);
+    const entries = snapshot.entries as { entity: number; stake: string }[];
+    const receipts = snapshot.receipts as { receipt: { action: string } }[];
+    expect(() =>
+      SurvivalBook.restore(
+        definition,
+        reseal({
+          ...snapshot,
+          entries: entries.slice(0, 1),
+          receipts: receipts.filter(
+            (entry, index) => entry.receipt.action !== 'enter' || index === 0,
+          ),
+          capBasisStake: '1000',
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.entries' }));
+  });
+
+  it('refuses a restored entry stake too wide for the round arithmetic', async () => {
+    // The snapshot codec bounds a wire BigInt by the engine's 4096-bit limit,
+    // which is far wider than any stake `enter()` accepts. A restored entry that
+    // exploited the gap overflowed in `replayValues()` and surfaced as
+    // `INVALID_RATIONAL` — an arithmetic failure where a rejected snapshot
+    // belongs, and from a code path that had already built half a book.
+    const book = await stakedBook();
+    const snapshot = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
+    const entries = snapshot.entries as { entity: number; stake: string }[];
+    for (const stake of [1n << 64n, 1n << 4_090n]) {
+      let thrown: unknown;
+      try {
+        SurvivalBook.restore(
+          definition,
+          reseal({
+            ...snapshot,
+            entries: entries.map((entry, index) =>
+              index === 0 ? { ...entry, stake: String(stake) } : entry,
+            ),
+          }),
+        );
+      } catch (error) {
+        thrown = error;
+      }
+      expect((thrown as RevealEngineError).code, String(stake)).toBe('INVALID_SNAPSHOT');
+    }
+  });
+
   it('still catches plain corruption through the checksum', async () => {
     const book = await stakedBook();
     const snapshot = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;

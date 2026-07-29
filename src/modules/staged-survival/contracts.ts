@@ -43,6 +43,20 @@ export const SURVIVAL_LIMITS = Object.freeze({
   maxContracts: 16,
   /** Bytes of player entropy every round must carry. Matches SWARM's `clientEntropyBytes`. */
   clientEntropyBytes: 32,
+  /**
+   * Binary width of one entry stake, in minor units.
+   *
+   * A claim value is `stake * entryReturn * prod(mu)`, so the stake's own width
+   * is one of the inputs to the exact arithmetic and it is the only one that is
+   * a *runtime* argument rather than a declaration. Bounding it here makes the
+   * whole money path total: `defineSurvivalGame()` refuses a definition that
+   * would not leave `maxStakeBits` of room under `ENGINE_LIMITS.maxBigIntBits`,
+   * so no stake this module accepts can overflow a rational mid-round.
+   *
+   * 64 bits is `1.8 x 10^19` minor units — beyond any real stake, and far under
+   * the width a definition has to spare.
+   */
+  maxStakeBits: 64,
 });
 
 /**

@@ -1,0 +1,55 @@
+{
+  "schema": "reveal-engine/stress-v3",
+  "evidenceClass": "synthetic-local-or-ci",
+  "workloadSeed": 1592598566,
+  "rounds": 500,
+  "operations": 5546,
+  "elapsedMs": 620.6916249999999,
+  "throughputOpsPerSecond": 8935.193865391691,
+  "latency": {
+    "p50Ms": 0.008749999999992042,
+    "p95Ms": 0.13241700000000378,
+    "p99Ms": 0.8824170000000322,
+    "maxMs": 1.6107500000000528
+  },
+  "heapDeltaBytes": 3851368,
+  "maxSnapshotBytes": 5445,
+  "maxTranscriptBytes": 1297,
+  "accepted": {
+    "open": 667,
+    "duplicate-replay": 1000,
+    "frame": 2000,
+    "sell": 167,
+    "reconnect": 50,
+    "settle": 500,
+    "survival:enter": 432,
+    "survival:choose": 222,
+    "survival:stage": 222,
+    "survival:reconnect": 25,
+    "survival:bank": 36,
+    "survival:settle": 100,
+    "survival:duplicate-replay": 100
+  },
+  "rejected": {
+    "STALE_FRAME": 500,
+    "COMMITMENT_MISMATCH": 45,
+    "CLAIM_REJECTED": 100
+  },
+  "moduleDigests": {
+    "progressive-market": "fdb9e9b8ed782e685c9ddcfb74b3418b879db56602cb2c8bcde81b785bfbaef1",
+    "staged-survival": "b4fc71e68f1e006dd8f1a6dc0622c1820f9db5550e0b62c00bd982bd46a80970"
+  },
+  "thresholds": {
+    "elapsedMs": 30000,
+    "p99Ms": 100,
+    "heapDeltaBytes": 268435456,
+    "snapshotBytes": 8388608
+  },
+  "status": "pass",
+  "runtime": {
+    "node": "v25.8.2",
+    "platform": "darwin",
+    "arch": "arm64",
+    "sourceRevision": "local-working-tree"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "schema": "reveal-engine/benchmark-v3",
+  "evidenceClass": "synthetic-local-or-ci",
+  "samples": 1500,
+  "events": 52712,
+  "elapsedMs": 2172.958458,
+  "eventsPerSecond": 24258.17198940671,
+  "latency": {
+    "p50Ms": 0.3438340000000153,
+    "p95Ms": 3.819874999999911,
+    "p99Ms": 4.371667000000002,
+    "maxMs": 7.046166999999997
+  },
+  "moduleDigests": {
+    "progressive-market": "f8b8d1660c1a864135a9f6d94f678ff1735cb7a494f71e7f29e67f6e44807fa8",
+    "staged-survival": "b7854aef884329b0c6e6c60e1f317bb0a9797cc0a25d5dc262afc69db8abdd22"
+  },
+  "thresholds": {
+    "elapsedMs": 20000,
+    "p99Ms": 50,
+    "minimumEventsPerSecond": 2000
+  },
+  "status": "pass",
+  "runtime": {
+    "node": "v25.8.2",
+    "platform": "darwin",
+    "arch": "arm64",
+    "sourceRevision": "local-working-tree"
+  }
+}

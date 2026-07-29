@@ -40,7 +40,7 @@ import {
   parseWireStepList,
   transcriptToWire,
 } from './transcript.js';
-import { assertSurvivalDefinition, contractFor } from './validation.js';
+import { assertSurvivalDefinition, assertSurvivalStake, contractFor } from './validation.js';
 
 /**
  * Per-entity contingent claim.
@@ -188,6 +188,12 @@ export class SurvivalBook {
    * One externally funded claim per entity. Every entity must be funded before
    * the round's first decision: the field is the definition's whole entity set,
    * and step derivation starts from it.
+   *
+   * An entry can never follow a bank either, and that is a consequence rather
+   * than a second guard: `bank()` refuses until every entity is funded, at which
+   * point every entity id is taken and the duplicate check below refuses. That
+   * is what lets `restore()` reject an `enter` receipt seen after a `bank` one
+   * without rejecting a state the live path can actually produce.
    */
   async enter(key: string, entity: number, stake: bigint): Promise<Receipt<SurvivalAction>> {
     // Arguments are validated **before** the fingerprint is computed, not inside
@@ -196,8 +202,7 @@ export class SurvivalBook {
     // instead of the book's — a typed `CLAIM_REJECTED` turning into whatever the
     // encoder happened to raise.
     this.#assertEntity(entity, '$.entity');
-    if (typeof stake !== 'bigint' || stake <= 0n)
-      fail('CLAIM_REJECTED', 'Stake must be a positive BigInt', '$.stake');
+    assertSurvivalStake(stake, '$.stake');
     const fingerprint = commandFingerprint('enter', [entity, stake]);
     return this.#ledger.execute<SurvivalAction>(key, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is terminal');
@@ -360,6 +365,13 @@ export class SurvivalBook {
    * punishes a forgotten `applyCredit`. `creditClaim` makes the pair one call,
    * so every banked subset is measured against the balance the last one left
    * behind, and the round ceiling holds across the whole chain.
+   *
+   * It carries the same full-funding guard as `choose()`, and for the same
+   * reason: banking is a money-bearing command, so the moment one succeeds the
+   * round has a credited receipt and entries must already be closed. Without the
+   * guard `enter -> bank -> enter` is accepted here and is a state `restore()`
+   * refuses for the rest of the round's life — a round holding real credit that
+   * no reconnect can reconstitute.
    */
   async bank(key: string, entities: readonly number[]): Promise<Receipt<SurvivalAction>> {
     if (!Array.isArray(entities) || entities.length > this.definition.entities)
@@ -371,6 +383,8 @@ export class SurvivalBook {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is terminal');
       if (this.#choices.length !== this.#stageRevision)
         fail('CLAIM_REJECTED', 'This stage is already committed; banking is closed', '$.entities');
+      if (this.#claims.size !== this.definition.entities)
+        fail('CLAIM_REJECTED', 'Every entity must be funded before the first bank', '$.claims');
       if (chosen.length === 0) fail('CLAIM_REJECTED', 'Nothing to bank', '$.entities');
       let previous = -1;
       let total = rational(0n);
@@ -611,13 +625,25 @@ export class SurvivalBook {
         seen.has(entry.entity)
       )
         fail('INVALID_SNAPSHOT', 'Entry list is not a distinct entity set', '$.entries');
+      // Held to exactly the width `enter()` accepts. The snapshot codec bounds a
+      // wire BigInt by the engine limit, which is far wider than any stake this
+      // module will take — and a restored entry wider than that would overflow
+      // in `replayValues()` below, surfacing as `INVALID_RATIONAL` rather than
+      // as the rejected snapshot it is.
+      assertSurvivalStake(entry.stake, '$.entries', 'INVALID_SNAPSHOT');
       seen.add(entry.entity);
       book.#entries.push(Object.freeze({ entity: entry.entity, stake: entry.stake }));
     }
-    if (book.#choices.length > 0 && book.#entries.length !== definition.entities)
+    // Both money-bearing commands close entries, so both imply a fully funded
+    // field. `bank` is included because it credits: a snapshot that carries a
+    // bank receipt over a partial field is a round the live path cannot open.
+    if (
+      (book.#choices.length > 0 || raw.banks.length > 0) &&
+      book.#entries.length !== definition.entities
+    )
       fail(
         'INVALID_SNAPSHOT',
-        'A round with a logged decision must have every entity funded',
+        'A round with a logged decision or bank must have every entity funded',
         '$.entries',
       );
 
@@ -628,15 +654,39 @@ export class SurvivalBook {
     for (let stage = 0; stage <= raw.stageRevision; stage += 1)
       valuesAt.push(replayValues(definition, book.#steps, book.#entries, stage));
 
+    // A decision folds the pending subset into its own banked list and clears
+    // it, and `bank()` is closed while a decision is pending. So a snapshot that
+    // carries both an unresolved decision and an uncommitted subset is a state
+    // the live path cannot reach, and it is refused here rather than restored:
+    // followed forward it re-folds the stale entity into the *next* decision,
+    // and the round can then never produce a valid transcript or be settled.
+    if (raw.pendingBanked.length > 0 && raw.choices.length === raw.stageRevision + 1)
+      fail(
+        'INVALID_SNAPSHOT',
+        'A pending decision has already absorbed the banked subset',
+        '$.pendingBanked',
+      );
+
     // The decision log and the ledger both record who was withdrawn, and they
     // are independent artifacts: a rewritten bank subset in one must contradict
     // the other. Every logged decision carries its banked subset, including a
     // decision that has not resolved yet, plus whatever was banked at the
     // current boundary and not yet committed to a decision.
+    //
+    // The two sources are read as a **disjoint** union, not as a set union: an
+    // entity is withdrawn exactly once, so the same entity appearing twice is a
+    // contradiction in its own right and must not be allowed to collapse into
+    // one element and pass the count check below.
     const bankedFromLog = new Set<number>();
-    for (const choice of book.#choices)
-      for (const entity of choice.banked) bankedFromLog.add(entity);
-    for (const entity of raw.pendingBanked) bankedFromLog.add(entity);
+    const withdrawOnce = (entity: number, path: string): void => {
+      if (bankedFromLog.has(entity))
+        fail('INVALID_SNAPSHOT', 'An entity is withdrawn twice in the decision log', path);
+      bankedFromLog.add(entity);
+    };
+    book.#choices.forEach((choice, index) => {
+      for (const entity of choice.banked) withdrawOnce(entity, `$.choices[${index}].banked`);
+    });
+    for (const entity of raw.pendingBanked) withdrawOnce(entity, '$.pendingBanked');
     const bankedFromLedger = new Set<number>();
     let bankedCount = 0;
     for (const record of raw.banks)

@@ -33,6 +33,17 @@ const ZERO = rational(0n);
 /** Separator between the two halves of a round reference. Illegal inside a round id. */
 export const ROUND_REF_SEPARATOR = '|';
 
+/** Binary width of a BigInt magnitude. `0` is zero bits wide. */
+function bitWidth(value: bigint): number {
+  const magnitude = value < 0n ? -value : value;
+  return magnitude === 0n ? 0 : magnitude.toString(2).length;
+}
+
+/** Width of the wider half of a rational: what the public BigInt limit sees. */
+function rationalWidth(value: Rational): number {
+  return Math.max(bitWidth(value.numerator), bitWidth(value.denominator));
+}
+
 /** Bytes left for the operator round id once the entropy half and separator are spent. */
 export const MAX_ROUND_ID_BYTES =
   ENGINE_LIMITS.maxIdentifierBytes - SURVIVAL_LIMITS.clientEntropyBytes * 2 - 1;
@@ -134,6 +145,133 @@ function assertContract(
     fail(
       'INVALID_ADAPTER',
       'marginalSurvival * multiplier must equal pricing.continuationReturn exactly',
+      `${path}.multiplier`,
+    );
+  assertDerivedWidths(
+    { laneWidth: contract.laneWidth as number, multiplier },
+    definition,
+    laneFailure,
+    entitySurvival,
+    path,
+  );
+}
+
+/**
+ * Refuses a declaration whose **derived** quantities would exceed the engine's
+ * public BigInt limit.
+ *
+ * Every other bound in this file constrains a declared field on its own: the
+ * entity count, the stage count, the draw modulus, the menu size, the tape.
+ * None of them constrains what the module builds *out of* those fields, and the
+ * derived quantities grow as powers — the field survivor law carries
+ * `den(c)^entities`, and the maximum round return carries `mu^stages`. So a
+ * declaration can satisfy every field-level bound, and satisfy `p * mu == 1`
+ * exactly, and still make `survivorDistribution()` or `maxRoundReturn()` raise
+ * `INVALID_RATIONAL` from inside the rational primitives. That is an adapter
+ * defect surfacing as an arithmetic failure, at the first derivation rather than
+ * at define time, and it aborts a conformance run part way through its checks.
+ *
+ * ### The two bounds
+ *
+ * Write `W(x)` for the binary width of an integer and `W(r)` for the wider half
+ * of a rational. Let `q = laneFailure`, `h = 1 - q`, `c = entitySurvival`,
+ * `m = 1 - c`, `w = laneWidth`, `n = entities`, `S = stages`, `mu = multiplier`.
+ *
+ * **The field survivor law.** One lane of size `s <= w` contributes
+ * `C(s, j) * h * c^j * m^(s-j)`, plus a point mass `q` at zero survivors, so the
+ * widest integer any lane term holds is at most
+ *
+ * ```
+ * laneBits = W(den h) + W(den q) + w * max(W(den c), W(den m)) + w
+ * ```
+ *
+ * — the trailing `w` covers the binomial, since `C(s, j) <= 2^w`, and every
+ * numerator is bounded by its denominator because `h`, `c` and `m` all lie in
+ * `[0, 1]`. `survivorDistribution()` convolves `ceil(n / w)` such lanes, and the
+ * running distribution's denominators divide the product of the lanes processed
+ * so far, so the widest value it holds is `laneCount * laneBits`. Conformance
+ * then takes the mean (a factor of at most `n`) and the fairness identity (a
+ * factor of `mu`).
+ *
+ * The convolution accumulates with `add()`, which forms `a.den * b.den` *before*
+ * reducing — and `rational()` checks its arguments before it reduces them — so a
+ * sum of two values of width `B` transiently constructs one of width `2B`.
+ * Hence:
+ *
+ * ```
+ * fieldBits = 2 * ceil(n / w) * laneBits + W(n) + W(mu) + 2
+ * ```
+ *
+ * The mean's factor of `n` and the identity's factor of `mu` are applied once,
+ * after the convolution, so they are not doubled.
+ *
+ * **The pricing chain.** `maxRoundReturn()` is `entryReturn * max(mu)^S` by
+ * repeated multiplication, and `assertCapIsUnreachable()` compares it against
+ * `maxWinMultiple`. The same chain prices a claim: an entry opens at
+ * `stake * entryReturn` and is multiplied by `mu` once per survived stage, and
+ * `bank()` and `settle()` then **sum** up to `n` such claims — one `add()`, so
+ * one doubling.
+ *
+ * ```
+ * pricingBits = 2 * (W(entryReturn) + S * W(mu) + W(maxWinMultiple))
+ *             + maxStakeBits + W(n) + 1
+ * ```
+ *
+ * `maxStakeBits` is in there because the stake is the one input to this chain
+ * that is a runtime argument rather than a declaration. Reserving its width here
+ * is what lets `enter()` refuse an over-wide stake with a typed `CLAIM_REJECTED`
+ * instead of letting it through to a half-applied `INVALID_RATIONAL` several
+ * mutations later: `fundStake()` has already moved the cap basis and the entry
+ * list by the time the claim value is constructed.
+ *
+ * The bounds are **sufficient, not tight**: they cover the widest unreduced
+ * integer each derivation can construct, and reduction usually makes the real
+ * value much smaller. A declaration refused here might have worked. The refusal
+ * is deliberate and fails closed — the alternative is discovering the overflow
+ * from a derivation deep inside a round. Both shipped references clear it by
+ * more than an order of magnitude.
+ */
+function assertDerivedWidths(
+  contract: { readonly laneWidth: number; readonly multiplier: Rational },
+  definition: SurvivalDefinition,
+  laneFailure: Rational,
+  entitySurvival: Rational,
+  path: string,
+): void {
+  const multiplier = contract.multiplier;
+  const entryReturn = rational(
+    definition.pricing.entryReturn.numerator,
+    definition.pricing.entryReturn.denominator,
+  );
+  const held = subtract(ONE, laneFailure);
+  const missed = subtract(ONE, entitySurvival);
+  const perEntity = Math.max(bitWidth(entitySurvival.denominator), bitWidth(missed.denominator));
+  const laneBits =
+    bitWidth(held.denominator) +
+    bitWidth(laneFailure.denominator) +
+    contract.laneWidth * perEntity +
+    contract.laneWidth;
+  const laneCount = Math.ceil(definition.entities / contract.laneWidth);
+  const entityBits = bitWidth(BigInt(definition.entities));
+  const fieldBits = 2 * laneCount * laneBits + entityBits + rationalWidth(multiplier) + 2;
+  if (fieldBits > ENGINE_LIMITS.maxBigIntBits)
+    fail(
+      'INVALID_ADAPTER',
+      `Survivor distribution would need up to ${fieldBits} bits, past the ${ENGINE_LIMITS.maxBigIntBits}-bit engine limit`,
+      `${path}.profile`,
+    );
+  const pricingBits =
+    2 *
+      (rationalWidth(entryReturn) +
+        definition.stages * rationalWidth(multiplier) +
+        bitWidth(definition.risk.maxWinMultiple)) +
+    SURVIVAL_LIMITS.maxStakeBits +
+    entityBits +
+    1;
+  if (pricingBits > ENGINE_LIMITS.maxBigIntBits)
+    fail(
+      'INVALID_ADAPTER',
+      `Maximum round return would need up to ${pricingBits} bits, past the ${ENGINE_LIMITS.maxBigIntBits}-bit engine limit`,
       `${path}.multiplier`,
     );
 }
@@ -357,6 +495,32 @@ export function contractFor(
       '$.choice.contractId',
     );
   return declared;
+}
+
+/**
+ * One entry stake: a positive BigInt inside `SURVIVAL_LIMITS.maxStakeBits`.
+ *
+ * The width matters, not just the sign. A claim value is
+ * `stake * entryReturn * prod(mu)`, and `enter()` builds it *after*
+ * `fundStake()` has already moved the cap basis and the entry list — so a stake
+ * wide enough to overflow that product would leave the book half-mutated, with
+ * an inflated basis, an entry that has no claim, and no receipt, in a state that
+ * `restore()` then cannot even parse. `assertSurvivalDefinition` reserves this
+ * much width for the stake, so a stake that clears this check cannot overflow
+ * anywhere in the round.
+ *
+ * `code` is a parameter because the same rule guards two boundaries with two
+ * taxonomies: a live command argument (`CLAIM_REJECTED`) and a restored
+ * snapshot field (`INVALID_SNAPSHOT`).
+ */
+export function assertSurvivalStake(
+  value: unknown,
+  path: string,
+  code: 'CLAIM_REJECTED' | 'INVALID_SNAPSHOT' = 'CLAIM_REJECTED',
+): asserts value is bigint {
+  if (typeof value !== 'bigint' || value <= 0n) fail(code, 'Stake must be a positive BigInt', path);
+  if (bitWidth(value) > SURVIVAL_LIMITS.maxStakeBits)
+    fail(code, `Stake must fit in ${SURVIVAL_LIMITS.maxStakeBits} bits`, path);
 }
 
 /** A bank subset: ascending, distinct, and inside the definition's entity space. */

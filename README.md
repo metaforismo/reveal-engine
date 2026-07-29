@@ -140,15 +140,18 @@ Four independent layers, all reproducible:
 1. **Re-derivation.** `reveal-verify <transcript.json> <seed>` re-derives truth,
    evidence, and commitment and compares in constant time. It returns a typed
    failure code — never a parser stack trace.
-2. **Frozen wire fixtures.** `transcript-v1`, `transcript-v2`, `receipt-v1`, and
-   `round-book-v1` are committed files under `tests/fixtures/`, and a
+2. **Frozen wire fixtures.** `transcript-v1`, `transcript-v2`, `receipt-v1`,
+   `round-book-v1`, `staged-survival/transcript-v1` and
+   `staged-survival/book-v1` are committed files under `tests/fixtures/`, and a
    known-answer `commit-v2` vector is pinned in the proof-vector tests. Each one
    is rebuilt from its seed on every run and compared field for field against
    the committed bytes, so changing an encoding without changing a version
    breaks the build. (This is a real freeze, not a runtime round trip: a round
    trip moves both sides of the comparison together and would accept the
-   change.) The seeded stress workload's `correctnessDigest` is likewise
-   compared against its committed baseline rather than merely printed.
+   change.) The seeded stress workload carries one correctness digest **per
+   lifecycle module**, and every one is compared against its committed baseline
+   rather than merely printed — including a check that a module the baseline
+   anchors has not silently dropped out of the workload.
 3. **Oracles, not simulations.** Posterior and pricing are cross-checked against
    an independent raw-weight fraction oracle, and the within-round strategy
    theorem is proved by exhaustive enumeration over every two-tick binary path

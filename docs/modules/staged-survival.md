@@ -217,6 +217,66 @@ comparison. For the shipped reference: `191/200 * 4^3 = 1528/25 = 61.12 < 100`.
 zero weights and rejects an all-zero vector, so "the field is empty" is modelled
 as a terminal outcome slot of its own rather than as an impossible vector.
 
+**4.8 A definition the arithmetic cannot carry is refused at define time.**
+Exact rationals are unbounded in principle and bounded in practice:
+`ENGINE_LIMITS.maxBigIntBits` is 4096, and `rational()` checks its arguments
+_before_ reducing them. The declared fields are each bounded on their own, but
+the derived ones grow as powers of them — the field survivor law carries
+`den(c)^entities`, and the maximum round return carries `mu^stages` — so a
+declaration can satisfy every field-level bound, satisfy `p * mu == 1` exactly,
+and still be one this module cannot price.
+
+`assertSurvivalDefinition` therefore bounds the two derived widths and refuses
+with `INVALID_ADAPTER`. Writing `W(x)` for binary width, `W(r)` for the wider
+half of a rational, `h = 1 - q`, `m = 1 - c`, `w = laneWidth`, `n = entities`,
+`S = stages`:
+
+```
+laneBits    = W(den h) + W(den q) + w * max(W(den c), W(den m)) + w
+fieldBits   = 2 * ceil(n / w) * laneBits + W(n) + W(mu) + 2
+pricingBits = 2 * (W(entryReturn) + S * W(mu) + W(maxWinMultiple))
+            + maxStakeBits + W(n) + 1
+```
+
+and both must fit in `maxBigIntBits`. The trailing `+ w` in `laneBits` covers the
+binomial (`C(s, j) <= 2^w`); every numerator is bounded by its denominator
+because `h`, `c` and `m` all lie in `[0, 1]`; the convolution's running
+denominators divide the product of the lanes processed so far; and the factor of
+two covers `add()`, which forms `a.den * b.den` before reduction — the path taken
+both by accumulating a convolution and by summing claim values across entities.
+The mean's factor of `n` and the fairness identity's factor of `mu` are applied
+once, after the convolution, so they are not doubled.
+
+**The stake is inside the pricing bound, and that is what makes the money path
+total.** A claim value is `stake * entryReturn * prod(mu)`, and the stake is the
+one input to it that is a runtime argument rather than a declaration.
+`SURVIVAL_LIMITS.maxStakeBits` is 64 — `1.8 x 10^19` minor units, beyond any real
+stake — and reserving that width at define time is what lets `enter()` refuse a
+wider one with a typed `CLAIM_REJECTED` **before** it mutates anything. That
+ordering matters: `fundStake()` has already moved the cap basis and the entry list
+by the time the claim value is constructed, so an overflow there left an inflated
+basis, an entry with no claim, and no receipt — a book `restore()` could not even
+parse. `restore()` holds a restored entry stake to the same width, because the
+snapshot codec's own bound is the engine limit and that is far wider than
+anything this module accepts.
+
+These bounds are **sufficient, not tight**. They bound the widest unreduced
+integer each derivation can construct, and reduction usually makes the real value
+far smaller, so a declaration refused here might have worked. The refusal fails
+closed deliberately: the alternative is an adapter defect surfacing as
+`INVALID_RATIONAL` from inside the rational primitives at the first derivation,
+which reads as an engine arithmetic failure and aborts a conformance run part way
+through its checks. The slack is calibrated rather than assumed — a test pins that
+the whole 32-entity field in one lane at 60-bit denominators still defines and
+still derives a law summing to exactly `1`. Both shipped references clear the
+bounds by more than an order of magnitude: the widest of the five contracts is
+`wide`, at 110 of 4096 bits for the survivor law and 128 for the pricing chain.
+
+The same reasoning bounds one exported helper: `laneSurvivorDistribution()` takes
+a lane size, and `c^j` under it is a power, so it refuses a size outside
+`[0, laneWidth]` with `INVALID_CHOICE`. `lanePartition()` never produces a wider
+lane, so no internal caller is affected.
+
 ---
 
 ## 5. The money model
@@ -244,6 +304,19 @@ matching mutation would credit its full ceiling once per bank, with
 banked subset is measured against the balance the last one left behind, and the
 invariant `liquidBalance <= basis * maxWinMultiple` holds across the whole chain.
 `tests/staged-survival-oracle.test.ts` enumerates it.
+
+**Both money-bearing commands close entries.** `choose()` and `bank()` each
+require the whole field to be funded — `claims.size == entities` — before they
+will run. For `choose()` that is the field the step derivation starts from. For
+`bank()` it is the reconnect invariant: a bank credits, so once one succeeds the
+round holds a credited receipt, and `restore()` refuses an `enter` receipt that
+follows a `bank` one. Without the guard, `enter(0) -> bank([0]) -> enter(1..4)`
+was accepted by the live path and produced a book `restore()` then rejected for
+the rest of the round's life — a round holding real credit that no reconnect
+could reconstitute. No value leaked (the basis only grows, so an early bank is
+measured against a strictly smaller ceiling), but availability did. An entry
+after a bank is now impossible as a _consequence_ rather than as a second guard:
+by the time a bank can run, every entity id is taken.
 
 ### 5.1 The invariance theorem
 
@@ -369,10 +442,24 @@ read out of the snapshot**:
 - every receipt's `commandFingerprint` is recomputed from the restored state, so
   a rewritten entry, decision, or bank subset cannot survive its own ledger;
 - the withdrawn set is recorded twice — in the decision log and in the bank
-  command log — and the two must agree;
+  command log — and the two must agree as a **disjoint** union, so an entity
+  named in two places is a contradiction rather than a set element that collapses
+  into one;
+- a snapshot carrying both an unresolved decision and an uncommitted banked
+  subset is refused: `choose()` folds the subset into its own decision and clears
+  it, and `bank()` is closed while a decision is pending, so the live path cannot
+  produce that state. Restored, it would re-fold the stale entity into the _next_
+  decision and the round could never produce a valid transcript or be settled;
+- a logged decision or a bank record implies a fully funded entry list, because
+  both commands refuse until the field is complete;
 - each step is checked against the field it must have run, the lane partition
   that field produces under the chosen contract, and the rule that a collapsed
   lane takes every entity in it.
+
+The last three are there because `restore()` is advertised as re-validating
+rather than trusting, and a state the live path cannot produce is exactly the
+kind a forged snapshot store would supply. They cost availability rather than
+value, and they are refusals for that reason and not for an arithmetic one.
 
 The checksum is not the control. It detects corruption, not tampering: anyone who
 can rewrite a field can recompute the hash over it. Every tamper case in
@@ -468,6 +555,24 @@ contract test pins it field for field against a genuinely driven round, so the
 re-derivation cannot drift into something `restore()` would reject for the wrong
 reason.
 
+### Bounded load and throughput
+
+`scripts/stress.ts` and `scripts/benchmark.ts` both run this module alongside
+`progressive-market`, and each module carries its **own** replay anchor in
+`moduleDigests` — which is why the artifacts moved to `reveal-engine/stress-v3`
+and `benchmark-v3`. A single digest over the whole run would have moved the
+moment a second module joined the workload, making a new workload
+indistinguishable from drift in an existing one; per-module anchors keep
+`progressive-market`'s 0.2 value byte-identical while giving this module one of
+its own. The stress run compares every anchor the baseline carries and fails on a
+mismatch **or** on a module the baseline anchors and the run no longer produces.
+
+The survival workload funds the whole field, walks the stage ladder choosing from
+the live menu before each stage resolves, banks subsets at some boundaries,
+reconnects through a snapshot, refuses a replayed step, rejects a tampered
+commitment, settles against the revealed seed, and asserts
+`liquidBalance <= basis * maxWinMultiple` on every round.
+
 ### Residual risks this module does not close
 
 - **Publication ordering.** The entropy control depends on the seed
@@ -509,10 +614,40 @@ module provides, stated plainly in both directions.
 | Frame fence, idempotency, receipts, re-validating restore                  | `SurvivalBook` (§7.3)                              |
 | Stable machine-branchable failure codes                                    | §7.2                                               |
 
-BRANCHFALL's player-chosen **lane balance** is expressible as one contract per
-balance, with `minEntities` as the availability window — which is what an
-adapter-defined menu is for, and it is why the fingerprint enumerates the lane
-sizes of every reachable field rather than only the widths.
+### Partly provided: BRANCHFALL's player-chosen lane balance
+
+BRANCHFALL's `RouteContract` carries a fixed `laneCount` plus a per-field menu of
+balances: `SPLIT` is always two lanes, and `laneSplits(n) = ceil(n/2) .. n-1`
+names the sizes of the leading lane. This module has no per-contract balance
+menu; it has `laneWidth`, and the field is cut into consecutive lanes of that
+width with the remainder **last** and never larger than the width.
+
+One balance at one field size is expressible as one contract: `laneWidth: 3` at
+five runners gives `[3, 2]`, `laneWidth: 4` gives `[4, 1]`, which is exactly
+BRANCHFALL's `laneSplits(5) = [3, 4]`. What is **not** expressible is the menu as
+a whole:
+
+- **The lane count is a function of the field, not of the contract.** A
+  `laneWidth: 2` contract yields `[2, 2]` at four runners and `[2, 2, 1]` at
+  five — a three-lane geometry BRANCHFALL's two-lane `SPLIT` never offers, with a
+  different joint law.
+- **A later lane can never be larger than an earlier one.** The remainder goes
+  last, so `[2, 3]` is inexpressible at any width. BRANCHFALL does not offer it
+  either (its `k >= ceil(n/2)` puts the larger lane first), but the restriction is
+  ours and is worth stating: it is a property of the partition, not a coincidence.
+- **There is no `maxEntities`.** `contractMenu()` and `contractFor()` gate on
+  `minEntities <= liveCount` only, so a contract designed for one field size stays
+  on the menu for every larger field. An adapter reproducing BRANCHFALL's menu
+  therefore also exposes geometries BRANCHFALL does not offer, and cannot be
+  restricted to the field sizes each balance was designed for.
+
+So the menu is adapter-defined, which is the right shape; the _geometry function_
+is not adapter-defined, which is the gap. Closing it means letting a contract
+supply its own `laneSizes(n)` — a widened `StageContract` with its own
+fingerprint enumeration and its own conformance obligation — and this module does
+not do that today. What it does do is fingerprint the enumerated lane **sizes**
+of every reachable field rather than only the widths, so whatever geometry a
+definition declares is bound to its identity.
 
 ### Not provided, and named rather than implied
 

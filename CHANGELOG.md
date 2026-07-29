@@ -46,10 +46,87 @@ The second lifecycle module: `staged-survival`.
 - Two reference definitions: `fiveRunnerReference` (five runners, three stages,
   `wide`/`split`/`narrow`) and `oracleTrialReference`.
 
+### Fixed
+
+- **`bank()` now carries the same full-funding guard as `choose()`.**
+  `enter(0) -> bank([0])` was accepted by the live path and credited real money,
+  after which `enter(1..4)` was still legal — and `restore()` refuses an `enter`
+  receipt that follows a `bank` one, so the round became permanently
+  unreconnectable at that point and at every later point of its life. No value
+  leaked (the cap basis only grows, so an early bank is measured against a
+  strictly smaller ceiling); availability did. An entry after a bank is now
+  impossible as a consequence rather than as a second guard: by the time a bank
+  can run, every entity id is taken.
+- **`restore()` no longer accepts a withdrawal set the live path cannot
+  produce.** The withdrawn entities were reconciled as a _set union_ of every
+  decision's `banked` list plus `pendingBanked`, so an entity present in both
+  collapsed into one element and passed the count check. The two sources are now
+  read as a disjoint union, and a snapshot carrying both an unresolved decision
+  and an uncommitted banked subset is refused outright — `choose()` folds the
+  subset into its own decision and clears it, and `bank()` is closed while a
+  decision is pending. Restored, such a state re-folded the stale entity into the
+  next decision and the round could never produce a valid transcript or be
+  settled. `restore()` also now requires a fully funded entry list whenever the
+  snapshot carries a bank record, not only a logged decision.
+- **`defineSurvivalGame()` refuses a definition it could not price.** Entity
+  count, stage count, draw modulus, menu size and tape size were each bounded,
+  but the quantities derived from them grow as powers — `den(c)^entities` in the
+  field survivor law, `mu^stages` in the maximum round return. A declaration
+  could satisfy every field-level bound, satisfy `p * mu == 1` exactly, and still
+  make `survivorDistribution()` or `maxRoundReturn()` raise `INVALID_RATIONAL`
+  from inside the rational primitives at the first derivation — an adapter defect
+  surfacing as an engine arithmetic failure, and one that aborts a conformance
+  run part way through. Both derived widths are now bounded at define time with
+  an `INVALID_ADAPTER` refusal; the bounds are sufficient rather than tight and
+  `docs/modules/staged-survival.md` §4.8 states them and says so. A test pins the
+  slack from the other side: a 32-entity field in one lane at 60-bit denominators
+  must still define and still derive a law summing to exactly `1`.
+- **`enter()` bounds the stake's width, not only its sign.** A claim value is
+  `stake * entryReturn * prod(mu)`, and the stake was the one input to it that
+  was never bounded. A stake wide enough to overflow that product passed
+  `fundStake()` — which had already moved the cap basis and the entry list — and
+  then raised `INVALID_RATIONAL` while the claim was being constructed, leaving
+  an inflated basis, an entry with no claim and no receipt, in a book `restore()`
+  could not even parse. `SURVIVAL_LIMITS.maxStakeBits` is now 64, reserved inside
+  the define-time pricing bound, so a stake that clears `enter()` cannot overflow
+  anywhere in the round. `restore()` holds a restored entry stake to the same
+  width, because the snapshot codec's own bound is the far wider engine limit.
+- **`laneSurvivorDistribution()` bounds its lane size by the contract width.** It
+  is an exported helper reachable with an arbitrary size, and `c^j` under it is a
+  power, so a validated contract with a wide denominator overflowed there rather
+  than refusing an out-of-range argument. `lanePartition()` never produces a
+  wider lane, so no internal caller changes.
+- The stress digest gate validates its own baseline with `assertStressArtifact`
+  and fails when it cannot — a gate that quietly stops gating when its input is
+  malformed is not a gate — and compares the **union** of both key sets, so a
+  module the baseline does not anchor is drift too rather than silently ungated.
+  `compareModuleDigests()` is extracted and unit-tested in both directions.
+
 ### Changed
 
 - `docs/lifecycle-modules.md`, `README.md` and `docs/api-reference.md` record
   that two modules ship. **No core file was modified.**
+- **Stress and benchmark artifacts carry one replay anchor per lifecycle
+  module.** `correctnessDigest` became `moduleDigests`, keyed by module id, and
+  both schemas moved to `reveal-engine/stress-v3` and
+  `reveal-engine/benchmark-v3` (baselines renamed to `artifacts/stress-v3.json`
+  and `artifacts/benchmark-v3.json`). A single digest over a whole run moves
+  whenever a module is _added_ to the workload, which makes a new workload
+  indistinguishable from drift in an existing one. `progressive-market`'s 0.2 and
+  0.3 values are carried forward byte-identical under its own key. The stress
+  run now compares every anchor the baseline carries and fails on a mismatch
+  **or** on a module the baseline anchors and the run no longer produces.
+- Both scripts run `staged-survival` alongside `progressive-market`, so the new
+  module ships with bounded-load and throughput evidence gated by the same
+  `npm run verify` and CI steps as the first one. `docs/evidence-ledger.md` is
+  rewritten for this branch and now carries a per-module section.
+- `docs/modules/staged-survival.md` §10 no longer claims BRANCHFALL's
+  player-chosen lane balance is expressible as one contract per balance. One
+  balance at one field size is; the menu as a whole is not, because the lane
+  count is a function of the field rather than of the contract, a later lane can
+  never be larger than an earlier one, and there is no `maxEntities` to keep a
+  contract off larger fields. The gap is now stated in both the module doc and
+  `TODO.md`.
 
 ## 0.3.0 — 2026-07-29
 
