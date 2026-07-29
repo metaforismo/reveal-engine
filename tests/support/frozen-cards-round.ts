@@ -1,0 +1,185 @@
+/**
+ * The one sequential-cards round the frozen wire fixtures are cut from.
+ *
+ * `scripts/fixtures.ts` writes `tests/fixtures/cards-transcript-v1.json` and
+ * `tests/fixtures/cards-book-v1.json` from this exact sequence, and
+ * `tests/sequential-cards/frozen-fixtures.test.ts` rebuilds it and compares
+ * field for field. Any change to how a reveal, a claim, a receipt, or a book
+ * snapshot encodes moves the rebuilt side only, so the committed file stops
+ * matching and the build breaks — which is the whole point of freezing them.
+ *
+ * The sequence deliberately covers the shapes that make this module different
+ * from the progressive market: a two-row ticket, a reveal that reprices the
+ * board, a **switch** that transforms a claim with no credit boundary, and a
+ * settlement that pays the backed position and the side market on their own
+ * outcomes.
+ */
+import { toWireReceipt, type WireReceipt } from '../../src/core/ledger.js';
+import type { CardsTranscript } from '../../src/modules/sequential-cards/contracts.js';
+import {
+  triadDormantReference,
+  triadMiddleReference,
+  triadStochasticReference,
+} from '../../src/modules/sequential-cards/references.js';
+import { deriveRoundingSeed } from '../../src/modules/sequential-cards/credits.js';
+import { cardsFingerprint } from '../../src/modules/sequential-cards/adapter.js';
+import {
+  CardsBook,
+  type CardsBookSnapshot,
+} from '../../src/modules/sequential-cards/round-book.js';
+import { deriveRevealSteps } from '../../src/modules/sequential-cards/steps.js';
+import {
+  buildCardsTranscript,
+  cardsTranscriptToWire,
+  type WireCardsTranscript,
+} from '../../src/modules/sequential-cards/transcript.js';
+import { deriveDeal } from '../../src/modules/sequential-cards/truth.js';
+
+export const FROZEN_CARDS_SEED = `${'00'.repeat(31)}2a`;
+export const FROZEN_CARDS_ROUND_ID = 'frozen-cards-round-1';
+export const frozenCardsDefinition = triadMiddleReference;
+export const FROZEN_STOCHASTIC_ROUND_ID = 'frozen-cards-draw-1';
+export const frozenStochasticDefinition = triadStochasticReference;
+export const FROZEN_DORMANT_ROUND_ID = 'frozen-cards-dormant-5';
+export const frozenDormantDefinition = triadDormantReference;
+/** Seconds the host asserts it measured. One second past the declared window. */
+export const FROZEN_DORMANT_ELAPSED = 86_401;
+
+export interface FrozenCardsRound {
+  readonly snapshot: CardsBookSnapshot;
+  readonly receipts: readonly WireReceipt[];
+  readonly transcript: WireCardsTranscript;
+  readonly domainTranscript: CardsTranscript;
+}
+
+export async function buildFrozenCardsRound(): Promise<FrozenCardsRound> {
+  return buildRound(frozenCardsDefinition, FROZEN_CARDS_ROUND_ID);
+}
+
+/**
+ * The same sequence under `rounding: 'stochastic'`, frozen separately.
+ *
+ * The settlement draw changes the wire format in two visible ways — the book
+ * snapshot carries the committed tape, and the `open` receipt's fingerprint
+ * binds a commitment to it — and it changes the credited integers, which is the
+ * point of the rule. Freezing the shape means a future revision cannot alter
+ * how a tape is bound, or which draw a credit event takes, without the committed
+ * bytes stopping matching.
+ *
+ * The stake is deliberately 110 rather than the lattice's 100: `72/25 · S` is
+ * whole on every multiple of 25, so a round staked on the lattice never reaches
+ * the draw at all on its main line, and a fixture that never exercises the
+ * mechanism would freeze nothing about it.
+ */
+export async function buildFrozenStochasticCardsRound(): Promise<FrozenCardsRound> {
+  return buildRound(frozenStochasticDefinition, FROZEN_STOCHASTIC_ROUND_ID);
+}
+
+/**
+ * The same round again, closed by the **system** instead of by the player.
+ *
+ * A dormancy-declaring definition writes one key no other snapshot carries —
+ * `settlementReason` — and its terminal receipt is minted under a fingerprint
+ * that binds the reason. Both are wire-format decisions, so both are frozen:
+ * a revision that changed how a system settlement is recorded, or that let one
+ * be relabelled after the fact, would stop matching these bytes.
+ *
+ * It also freezes the price. The round below is settled dormant at the same
+ * frame the player was looking at, so the committed `credited` is the
+ * liquidation of the live claim plus the market's own settlement — not the
+ * outcome the seed decides for the backed position.
+ */
+export async function buildFrozenDormantCardsRound(): Promise<FrozenCardsRound> {
+  return buildRound(frozenDormantDefinition, FROZEN_DORMANT_ROUND_ID, 'dormant');
+}
+
+async function buildRound(
+  definition: typeof triadMiddleReference,
+  roundId: string,
+  close: 'settle' | 'dormant' = 'settle',
+): Promise<FrozenCardsRound> {
+  const book = new CardsBook(definition);
+  const receipts: WireReceipt[] = [];
+  const stochastic = definition.pricing.rounding === 'stochastic';
+
+  receipts.push(
+    toWireReceipt(
+      await book.open({
+        idempotencyKey: 'frozen-open',
+        expectedStepRevision: 0,
+        roundId,
+        selections: [
+          { id: 'MIDDLE', kind: 'position', position: 0, stake: 100n },
+          { id: 'BAND', kind: 'market', marketId: 'BAND:CORE', stake: 25n },
+        ],
+        ...(stochastic
+          ? {
+              roundingSeed: deriveRoundingSeed(
+                FROZEN_CARDS_SEED,
+                cardsFingerprint(definition),
+                roundId,
+              ),
+            }
+          : {}),
+      }),
+    ),
+  );
+
+  const deal = deriveDeal(FROZEN_CARDS_SEED, definition, roundId);
+  const steps = deriveRevealSteps(definition, deal, book.choices);
+  receipts.push(
+    toWireReceipt(
+      await book.advanceReveal({
+        idempotencyKey: 'frozen-reveal',
+        expectedStepRevision: 0,
+        step: steps[0] as (typeof steps)[number],
+      }),
+    ),
+  );
+
+  const other = book.belief().record.hidden.find((position) => position !== 0);
+  if (other === undefined || !book.offers('MIDDLE').includes('switch'))
+    throw new Error('The frozen seed must reach a fully live decision state');
+  receipts.push(
+    toWireReceipt(
+      await book.switchClaim({
+        idempotencyKey: 'frozen-switch',
+        expectedStepRevision: 1,
+        selectionId: 'MIDDLE',
+        positions: [other],
+      }),
+    ),
+  );
+
+  const domainTranscript = buildCardsTranscript(
+    FROZEN_CARDS_SEED,
+    definition,
+    roundId,
+    book.choices,
+  );
+  receipts.push(
+    toWireReceipt(
+      close === 'dormant'
+        ? await book.settleDormant({
+            idempotencyKey: 'frozen-settle-dormant',
+            expectedStepRevision: 1,
+            revealedSeed: FROZEN_CARDS_SEED,
+            transcript: domainTranscript,
+            elapsedSeconds: FROZEN_DORMANT_ELAPSED,
+          })
+        : await book.settle({
+            idempotencyKey: 'frozen-settle',
+            expectedStepRevision: 1,
+            revealedSeed: FROZEN_CARDS_SEED,
+            transcript: domainTranscript,
+          }),
+    ),
+  );
+
+  return Object.freeze({
+    snapshot: book.snapshot(),
+    receipts: Object.freeze(receipts),
+    transcript: cardsTranscriptToWire(domainTranscript),
+    domainTranscript,
+  });
+}

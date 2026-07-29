@@ -9,8 +9,20 @@
  */
 import { writeFileSync } from 'node:fs';
 import { buildFrozenRound, FROZEN_ROUND_ID, FROZEN_SEED } from '../tests/support/frozen-round.js';
+import {
+  buildFrozenCardsRound,
+  buildFrozenDormantCardsRound,
+  buildFrozenStochasticCardsRound,
+  FROZEN_CARDS_ROUND_ID,
+  FROZEN_CARDS_SEED,
+  FROZEN_DORMANT_ROUND_ID,
+  FROZEN_STOCHASTIC_ROUND_ID,
+} from '../tests/support/frozen-cards-round.js';
 
 const round = await buildFrozenRound();
+const cards = await buildFrozenCardsRound();
+const drawn = await buildFrozenStochasticCardsRound();
+const dormant = await buildFrozenDormantCardsRound();
 
 const files: readonly [string, unknown][] = [
   [
@@ -29,6 +41,45 @@ const files: readonly [string, unknown][] = [
       seed: FROZEN_SEED,
       roundId: FROZEN_ROUND_ID,
       receipts: round.receipts,
+    },
+  ],
+  [
+    'tests/fixtures/cards-transcript-v1.json',
+    {
+      note: 'Frozen reveal-engine/cards-transcript-v1 proof. Regenerate with npm run fixtures:update.',
+      seed: FROZEN_CARDS_SEED,
+      roundId: FROZEN_CARDS_ROUND_ID,
+      transcript: cards.transcript,
+    },
+  ],
+  [
+    'tests/fixtures/cards-book-v1.json',
+    {
+      note: 'Frozen reveal-engine/cards-book-v1 snapshot and its receipt log, one entry per action.',
+      seed: FROZEN_CARDS_SEED,
+      roundId: FROZEN_CARDS_ROUND_ID,
+      snapshot: cards.snapshot,
+      receipts: cards.receipts,
+    },
+  ],
+  [
+    'tests/fixtures/cards-book-stochastic-v1.json',
+    {
+      note: "Frozen reveal-engine/cards-book-v1 snapshot under rounding: 'stochastic' — it carries the committed rounding tape and its credits come from the settlement draw.",
+      seed: FROZEN_CARDS_SEED,
+      roundId: FROZEN_STOCHASTIC_ROUND_ID,
+      snapshot: drawn.snapshot,
+      receipts: drawn.receipts,
+    },
+  ],
+  [
+    'tests/fixtures/cards-book-dormant-v1.json',
+    {
+      note: 'Frozen reveal-engine/cards-book-v1 snapshot of a round the system settled: it carries the settlement reason, and its terminal receipt is fingerprinted over it.',
+      seed: FROZEN_CARDS_SEED,
+      roundId: FROZEN_DORMANT_ROUND_ID,
+      snapshot: dormant.snapshot,
+      receipts: dormant.receipts,
     },
   ],
 ];

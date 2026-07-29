@@ -1,5 +1,161 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`sequential-cards`, the second shipped lifecycle module**
+  (`src/modules/sequential-cards/`, documented in
+  [`docs/modules/sequential-cards.md`](docs/modules/sequential-cards.md)). A
+  committed deterministic shuffle of a declared finite deck; reveals whose
+  posterior is an exact **count of surviving completions**, so an eliminated
+  position weighs exactly `0n`; and a multi-position book holding several
+  independently funded selections with independent fair-value liquidations,
+  self-financed switches and splits that cross no credit boundary, and
+  per-selection settlement. Registered in `src/modules/index.ts`, exported at
+  `@axiom-games/reveal-engine/modules/sequential-cards`.
+- Four reference definitions, all proved by exhaustion at
+  `defineCardsGame()` and all run by `reveal-conformance`: `triad-middle-v1`
+  (the 3-card middle-pick adapter with a 14-market paytable),
+  `triad-stochastic-v1` (the same game credited with the settlement draw),
+  `duo-middle-v1` (two simultaneously backed positions), and
+  `cascade-middle-v1` (two reveals, where the second has to read the order the
+  first published).
+- Twenty-one module conformance checks, including `CARDS_POLICY_RETURN_EXTREMAL`
+  (argmin and argmax over the **whole** policy space, never a shortlist),
+  `CARDS_CAP_NEVER_BINDS`, `CARDS_MIN_STAKE_SUFFICIENT`,
+  `CARDS_BELIEF_EXHAUSTIVE`, which cross-checks the posterior against a second
+  enumeration that shares no code path with it, `CARDS_ROUNDING_UNBIASED`, which
+  counts the credit conversion over the whole draw space rather than recomputing
+  its own comparison, and `CARDS_ROUNDING_BOUNDED`, which asserts the two
+  premises that carry the exact extremal return across that conversion.
+- **`pricing.rounding: 'stochastic'`, the unbiased settlement draw** the
+  consuming game declares (`triad/docs/MATH.md` §13.3). A claim of `q + r/d`
+  credits `q + 1` with probability exactly `r/d`, drawn from a **committed
+  rounding tape** — a one-way derivative of the sealed round seed under a label
+  disjoint from the deal and the selectors, so the book draws without ever
+  holding the seed, and `settle` refuses a round whose credits came from another
+  tape. `capMustNotBind` now measures the cap against the largest **credited**
+  amount, which is one credit above the claim ceiling at the minimum stake.
+  `'ceiling'` remains declarable and refused. See
+  [`docs/adr/0006-the-settlement-draw-and-the-closure-round.md`](docs/adr/0006-the-settlement-draw-and-the-closure-round.md).
+- `defineCardsGameAsync()` and `analyseDefinitionAsync()`: the same
+  proof-by-exhaustion with the event loop given back between batches of lines.
+  One generator drives both paths, so the two cannot prove different economics.
+  It is not faster — the ceilings and the refusals are unchanged.
+- Frozen wire fixtures `tests/fixtures/cards-transcript-v1.json`,
+  `tests/fixtures/cards-book-v1.json` and
+  `tests/fixtures/cards-book-stochastic-v1.json`, cut from rounds covering a
+  two-row ticket, a reveal, a switch, and a settlement under each rounding
+  rule. The deterministic fixtures are byte-identical to the ones written
+  before the draw existed.
+- An exhaustive oracle test
+  (`tests/sequential-cards/oracle-three-card.test.ts`): all 1,716 ordered deals
+  times both sealed selectors times all three backed positions, checked against
+  an independently coded closed-form model — every posterior, all 26 published
+  prices, the expected value of every offered action in every state, the argmin
+  and argmax over all `2^38` legal policies, both variance extremes, the whole
+  side-market paytable, and the reachable maximum and minimum payouts.
+- `composeRoundSeed()`: the operator-seed, client-seed and nonce composition the
+  module derives from, written down once with its residual risk stated.
+
+### Fixed
+
+- **`CardsBook.restore()` credited a liquidation no round could have issued.**
+  The `cash` branch replayed none of the guards its `switch`/`split` sibling
+  replayed, and nothing constrained a receipt's `frameRevision` beyond
+  `<= stepRevision` — so a snapshot could pair a claim grown at a post-reveal
+  belief with a price taken at the pre-reveal one. On `triad-middle-v1` with a
+  100-credit stake that restored a `liquidBalance` of 4,320 where the honest
+  liquidation is 196, with an honest stake, ticket, open receipt and cap basis.
+  A receipt's frame must now equal the number of reveals already installed, and
+  a restored `cash` clears the same guards `cash()` clears. The conformance
+  tamper table gains a re-fenced receipt and two forged liquidations, with a
+  legal cash-out alongside as the positive control.
+- **The pricing path validated nothing.** `claimProbability` — the module's
+  declared `steps.price` — priced whatever step list it was handed, and under
+  `sortRemaining: true` a list with an empty final sort silently took the
+  exchangeable branch of `cardsBelief`, discarding the published order and the
+  cumulative bounds and pricing eliminated outcomes at `1/3`. The record rules
+  move to `src/modules/sequential-cards/record.ts` and `cardsBelief` runs them,
+  so the check is inside the counting rather than beside it.
+- **Documentation that outran the code.** §6.3 claimed `restore()` "defeats
+  every _illegal_ rewrite: a state no legal command sequence could have produced
+  does not restore, whatever its receipts say", and named the stake as the sole
+  residual. Both halves were false while it said so. §6.3, the `restore`
+  docstring, `docs/threat-model.md` and ADR 0005 are re-derived, and the
+  statement now names two residuals — the stake and the reveal — because those
+  are exactly the inputs `restore()` can neither re-derive nor replay.
+- `docs/modules/sequential-cards.md` §12.1 was missing two divergences from
+  `triad/docs/ENGINE.md`: the `seed.clientEntropy` widening, and the location of
+  the settlement draw. Both are tabled, and with `dormancy` removed the spec's
+  own §4.1 definition now constructs — checked by a test that transcribes it.
+
+### Changed
+
+- `docs/lifecycle-modules.md` records two things `sequential-cards` found while
+  being written against the contract: a step that moves no money may still need
+  to be a ledger command, and a book with no round identity can settle another
+  round's proof. Both are closed inside the module; see
+  [`docs/adr/0005-sequential-cards-scope-and-the-credit-boundary.md`](docs/adr/0005-sequential-cards-scope-and-the-credit-boundary.md).
+- The public-API snapshot test now pins the `sequential-cards` surface, and the
+  package export map and smoke test carry `./modules/sequential-cards`.
+- **The definition-time analysis ceilings now bound what they claim to.**
+  `estimateAnalysisWork` gained the term it never had for `cardsBelief`'s
+  `C(size − i, dealt − i)` enumeration — the cost that dominates whenever the
+  deck is much wider than the hand — and the new `estimateAnalysisCells` closes
+  the cell budget from the declaration, so **both** ceilings are checked before
+  the walk rather than one of them from inside it. Re-derived from the worst
+  measured rate instead of the best, `CARDS_MAX_ANALYSIS_CELLS` drops
+  3,000,000 → 500,000 and `CARDS_MAX_ANALYSIS_OPS` 100,000,000 → 20,000,000.
+  The slowest definition they admit walks in about 13 s where the old pair admitted
+  25 s walks while publishing "roughly ten seconds", and refused others only
+  after 33 s. Lower ceilings refuse some shapes the old ones admitted; that is
+  the direction ADR 0005 Decision 5 chose and now measures.
+  `scripts/analysis-calibration.ts` is the committed probe table the figures
+  come from.
+- The reveal-provenance boundary is published rather than left in a docstring:
+  a book holds no seed, so `advanceReveal` validates a step as public record and
+  cannot establish it came from the sealed deal, and a mid-round `cash` credits
+  against a fabricated one before `settle` can refuse the round. Deriving every
+  step with `deriveRevealSteps()` is now a named host obligation in
+  `docs/integration-checklist.md`, an open row in `docs/threat-model.md`, and
+  §6.2 and §12 of the module doc; a test pins the behaviour.
+
+### Reviewed
+
+- A third independent review found two major and three minor issues, all fixed:
+  the analysis ceilings above, the undocumented reveal-provenance boundary, four
+  stale figures in `docs/evidence-ledger.md`, a wrong looseness range in §11, and
+  three missing divergences from `triad/docs/ENGINE.md` in §12.1. Every one was a
+  published claim that outran the code rather than a broken control. See ADR 0005
+  Decision 9.
+- A second independent review found four major and four minor issues, all fixed:
+  commands re-reading the caller's request across the ledger's `await`,
+  `restore()` replaying receipt algebra without the round's own rules, a raw
+  `TypeError` escaping `restore()`, and an identical-action enumeration with no
+  reader. See ADR 0005 Decision 8.
+- An independent correctness review (GPT-5.6, read-only) found five issues.
+  Three are fixed: settlement flooring the aggregate instead of each selection
+  (a one-credit cross-selection carry), a settled snapshot trusting its own
+  recorded outcome instead of re-deriving it from the seed it reveals, and the
+  ticket claim bound being enforced after an unbounded validation pass. One is
+  fixed by narrowing: `liquidationSpread` is now required to be exactly zero,
+  because above zero the reported worst-policy return was an arbitrary policy's
+  and not an argmin. One is documented rather than fixed: a deterministic,
+  unkeyed snapshot cannot be authenticated by re-derivation, so snapshot
+  integrity is named as a deployment obligation instead of being implied away.
+  See `docs/adr/0005-…` Decision 6.
+
+### Not included, deliberately
+
+- `rounding: 'stochastic'` — the unbiased settlement draw a consuming game
+  declares — is **declarable and refused** at definition time with
+  `INVALID_ROUNDING_POLICY`. `BookModel.create(definition)` cannot carry a round
+  seed and a per-credit-event draw is not derivable from a transcript's inputs,
+  so implementing it needs a core change larger than this module. ADR 0005 §4
+  records exactly what it would take. Only `rounding: 'floor'` is implemented.
+
 ## 0.3.0 — 2026-07-29
 
 Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.
