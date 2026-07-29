@@ -967,18 +967,28 @@ const minStakeIsSufficient: Check = {
 
 const capNeverBinds: Check = {
   code: 'CARDS_CAP_NEVER_BINDS',
-  description: 'When capMustNotBind, the reachable maximum is strictly below the cap',
+  description:
+    'When capMustNotBind, the reachable maximum including the settlement draw is strictly below the cap',
   scope: 'definition',
   run({ definition, count }) {
     if (!definition.risk.capMustNotBind) return [];
     const analysis = analyseDefinition(definition);
     count('capChecks');
-    return compare(analysis.maxPayoutMultiple, rational(definition.risk.maxWinMultiple)) >= 0
+    // The **credited** ceiling, not the claim ceiling. Under `'floor'` the two
+    // coincide; under `'stochastic'` the draw pays up to one whole credit above
+    // the claim's whole part, and at `minStakeCredits` that credit is
+    // proportionally largest. An earlier revision of this check compared
+    // `maxPayoutMultiple` while the construction gate it shares a name with
+    // compared `creditCeilingMultiple`, so the check named for the property
+    // asserted the weaker of the two — `defineCardsGame` refused definitions
+    // this passed. A check that is weaker than the gate it certifies is
+    // evidence for a claim nobody made.
+    return compare(analysis.creditCeilingMultiple, rational(definition.risk.maxWinMultiple)) >= 0
       ? [
           failure(
             'CARDS_CAP_NEVER_BINDS',
             '$.risk.maxWinMultiple',
-            `A reachable payout of ${analysis.maxPayoutMultiple.numerator}/${analysis.maxPayoutMultiple.denominator} stake reaches the cap`,
+            `A reachable credited payout of ${analysis.creditCeilingMultiple.numerator}/${analysis.creditCeilingMultiple.denominator} stake reaches the cap`,
           ),
         ]
       : [];
