@@ -561,8 +561,10 @@ not to assert that something else already handles it.
 
 **A `PermutationBook` has no round identity, and the platform does not give it
 one.** `RoundIdentity` exists in `src/core/module.ts`, but it is the sampler
-scope: it reaches `truth.derive` and `commitmentBody`, and it never reaches the
-book. `BookModel.create(definition)` takes a definition and nothing else. The
+scope, and it is handed only to the proof hooks: `steps.derive`,
+`transcript.commitmentBody` and `transcript.seedCommitment`. (`truth.derive`
+receives a bare `roundId` string.) It never reaches the book —
+`BookModel.create(definition)` takes a definition and nothing else. The
 binding in §9.1 is the module's own construct, built inside
 `src/modules/permutation/`, and it enforces exactly one ordering property:
 **within a single book instance, no bet is accepted before a commitment has been
