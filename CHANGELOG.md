@@ -53,15 +53,31 @@
   plainly what the module still cannot enforce — it cannot see whether or when
   the commitment it was handed was actually published, which stays a host
   ordering control.
-- A `place` command's fingerprint now covers the round binding as well as the
-  bet and the stake, so the binding is **pinned by the receipt log** rather than
-  read out of the snapshot. This is what protects a staked, non-terminal
-  snapshot, which has no settlement and no revealed seed and could otherwise be
-  re-pointed at another round without moving a single balance.
-- `PermutationBook.restore()` accepts an optional third argument, the round the
-  caller published; any snapshot naming a different one is refused with
-  `COMMITMENT_MISMATCH`. The contract's `book.restore(definition, snapshot)`
-  still works and is documented as the weaker of the two.
+- A `place` command's fingerprint now covers the round binding as well as the bet
+  and the stake, so a **partial** rewrite of a snapshot — the binding moved and
+  the receipts left alone — contradicts its own log and is refused. That is the
+  full extent of what the fingerprint buys, and it is not enough on its own:
+  `commandFingerprint` is an unkeyed SHA-256 over public fields and the
+  transcript builders are public exports, so anyone who can rewrite the snapshot
+  can recompute every fingerprint and the checksum and produce a **consistent**
+  snapshot of a different round. That artefact is indistinguishable from an
+  honest one by any in-process check, at any stake, staked or settled.
+- **`PermutationBook.restore()` therefore requires the round the caller published
+  whenever the snapshot carries a binding.** A restored book's round comes from
+  the caller and never from the snapshot; the snapshot's own binding is
+  reconciled against it. Omitting it on a bound snapshot fails with
+  `CLAIM_REJECTED` at `$.expected`, and naming a different round fails with
+  `COMMITMENT_MISMATCH` at `$.binding`. That value must be read from the
+  published-round record rather than from the snapshot store, which is now a line
+  in `docs/integration-checklist.md`.
+- The lifecycle contract's two-argument `book.restore(definition, snapshot)`
+  consequently restores **only unbound snapshots** and refuses every bound one.
+  This is the same deliberate narrowness as the contract's `create`, which
+  returns an unbound book: the signature has no round to hand over, so the states
+  it can reach are the states in which no money is at risk. A host reconnecting a
+  real ticket calls `PermutationBook.restore(definition, snapshot, round)` — the
+  class is this shape's `book` type, so resolving the module by id already
+  reaches it. The unsafe path is gone rather than documented.
 - A terminal `permutation-book-v2` snapshot carries the round id and the
   **revealed seed**, so `restore()` re-derives the settled order and commitment
   from the proof rather than reconciling them against the credit. Reconciling
@@ -95,6 +111,33 @@
 
 ### Fixed
 
+- **A false security claim about snapshot restore, in four places.** The module
+  doc (§9.1, §12), `PermutationBook.restore`'s own comment and this changelog all
+  said that binding the round into the `place` command fingerprint stopped a
+  staked or settled snapshot being re-pointed at another round. It does not: the
+  fingerprint is an unkeyed hash over public fields, so the rewrite is consistent,
+  cheap and undetectable — and the module's own test file said so in a comment,
+  so the repository contradicted itself on a fairness surface. All four now state
+  what is true, `restore()` requires the published round for any bound snapshot,
+  and the two facts are pinned by tests that build the working rewrite rather than
+  by prose. See Added above.
+- `stakedSnapshotFor` is no longer exported from `./modules/permutation`. It is
+  conformance scaffolding — a staked snapshot synthesised without the book's
+  async command API — and had no business on a surface the package promises to
+  keep stable. It stays exported from `checks.ts` for the tests and checks that
+  need it, exactly as `progressive-market` keeps its own.
+- `npm run fixtures:update` leaves a clean tree. It wrote `JSON.stringify(…, 2)`
+  output, which disagrees with prettier about arrays, so the documented
+  regeneration command produced whitespace-only diffs in all three regenerated
+  fixtures and `npm run verify` then failed at its first step. The script now
+  formats what it writes with the repository's own prettier config, and
+  regenerating an unchanged tree is byte-identical.
+- `docs/modules/permutation.md` §2 and `permutationRound()` no longer restate
+  core's "two games and two rounds never share a draw" without its caveat.
+  `samplerScopeOf` maps `domain = definitionId` and drops `moduleId`, so
+  cross-module separation holds by definition-id uniqueness across the registry
+  rather than by construction. Nothing is exploitable — the commitment body binds
+  the module id — but the caveat belongs with the claim.
 - `enumerateOrders(n)` is bounded to the module's supported draw sizes, like
   every other counting entry point. It was checked only for `n >= 0`, so a host
   forwarding a caller-supplied size had an unbounded allocation: `n = 13` is

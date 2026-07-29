@@ -559,25 +559,39 @@ export class PermutationBook {
    * checks its shape and nothing more. The proof of a settlement is the
    * transcript, verified against the seed; the snapshot is reconnect state.
    *
-   * **The binding is pinned by the receipt log, not read out of the snapshot.**
-   * Every `place` receipt's command fingerprint covers `(roundId, commitment)`
-   * along with the bet and the stake, because a bet is a claim on a particular
-   * draw and the same bet in another round is another command. So rewriting the
-   * binding invalidates every placement — including on a *staked, non-terminal*
-   * snapshot, which has no settlement and no revealed seed and therefore nothing
-   * else that could contradict it. A terminal snapshot is pinned twice over: the
-   * settlement re-derives from the seed, and the binding must equal it.
+   * **A snapshot cannot be trusted to say which round it belongs to, and this
+   * method does not ask it.** Every `place` receipt's command fingerprint covers
+   * `(roundId, commitment)` along with the bet and the stake, so on a snapshot
+   * carrying any placement a *partial* rewrite — the binding moved and the
+   * receipts left alone — contradicts every one of them and is refused below; a
+   * settled snapshot is refused twice over, since its settlement re-derives from
+   * the seed and must name the round the binding does.
    *
-   * What remains is the wholly consistent rewrite of a snapshot with **no
-   * claims and no settlement** — which is a book that has done nothing, and
-   * restoring one under another round is indistinguishable from constructing a
-   * fresh book bound to that round, which any caller may do anyway.
+   * That is the whole of what the fingerprint buys, and it is worth stating what
+   * it does not. `commandFingerprint` is an unkeyed SHA-256 over public fields
+   * and `makePermutationTranscript` is a
+   * public export, so anyone able to rewrite the snapshot can recompute every
+   * place fingerprint, the settlement and the checksum, and produce a wholly
+   * consistent snapshot of a *different* round. That rewrite is
+   * indistinguishable from the truth by any in-process check, at every stake
+   * level, staked or settled. It is not caught here. It cannot be.
    *
-   * `expected` is the belt to that braces: a caller that holds the round it
-   * published passes it, and any snapshot naming a different one is refused
-   * outright rather than being reconstructed and then found consistent. An
-   * operator always holds that value, because publishing it is what opened the
-   * round.
+   * So `expected` — the round the caller published — is **required whenever the
+   * snapshot carries a binding**, and it is the only thing that decides which
+   * round a restored book plays. The snapshot's own binding is reconciled
+   * against it, never used as the source. An operator always holds that value,
+   * because publishing it is what opened the round; a caller that does not hold
+   * it cannot tell an honest snapshot from a re-pointed one, and must not be
+   * handed a book that pretends otherwise.
+   *
+   * A snapshot with **no binding** needs no evidence. It can carry no claim and
+   * no settlement — enforced below — so it is a book that has done nothing, and
+   * reconstructing one is indistinguishable from calling
+   * `new PermutationBook(definition)`, which any caller may do anyway. It is
+   * therefore the only snapshot the lifecycle contract's two-argument
+   * `book.restore(definition, snapshot)` can restore, and deliberately so: that
+   * signature has no round to hand over, so the one state it can produce is the
+   * one in which no money is at risk. Same argument as the `create` factory.
    */
   static restore(
     definition: PermutationDefinition,
@@ -600,6 +614,16 @@ export class PermutationBook {
       const wanted = freezeBinding(expected, '$.expected');
       if (binding === undefined || !bindingsEqual(binding, wanted))
         fail('COMMITMENT_MISMATCH', 'Snapshot belongs to another round', '$.binding');
+    } else if (binding !== undefined) {
+      // The bound snapshot's round comes from the caller or from nowhere. A
+      // consistent whole-round rewrite reconciles perfectly against everything
+      // below, so reconstructing one without out-of-band evidence would be this
+      // class asserting a round it has no way to know.
+      fail(
+        'CLAIM_REJECTED',
+        'Restoring a bound snapshot needs the round the caller published: pass it as the third argument to PermutationBook.restore()',
+        '$.expected',
+      );
     }
     // An unbound book cannot have taken a bet or settled, so a snapshot claiming
     // otherwise is describing a state this class cannot reach.

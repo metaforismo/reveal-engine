@@ -22,7 +22,16 @@ import {
 import { deserializePermutationTranscript } from './transcript.js';
 import { assertPermutationDefinition } from './validation.js';
 
-/** The sampler domain for a round: the definition id, the round id, the scheme. */
+/**
+ * The sampler domain for a round: the definition id, the round id, the scheme.
+ *
+ * `samplerScopeOf` uses `definitionId` as the domain and drops `moduleId`, so
+ * two rounds of one game never share a draw by construction, while separation
+ * between two *modules* rests on definition ids being unique across the
+ * registry. That is an operational property, not a structural one; the
+ * commitment body binds the module id regardless, so a collision would still
+ * yield non-interchangeable proofs. See `docs/modules/permutation.md` §2.
+ */
 export function permutationRound(
   definition: PermutationDefinition,
   roundId: string,

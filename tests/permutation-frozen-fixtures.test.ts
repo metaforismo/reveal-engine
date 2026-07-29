@@ -4,9 +4,11 @@ import { fromWireReceipt, RECEIPT_SCHEMA, type WireReceipt } from '../src/core/l
 import { snapshotHash } from '../src/core/snapshot.js';
 import {
   deserializePermutationTranscript,
+  makePermutationTranscript,
   PERMUTATION_ACTIONS,
   PermutationBook,
   verifyPermutationTranscript,
+  type PermutationRoundBinding,
 } from '../src/modules/permutation/index.js';
 import {
   buildFrozenPermutationRound,
@@ -18,6 +20,24 @@ import {
 
 const readFixture = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(`tests/fixtures/${name}`, 'utf8')) as Record<string, unknown>;
+
+/**
+ * The round these fixtures belong to, rebuilt rather than read.
+ *
+ * `restore()` requires the round the caller published for any bound snapshot,
+ * and lifting it out of the snapshot under test would make the argument
+ * circular — a re-pointed snapshot would supply its own permission. So it is
+ * re-derived from the frozen seed and the frozen round id, which is exactly the
+ * out-of-band value an operator holds.
+ */
+const PUBLISHED_ROUND: PermutationRoundBinding = {
+  roundId: FROZEN_PERMUTATION_ROUND_ID,
+  commitment: makePermutationTranscript(
+    FROZEN_PERMUTATION_SEED,
+    frozenPermutationGame,
+    FROZEN_PERMUTATION_ROUND_ID,
+  ).commitment,
+};
 
 /**
  * `permutation-transcript-v1` and `permutation-book-v2` are frozen on disk, not
@@ -140,6 +160,7 @@ describe('frozen permutation wire fixtures', () => {
     const restored = PermutationBook.restore(
       frozenPermutationGame,
       JSON.stringify(fixture.snapshot as Record<string, unknown>),
+      PUBLISHED_ROUND,
     );
     expect(restored.terminal).toBe(true);
     expect(restored.liquidBalance).toBe(3_360n);
@@ -168,7 +189,9 @@ describe('frozen permutation wire fixtures', () => {
 
   it('rejects a re-sealed mutation of the committed snapshot on its merits', () => {
     const snapshot = readFixture('permutation-book-v2.json').snapshot as Record<string, unknown>;
-    expect(() => PermutationBook.restore(frozenPermutationGame, reseal(snapshot))).not.toThrow();
+    expect(() =>
+      PermutationBook.restore(frozenPermutationGame, reseal(snapshot), PUBLISHED_ROUND),
+    ).not.toThrow();
     const claims = snapshot.claims as Record<string, unknown>[];
     for (const tampered of [
       { ...snapshot, liquidBalance: '999999' },
@@ -200,7 +223,7 @@ describe('frozen permutation wire fixtures', () => {
       },
     ])
       expect(
-        () => PermutationBook.restore(frozenPermutationGame, reseal(tampered)),
+        () => PermutationBook.restore(frozenPermutationGame, reseal(tampered), PUBLISHED_ROUND),
         JSON.stringify(tampered).slice(0, 80),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
@@ -211,8 +234,30 @@ describe('frozen permutation wire fixtures', () => {
       PermutationBook.restore(
         frozenPermutationGame,
         JSON.stringify({ ...snapshot, liquidBalance: '999999' }),
+        PUBLISHED_ROUND,
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  /**
+   * The committed snapshot is bound, so it does not restore on its own say-so.
+   *
+   * A frozen artefact is the cleanest place to pin this: these exact bytes are
+   * a valid, settled, internally consistent snapshot, and they are still refused
+   * without the round the operator published. The refusal is about the caller's
+   * evidence, not about anything wrong with the bytes.
+   */
+  it('refuses the committed bound snapshot when no published round is supplied', () => {
+    const snapshot = readFixture('permutation-book-v2.json').snapshot as Record<string, unknown>;
+    expect(() => PermutationBook.restore(frozenPermutationGame, reseal(snapshot))).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    );
+    expect(() =>
+      PermutationBook.restore(frozenPermutationGame, reseal(snapshot), {
+        ...PUBLISHED_ROUND,
+        roundId: `${FROZEN_PERMUTATION_ROUND_ID}-other`,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }));
   });
 
   /**

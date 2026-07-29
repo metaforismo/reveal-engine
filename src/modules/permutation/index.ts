@@ -76,7 +76,16 @@ export {
   type SettleRequest,
   type WirePermutationClaim,
 } from './round-book.js';
-export { PERMUTATION_CHECKS, stakedSnapshotFor } from './checks.js';
+/**
+ * `stakedSnapshotFor` is deliberately **not** re-exported.
+ *
+ * It is conformance scaffolding — a staked snapshot synthesised without the
+ * book's async command API — and a fixture builder on a surface the package
+ * promises to keep stable is debt that gets awkward to remove. The conformance
+ * checks that need it import it from `./checks.js` directly, exactly as
+ * `progressive-market` does.
+ */
+export { PERMUTATION_CHECKS } from './checks.js';
 export { permutation } from './module.js';
 export type { PermutationShape } from './shape.js';
 export {

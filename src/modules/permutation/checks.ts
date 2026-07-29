@@ -17,6 +17,7 @@ import {
   type PermutationBet,
   type PermutationDefinition,
   type PermutationOrder,
+  type PermutationRoundBinding,
 } from './contracts.js';
 import { permutationFingerprint } from './definition.js';
 import {
@@ -675,6 +676,43 @@ export function stakedSnapshotFor(
 }
 
 /**
+ * A staked snapshot re-pointed onto `otherRoundId`, consistently.
+ *
+ * Deliberately built the way an adversary would, out of exported functions and
+ * nothing else: derive the other round's commitment, move the binding, and
+ * recompute each `place` command fingerprint over the new pair.
+ * `commandFingerprint` is an unkeyed hash over public fields, so this costs a
+ * few lines and no secret. The result is a *real* snapshot of a *real* round —
+ * it reconciles against every check `restore()` performs, and re-serializes to
+ * itself. Nothing inside the process can tell it from the honest one; only the
+ * round the caller published can, which is why `restore()` demands it.
+ */
+function repointedOnto(
+  snapshot: PermutationBookSnapshot,
+  definition: PermutationDefinition,
+  seedHex: string,
+  otherRoundId: string,
+): Record<string, unknown> {
+  const commitment = makePermutationTranscript(seedHex, definition, otherRoundId).commitment;
+  return {
+    ...snapshot,
+    binding: { roundId: otherRoundId, commitment },
+    receipts: snapshot.receipts.map((entry, index) => {
+      const claim = snapshot.claims[index];
+      if (claim === undefined) return entry;
+      const fingerprint = commandFingerprint('place', [
+        otherRoundId,
+        commitment,
+        claim.code,
+        ...claim.parameters,
+        BigInt(claim.stake),
+      ]);
+      return { fingerprint, receipt: { ...entry.receipt, commandFingerprint: fingerprint } };
+    }),
+  };
+}
+
+/**
  * `defineLifecycleModule()` cannot tell a `restore()` that re-validates from one
  * that returns a fresh book — both satisfy the type. Conformance can.
  *
@@ -683,6 +721,14 @@ export function stakedSnapshotFor(
  * field can recompute a hash over it. The tamper set deliberately includes the
  * two money-bearing claim fields, because those are the ones a restore that
  * trusts its snapshot gets wrong in the player's or the operator's favour.
+ *
+ * Two cases carry the round binding rather than a field, and they are the point
+ * of the whole check. A bound snapshot restored with **no published round** must
+ * be refused outright, and a bound snapshot rewritten **consistently** onto a
+ * different round — binding re-pointed and every `place` fingerprint recomputed
+ * over it, which anyone can do with the module's public exports — must be
+ * refused against the round the caller actually published. Nothing under this
+ * function can tell that rewrite from the truth; only the caller's evidence can.
  */
 const snapshotIsRevalidated: Check = {
   code: 'SNAPSHOT_NOT_REVALIDATED',
@@ -694,13 +740,23 @@ const snapshotIsRevalidated: Check = {
       failures.push(failure('SNAPSHOT_NOT_REVALIDATED', path, message));
     };
     const snapshot = stakedSnapshotFor(definition, seedHex, roundId);
+    const published = snapshot.binding as PermutationRoundBinding;
     count('snapshots');
     try {
-      const restored = PermutationBook.restore(definition, JSON.stringify(snapshot));
+      const restored = PermutationBook.restore(definition, JSON.stringify(snapshot), published);
       if (JSON.stringify(restored.snapshot()) !== JSON.stringify(snapshot))
         reject('$.snapshot', 'Restored book does not re-serialize identically');
     } catch (error) {
       reject('$.snapshot', `Restore rejected an honest snapshot: ${String(error)}`);
+    }
+    // The published round is not optional for a bound snapshot. Without this the
+    // stronger check below is one a host can simply forget to ask for.
+    count('snapshotTampers');
+    try {
+      PermutationBook.restore(definition, JSON.stringify(snapshot));
+      reject('$.expected', 'Restore rebuilt a bound snapshot without a published round');
+    } catch {
+      // Expected: a bound snapshot restores only against a round the caller holds.
     }
 
     const reseal = (value: Record<string, unknown>): string =>
@@ -762,11 +818,20 @@ const snapshotIsRevalidated: Check = {
       ],
       // Not re-sealed: the checksum still has to catch plain corruption.
       ['$.snapshotHash', JSON.stringify({ ...snapshot, snapshotHash: '0'.repeat(64) })],
+      // The whole-round rewrite: the binding re-pointed at a different round and
+      // every `place` fingerprint recomputed over it, which needs nothing but
+      // this module's public exports. Internally it is flawless — it is a real
+      // snapshot of a real round — so the *only* thing that refuses it is the
+      // published round the caller passes in below.
+      [
+        '$.binding.roundId',
+        reseal(repointedOnto(snapshot, definition, seedHex, `${roundId}-elsewhere`)),
+      ],
     ];
     for (const [path, tampered] of tampers) {
       count('snapshotTampers');
       try {
-        PermutationBook.restore(definition, tampered);
+        PermutationBook.restore(definition, tampered, published);
         reject(path, 'Restore accepted a tampered snapshot');
       } catch {
         // Expected: a tampered snapshot must not restore.

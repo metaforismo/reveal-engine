@@ -6,6 +6,7 @@ import {
   assertModuleConformance,
   checkModuleConformance,
 } from '../src/conformance/module-conformance.js';
+import { commandFingerprint } from '../src/core/ledger.js';
 import { defineLifecycleModule } from '../src/core/module.js';
 import { equal, rational } from '../src/core/rational.js';
 import { snapshotHash } from '../src/core/snapshot.js';
@@ -38,7 +39,6 @@ import {
   PermutationBook,
   price,
   serializePermutationTranscript,
-  stakedSnapshotFor,
   triadReference,
   verifyPermutationTranscript,
   type PermutationBet,
@@ -46,6 +46,10 @@ import {
   type PermutationRoundBinding,
   type PermutationTranscript,
 } from '../src/modules/permutation/index.js';
+// Deep import on purpose: `stakedSnapshotFor` is conformance scaffolding and is
+// deliberately absent from the module's public surface, exactly as
+// `progressive-market/checks.ts` keeps its own.
+import { stakedSnapshotFor } from '../src/modules/permutation/checks.js';
 import { seed } from './helpers.js';
 
 const CLASSIC = aetherOrderClassicReference;
@@ -980,11 +984,15 @@ describe('permutation module: snapshot and restore', () => {
   }
 
   it('round-trips a staked, non-terminal book', async () => {
-    const { book } = await settledBook();
+    const { transcript, book } = await settledBook();
     const snapshot = book.snapshot();
     expect(snapshot.settlement).toBeNull();
     expect(snapshot.stepRevision).toBe(0);
-    const restored = PermutationBook.restore(CLASSIC, JSON.stringify(snapshot));
+    const restored = PermutationBook.restore(
+      CLASSIC,
+      JSON.stringify(snapshot),
+      bindingOf(transcript),
+    );
     expect(restored.snapshot()).toEqual(snapshot);
     expect(restored.claims).toHaveLength(3);
     expect(restored.capBasisStake).toBe(175n);
@@ -1004,7 +1012,11 @@ describe('permutation module: snapshot and restore', () => {
     const snapshot = book.snapshot();
     expect(snapshot.settlement?.order).toEqual([...transcript.order]);
     expect(snapshot.stepRevision).toBe(CLASSIC.items.length - 1);
-    const restored = PermutationBook.restore(CLASSIC, JSON.stringify(snapshot));
+    const restored = PermutationBook.restore(
+      CLASSIC,
+      JSON.stringify(snapshot),
+      bindingOf(transcript),
+    );
     expect(restored.snapshot()).toEqual(snapshot);
     expect(restored.terminal).toBe(true);
     expect(restored.liquidBalance).toBe(book.liquidBalance);
@@ -1020,7 +1032,8 @@ describe('permutation module: snapshot and restore', () => {
         ...value,
         snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
       });
-    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot))).not.toThrow();
+    const published = bindingOf(transcript);
+    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot), published)).not.toThrow();
 
     const mutations: readonly Record<string, unknown>[] = [
       { liquidBalance: '999999' },
@@ -1050,7 +1063,7 @@ describe('permutation module: snapshot and restore', () => {
     ];
     for (const mutation of mutations)
       expect(
-        () => PermutationBook.restore(CLASSIC, reseal({ ...snapshot, ...mutation })),
+        () => PermutationBook.restore(CLASSIC, reseal({ ...snapshot, ...mutation }), published),
         JSON.stringify(mutation).slice(0, 90),
       ).toThrowError(
         expect.objectContaining({ code: expect.stringMatching(/SNAPSHOT|MISMATCH/u) }),
@@ -1058,7 +1071,11 @@ describe('permutation module: snapshot and restore', () => {
 
     // Unsealed corruption is still caught, by the checksum this time.
     expect(() =>
-      PermutationBook.restore(CLASSIC, JSON.stringify({ ...snapshot, liquidBalance: '1' })),
+      PermutationBook.restore(
+        CLASSIC,
+        JSON.stringify({ ...snapshot, liquidBalance: '1' }),
+        published,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
@@ -1104,12 +1121,17 @@ describe('permutation module: snapshot and restore', () => {
       { ...settlement, commitment: '0'.repeat(64) },
     ])
       expect(
-        () => PermutationBook.restore(CLASSIC, reseal({ ...snapshot, settlement: mutation })),
+        () =>
+          PermutationBook.restore(
+            CLASSIC,
+            reseal({ ...snapshot, settlement: mutation }),
+            bindingOf(transcript),
+          ),
         JSON.stringify(mutation).slice(0, 70),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
 
     // The honest one still restores, and comes back carrying the same proof.
-    const restored = PermutationBook.restore(CLASSIC, reseal(snapshot));
+    const restored = PermutationBook.restore(CLASSIC, reseal(snapshot), bindingOf(transcript));
     expect(restored.settledOrder).toEqual([...transcript.order]);
   });
 
@@ -1124,7 +1146,7 @@ describe('permutation module: snapshot and restore', () => {
   });
 
   it('refuses a snapshot whose claims repeat one behavioural claim', async () => {
-    const { book } = await settledBook();
+    const { transcript, book } = await settledBook();
     const snapshot = book.snapshot() as unknown as Record<string, unknown>;
     const claims = snapshot.claims as Record<string, unknown>[];
     const aliased = {
@@ -1142,6 +1164,7 @@ describe('permutation module: snapshot and restore', () => {
           ...aliased,
           snapshotHash: snapshotHash({ ...aliased, snapshotHash: undefined }),
         }),
+        bindingOf(transcript),
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
@@ -1217,6 +1240,12 @@ describe('permutation module: conformance', () => {
       // Both exhaustive sweeps really did cover the whole space.
       expect(report.counters.drawVectors).toBe(factorial);
       expect(report.counters.truthsSwept).toBe(factorial);
+      // One staked snapshot per seed and a fixed tamper set over it. Pinned so
+      // that dropping a case — most of all the missing-published-round one or
+      // the consistent whole-round rewrite — fails here rather than quietly
+      // shrinking what conformance proves.
+      expect(report.counters.snapshots).toBe(3);
+      expect(report.counters.snapshotTampers).toBe(3 * 16);
     },
   );
 
@@ -1451,16 +1480,16 @@ describe('permutation module: the round a book is bound to', () => {
   });
 
   /**
-   * What a snapshot can and cannot be trusted to say about its own round.
+   * The binding and the settlement have to agree with each other.
    *
-   * A *partial* rewrite — the binding alone, or the settlement alone — is caught,
-   * because the two have to agree with each other and with the revealed seed. A
-   * *consistent* rewrite of both is not, and no in-process check can catch it:
-   * the result is a perfectly valid snapshot of a different round. That is what
-   * the optional published binding is for, and both halves are pinned here so
-   * neither can quietly become an overclaim.
+   * This is the *internal* half of the round question, and it is worth having on
+   * its own: a terminal snapshot names a round twice, once in the binding and
+   * once in the settlement that re-derives from the revealed seed, and the two
+   * disagreeing is a snapshot describing a state the book cannot reach. The
+   * *external* half — which round the caller actually published — is a different
+   * control and lives in its own describe below.
    */
-  it('reconciles the binding against the settlement, and takes the published round when offered one', async () => {
+  it('reconciles the binding against the settlement it re-derives', async () => {
     const honest = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(1));
     const book = await ticketFor(honest);
     await book.settle({ idempotencyKey: 's', revealedSeed: seedHex, transcript: honest });
@@ -1474,35 +1503,37 @@ describe('permutation module: the round a book is bound to', () => {
       });
     const other = makePermutationTranscript(seedHex, CLASSIC, roundIdAt(2));
 
-    // Half a rewrite: the binding now names a round the settlement does not.
+    // Half a rewrite: the binding names a round the settlement does not. Each is
+    // restored against the round its own binding claims, so the refusal is the
+    // internal contradiction and not the published-round check.
     for (const mutation of [
       { ...snapshot, binding: bindingOf(other) },
       { ...snapshot, binding: { ...bindingOf(honest), commitment: '0'.repeat(64) } },
-      { ...snapshot, binding: null },
     ])
       expect(
-        () => PermutationBook.restore(CLASSIC, reseal(mutation)),
+        () =>
+          PermutationBook.restore(
+            CLASSIC,
+            reseal(mutation),
+            mutation.binding as PermutationRoundBinding,
+          ),
         JSON.stringify(mutation.binding),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
 
-    // The honest snapshot restores, and restores harder when told which round
-    // was actually published.
-    expect(PermutationBook.restore(CLASSIC, reseal(snapshot)).binding).toEqual(bindingOf(honest));
+    // Dropping the binding entirely does not turn a settled book into a book
+    // that has done nothing.
+    expect(() =>
+      PermutationBook.restore(CLASSIC, reseal({ ...snapshot, binding: null })),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.binding' }));
+
+    // The honest snapshot restores against the round it was played in, and only
+    // against that one.
     expect(PermutationBook.restore(CLASSIC, reseal(snapshot), bindingOf(honest)).terminal).toBe(
       true,
     );
     expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot), bindingOf(other))).toThrowError(
       expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
     );
-
-    // A whole-round rewrite is internally consistent and restores without the
-    // published binding. Stated here rather than left for a reader to discover.
-    const elsewhere = await ticketFor(other);
-    const consistent = elsewhere.snapshot() as unknown as Record<string, unknown>;
-    expect(() => PermutationBook.restore(CLASSIC, reseal(consistent))).not.toThrow();
-    expect(() =>
-      PermutationBook.restore(CLASSIC, reseal(consistent), bindingOf(honest)),
-    ).toThrowError(expect.objectContaining({ code: 'COMMITMENT_MISMATCH' }));
   });
 });
 
@@ -1547,23 +1578,39 @@ describe('permutation module: the book reached through the declaration', () => {
     expect(snapshot).toEqual(book.snapshot());
     expect((snapshot as { schema: string }).schema).toBe(module.book.snapshotSchema);
 
-    const restored = module.book.restore(CLASSIC, snapshot) as PermutationBook;
+    // The contract's `restore` takes a definition and a snapshot and nothing
+    // else, so it has no round to hand over — and a bound snapshot's round is
+    // the one thing that cannot be read off the snapshot. It refuses rather than
+    // shipping the weaker reconstruction as the default a host falls into.
+    expect(() => module.book.restore(CLASSIC, snapshot)).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    );
+
+    // The host that holds the published round reaches the class, which is this
+    // shape's `book` type and therefore already in hand.
+    const restored = PermutationBook.restore(CLASSIC, snapshot, bindingOf(transcript));
     expect(restored).toBeInstanceOf(PermutationBook);
     expect(restored.snapshot()).toEqual(snapshot);
     expect(restored.liquidBalance).toBe(480n);
     expect(restored.binding).toEqual(bindingOf(transcript));
 
-    // And the declared restore re-validates rather than returning a fresh book.
+    // And it re-validates rather than returning a fresh book.
     const tampered = { ...(snapshot as Record<string, unknown>), liquidBalance: '999999' };
     expect(() =>
-      module.book.restore(
+      PermutationBook.restore(
         CLASSIC,
         JSON.stringify({
           ...tampered,
           snapshotHash: snapshotHash({ ...tampered, snapshotHash: undefined }),
         }),
+        bindingOf(transcript),
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+
+    // What the contract path *can* restore is the state where no money is at
+    // risk, which is the same narrowness `create` has and equally deliberate.
+    const fresh = module.book.restore(CLASSIC, new PermutationBook(CLASSIC).snapshot());
+    expect((fresh as PermutationBook).binding).toBeUndefined();
   });
 
   it('declares a claim budget the book it builds actually enforces', async () => {
@@ -1741,7 +1788,8 @@ describe('permutation module: no receipt field restores unchallenged', () => {
         ...value,
         snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
       });
-    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot))).not.toThrow();
+    const published = bindingOf(transcript);
+    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot), published)).not.toThrow();
 
     const fields = Object.keys(entries[0]!.receipt);
     // Every wire field has a rewrite; a new one added upstream fails here.
@@ -1766,9 +1814,10 @@ describe('permutation module: no receipt field restores unchallenged', () => {
           ),
         };
         const label = `receipt[${index}].${field}`;
-        expect(() => PermutationBook.restore(CLASSIC, reseal(mutated)), label).toThrowError(
-          RevealEngineError,
-        );
+        expect(
+          () => PermutationBook.restore(CLASSIC, reseal(mutated), published),
+          label,
+        ).toThrowError(RevealEngineError);
         swept += 1;
       }
     expect(swept).toBe(entries.length * fields.length);
@@ -1816,15 +1865,20 @@ describe('permutation module: no receipt field restores unchallenged', () => {
 
     // A stake that claims to have met a ceiling. It did not; `place` mints
     // `capped: false` unconditionally, because a debit cannot meet a credit cap.
+    const published = bindingOf(transcript);
     expect(entries[0]?.receipt.capped).toBe(false);
     expect(() =>
-      PermutationBook.restore(CLASSIC, reseal(withReceipt(0, { capped: true }))),
+      PermutationBook.restore(CLASSIC, reseal(withReceipt(0, { capped: true })), published),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
 
     // A settle receipt filed under a key the settlement does not name. The
     // balances all still reconcile — which is exactly why it needed a check.
     expect(() =>
-      PermutationBook.restore(CLASSIC, reseal(withReceipt(1, { idempotencyKey: 'not-the-key' }))),
+      PermutationBook.restore(
+        CLASSIC,
+        reseal(withReceipt(1, { idempotencyKey: 'not-the-key' })),
+        published,
+      ),
     ).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.settlement.idempotencyKey' }),
     );
@@ -1835,7 +1889,7 @@ describe('permutation module: no receipt field restores unchallenged', () => {
       ...withReceipt(1, { idempotencyKey: 'moved' }),
       settlement: { ...(snapshot.settlement as object), idempotencyKey: 'moved' },
     };
-    const restored = PermutationBook.restore(CLASSIC, reseal(bothRewritten));
+    const restored = PermutationBook.restore(CLASSIC, reseal(bothRewritten), published);
     // It restores — the pair is consistent — and the round is still terminal, so
     // the rewrite bought nothing: no second settle is possible either way.
     expect(restored.terminal).toBe(true);
@@ -1844,24 +1898,48 @@ describe('permutation module: no receipt field restores unchallenged', () => {
 });
 
 /**
- * The binding on a **staked, non-terminal** snapshot — the hard case.
+ * Which round a restored snapshot plays, and who is entitled to say so.
  *
- * A terminal snapshot can reconcile its binding against a settlement that
- * re-derives from the revealed seed. A staked one has neither: no settlement, no
- * seed, nothing that could contradict a rewritten round. Left there, an operator
- * could take a ticket in round A, rewrite the reconnect snapshot to round B,
- * restore, and settle against B — every balance reconciling, because a rewrite
- * that moves no money moves no money.
+ * The attack this guards is short: an operator takes a ticket in round A,
+ * rewrites the reconnect snapshot onto round B, restores, and settles against B.
+ * Every balance still reconciles, because a rewrite that moves no money moves no
+ * money — the ticket simply loses.
  *
- * What closes it is that a `place` command's identity includes the round: the
- * same bet at the same stake is a different command in a different draw. So the
- * binding is pinned by every placement in the log, and the check is the one the
- * contract already demands — re-derive what the player did from the receipts.
+ * There are two rewrites and they are not equally hard.
+ *
+ * A **partial** rewrite — the binding moved and nothing else — contradicts the
+ * receipt log, because a `place` command's identity includes the round: the same
+ * bet at the same stake is a different command in a different draw. That is
+ * caught below, and it is the whole of what the fingerprint buys.
+ *
+ * A **consistent** rewrite is not caught, and cannot be. `commandFingerprint` is
+ * an unkeyed SHA-256 over public fields and `makePermutationTranscript` is an
+ * exported function, so whoever can rewrite the snapshot can recompute every
+ * fingerprint, the settlement and the checksum, and hand over a flawless
+ * snapshot of a real different round — at any stake, staked or settled. The
+ * second test builds exactly that and shows it restoring as a fixed point,
+ * because a control that does not exist should be demonstrated absent rather
+ * than described away.
+ *
+ * What defends the ticket is that `restore()` will not name a round on a
+ * snapshot's say-so. For any bound snapshot the caller must supply the round it
+ * published, and that value comes from outside the store the adversary rewrote.
  */
-describe('permutation module: a staked snapshot cannot be re-pointed at another round', () => {
+describe('permutation module: which round a restored snapshot plays', () => {
   const seedHex = seed(81);
+  const reseal = (value: Record<string, unknown>): string =>
+    JSON.stringify({
+      ...value,
+      snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+    });
 
-  it('pins the binding through every place receipt, with no settlement to lean on', async () => {
+  /** A staked, non-terminal ticket on round A: no settlement, no revealed seed. */
+  const stakedOnA = async (): Promise<{
+    roundA: PermutationTranscript;
+    roundB: PermutationTranscript;
+    book: PermutationBook;
+    snapshot: Record<string, unknown>;
+  }> => {
     const roundA = makePermutationTranscript(seedHex, CLASSIC, 'staked-a');
     const roundB = makePermutationTranscript(seedHex, CLASSIC, 'staked-b');
     const book = new PermutationBook(CLASSIC, bindingOf(roundA));
@@ -1875,31 +1953,39 @@ describe('permutation module: a staked snapshot cannot be re-pointed at another 
       bet: { code: 'slot', item: roundA.order[1] as number, position: 1 },
       stake: 25n,
     });
-
     const snapshot = book.snapshot() as unknown as Record<string, unknown>;
     // The premise: nothing else in this snapshot knows which round it is.
     expect(snapshot.settlement).toBeNull();
     expect(snapshot.terminal).toBe(false);
+    return { roundA, roundB, book, snapshot };
+  };
 
-    const reseal = (value: Record<string, unknown>): string =>
-      JSON.stringify({
-        ...value,
-        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
-      });
-    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot))).not.toThrow();
+  it('catches a partial rewrite, where the binding moved and the receipts did not', async () => {
+    const { roundA, roundB, snapshot } = await stakedOnA();
+    expect(() =>
+      PermutationBook.restore(CLASSIC, reseal(snapshot), bindingOf(roundA)),
+    ).not.toThrow();
 
+    // Here the caller is told round B and the snapshot says round B, so the
+    // published-round check passes — and the place receipts, minted against A,
+    // are what refuses it. This is the one rewrite the fingerprint really stops.
     for (const mutation of [
       { ...snapshot, binding: bindingOf(roundB) },
       { ...snapshot, binding: { ...bindingOf(roundA), roundId: 'staked-b' } },
       { ...snapshot, binding: { ...bindingOf(roundA), commitment: roundB.commitment } },
     ])
       expect(
-        () => PermutationBook.restore(CLASSIC, reseal(mutation)),
+        () =>
+          PermutationBook.restore(
+            CLASSIC,
+            reseal(mutation),
+            mutation.binding as PermutationRoundBinding,
+          ),
         JSON.stringify(mutation.binding),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.claims' }));
 
-    // And the same ticket placed into the other round is a different command
-    // log, which is the property the refusal above rests on.
+    // The same ticket placed into the other round is a different command log,
+    // which is the property that refusal rests on.
     const elsewhere = new PermutationBook(CLASSIC, bindingOf(roundB));
     await elsewhere.place({
       idempotencyKey: 'a',
@@ -1912,32 +1998,186 @@ describe('permutation module: a staked snapshot cannot be re-pointed at another 
   });
 
   /**
-   * The one case that is genuinely unpinned, stated rather than left to be found.
+   * The consistent rewrite: built here, shown undetectable, then refused by the
+   * only thing that can refuse it.
    *
-   * A snapshot with no claims and no settlement describes a book that has done
-   * nothing. Restoring it under another round is indistinguishable from
-   * constructing a fresh book bound to that round, which any caller may do
-   * anyway — so there is nothing to defend, and pretending otherwise would be
-   * the overclaim.
+   * Nothing below reaches for a private symbol. `commandFingerprint` is core's
+   * exported hash over public fields, and the substituted round's commitment
+   * comes from this module's own exported transcript builder. That is the point:
+   * the cost of the forgery is a dozen lines and no secret at all.
    */
-  it('does not pretend an empty snapshot binds anything, and takes the published round if given it', () => {
+  it('cannot detect a consistent whole-round rewrite, and refuses it on the published round instead', async () => {
+    const { roundA, roundB, snapshot } = await stakedOnA();
+    const claims = snapshot.claims as { code: string; parameters: number[]; stake: string }[];
+    const receipts = snapshot.receipts as {
+      fingerprint: string;
+      receipt: Record<string, unknown>;
+    }[];
+
+    const sealed = reseal({
+      ...snapshot,
+      binding: bindingOf(roundB),
+      receipts: receipts.map((entry, index) => {
+        const claim = claims[index]!;
+        const fingerprint = commandFingerprint('place', [
+          roundB.roundId,
+          roundB.commitment,
+          claim.code,
+          ...claim.parameters,
+          BigInt(claim.stake),
+        ]);
+        return { fingerprint, receipt: { ...entry.receipt, commandFingerprint: fingerprint } };
+      }),
+    });
+
+    // Undetectable, pinned as a fact about this code rather than left as a
+    // worry. Told round B was published, restore accepts it, keeps both claims
+    // and the whole 125 stake, and re-serializes to the same bytes: a fixed
+    // point, indistinguishable from an honest snapshot of round B — which is
+    // exactly what it now is.
+    const moved = PermutationBook.restore(CLASSIC, sealed, bindingOf(roundB));
+    expect(moved.binding).toEqual(bindingOf(roundB));
+    expect(moved.claims).toHaveLength(2);
+    expect(moved.claims.reduce((total, claim) => total + claim.stake, 0n)).toBe(125n);
+    expect(JSON.stringify(moved.snapshot())).toBe(sealed);
+
+    // And it is worth money: this ticket wins in A and loses in B.
+    const stolen = await moved.settle({
+      idempotencyKey: 's',
+      revealedSeed: seedHex,
+      transcript: roundB,
+    });
+    const honest = new PermutationBook(CLASSIC, bindingOf(roundA));
+    await honest.place({
+      idempotencyKey: 'a',
+      bet: { code: 'first', item: roundA.order[0] as number },
+      stake: 100n,
+    });
+    await honest.place({
+      idempotencyKey: 'b',
+      bet: { code: 'slot', item: roundA.order[1] as number, position: 1 },
+      stake: 25n,
+    });
+    const paid = await honest.settle({
+      idempotencyKey: 's',
+      revealedSeed: seedHex,
+      transcript: roundA,
+    });
+    expect(stolen.credited).toBe(0n);
+    expect(paid.credited).toBeGreaterThan(0n);
+
+    // The only control that bites: the caller holds round A, because publishing
+    // A is what opened the round, and A is not what these bytes name.
+    expect(() => PermutationBook.restore(CLASSIC, sealed, bindingOf(roundA))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+    );
+  });
+
+  it('refuses every bound snapshot when the caller supplies no published round', async () => {
+    const { roundA, book, snapshot } = await stakedOnA();
+    // Staked and non-terminal.
+    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot))).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    );
+    // And settled, which carries a re-derivable proof and is refused all the
+    // same: a proof says how a round went, never which round was played.
+    await book.settle({ idempotencyKey: 's', revealedSeed: seedHex, transcript: roundA });
+    const terminal = book.snapshot() as unknown as Record<string, unknown>;
+    expect(terminal.terminal).toBe(true);
+    expect(() => PermutationBook.restore(CLASSIC, reseal(terminal))).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    );
+    // Supplied, it restores and the money comes back with it.
+    expect(
+      PermutationBook.restore(CLASSIC, reseal(terminal), bindingOf(roundA)).liquidBalance,
+    ).toBe(book.liquidBalance);
+  });
+
+  /**
+   * Absent evidence and malformed evidence must not converge.
+   *
+   * The realistic host bug is `restore(definition, snapshot, lookup() ?? null)`,
+   * where the lookup missed. If a nullish or half-built binding were treated as
+   * "no evidence supplied", it would take the evidence-free path — and on a
+   * *bound* snapshot that path is the whole vulnerability. Only `undefined`, the
+   * absent argument, means absent; everything else is a binding and is validated
+   * as one.
+   */
+  it.each([
+    ['null', null],
+    ['a number', 0],
+    ['a string', 'staked-a'],
+    ['an array', []],
+    ['an empty object', {}],
+    ['a roundId with no commitment', { roundId: 'staked-a' }],
+    ['a commitment with no roundId', { commitment: '0'.repeat(64) }],
+    ['a binding with an extra field', { roundId: 'staked-a', commitment: '0'.repeat(64), n: 1 }],
+    ['a non-hex commitment', { roundId: 'staked-a', commitment: 'z'.repeat(64) }],
+  ])(
+    'refuses malformed published-round evidence rather than ignoring it: %s',
+    async (_l, given) => {
+      const { snapshot } = await stakedOnA();
+      const error = captureError(() =>
+        PermutationBook.restore(CLASSIC, reseal(snapshot), given as never),
+      );
+      expect(error).toBeInstanceOf(RevealEngineError);
+      expect(error).not.toBeInstanceOf(TypeError);
+      expect((error as RevealEngineError).code).toBe('CLAIM_REJECTED');
+      // `$.expected`, or a field inside it — the argument the caller got wrong.
+      // Never `$.binding`, which would blame the snapshot for a caller's bug.
+      expect((error as RevealEngineError).path).toMatch(/^\$\.expected(\.|$)/u);
+    },
+  );
+
+  /**
+   * A bound book that has done nothing is still bound, and still needs the round.
+   *
+   * The rule is deliberately uniform — a binding means evidence — rather than
+   * carved out for the empty case. Restoring an empty bound snapshot under
+   * another round really is harmless, being indistinguishable from constructing
+   * a fresh book bound to it; but "bound implies evidence" is a rule an auditor
+   * can check in one line, and a carve-out is the seam a later change reopens.
+   *
+   * The evidence-free path is therefore exactly the *unbound* snapshot, which is
+   * the one state that cannot hold a claim or a settlement — and, not by
+   * coincidence, the only thing the lifecycle contract's two-argument
+   * `book.restore(definition, snapshot)` can produce.
+   */
+  it('restores only the unbound snapshot without evidence, and checks any that is offered', () => {
     const roundA = makePermutationTranscript(seedHex, CLASSIC, 'staked-a');
     const roundB = makePermutationTranscript(seedHex, CLASSIC, 'staked-b');
-    const snapshot = new PermutationBook(
-      CLASSIC,
-      bindingOf(roundA),
-    ).snapshot() as unknown as Record<string, unknown>;
-    expect(snapshot.claims).toEqual([]);
-    const reseal = (value: Record<string, unknown>): string =>
-      JSON.stringify({
-        ...value,
-        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
-      });
-    const repointed = reseal({ ...snapshot, binding: bindingOf(roundB) });
-    expect(PermutationBook.restore(CLASSIC, repointed).binding).toEqual(bindingOf(roundB));
-    // Unless the caller says which round it published.
+
+    const bound = new PermutationBook(CLASSIC, bindingOf(roundA)).snapshot() as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(bound.claims).toEqual([]);
+    expect(() => PermutationBook.restore(CLASSIC, reseal(bound))).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    );
+    const repointed = reseal({ ...bound, binding: bindingOf(roundB) });
     expect(() => PermutationBook.restore(CLASSIC, repointed, bindingOf(roundA))).toThrowError(
       expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
     );
+    expect(PermutationBook.restore(CLASSIC, repointed, bindingOf(roundB)).binding).toEqual(
+      bindingOf(roundB),
+    );
+
+    const unbound = new PermutationBook(CLASSIC).snapshot() as unknown as Record<string, unknown>;
+    expect(unbound.binding).toBeNull();
+    expect(PermutationBook.restore(CLASSIC, reseal(unbound)).binding).toBeUndefined();
+    // A caller naming a round is telling restore something these bytes
+    // contradict, and is told so rather than handed an unbound book anyway.
+    expect(() => PermutationBook.restore(CLASSIC, reseal(unbound), bindingOf(roundA))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+    );
+    // And the unbound path cannot be used to launder a staked ticket past the
+    // evidence requirement: an unbound book cannot have staked anything.
+    expect(() =>
+      PermutationBook.restore(
+        CLASSIC,
+        reseal({ ...unbound, claims: [{ key: 'a', code: 'first', parameters: [0], stake: '25' }] }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.binding' }));
   });
 });

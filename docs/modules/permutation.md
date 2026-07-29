@@ -30,13 +30,14 @@ receipt actions   place, settle
 ```
 
 `permutation-book-v1` is **retired and has no migration**. It carried no round
-binding (§9.1), so a book restored from one could settle against any round an
-operator chose after seeing the ticket. The field it lacks is the published
-commitment, and nothing in a `v1` snapshot says what that was — reconstructing it
-from the settlement the snapshot already carries would manufacture exactly the
-evidence the binding exists to supply. `parseSnapshotInput` refuses the tag with
-`UNSUPPORTED_VERSION`, and `tests/fixtures/permutation-book-v1.json` stays in the
-repository as the frozen **negative** fixture that proves the refusal.
+binding (§9.1), so a book restored from one had no round to reconcile against the
+one the caller published, and could settle against whatever proof arrived. The
+field it lacks is that commitment, and nothing in a `v1` snapshot says what it
+was — reconstructing it from the settlement the snapshot already carries would
+manufacture exactly the evidence restore is supposed to be handed from outside.
+`parseSnapshotInput` refuses the tag with `UNSUPPORTED_VERSION`, and
+`tests/fixtures/permutation-book-v1.json` stays in the repository as the frozen
+**negative** fixture that proves the refusal.
 
 Supported draw sizes are `3 <= n <= 8`. The floor is 3 because at `n = 2` the
 catalogue degenerates — `first`, `last` and `stack` all describe the same two
@@ -52,8 +53,21 @@ one is the overclaim this repository exists to refuse.
 `truth.derive(seed, definition, roundId)` returns
 `uniformPermutation(seed, scope, 'order', n)` — core's seeded Fisher-Yates over
 core's rejection sampler, used unmodified. The sampler scope is
-`(definitionId, roundId, proofVersion)`, so two games and two rounds never share
-a draw.
+`(definitionId, roundId, proofVersion)`, so two rounds of one game never share a
+draw, and neither do two games — **provided definition ids are unique across the
+registry**.
+
+That proviso is worth stating rather than rounding off. `samplerScopeOf`
+(`src/core/module.ts`) sets `domain = round.definitionId` and drops `moduleId`,
+so separation between _modules_ holds by convention — nobody has shipped two
+definitions with one id — and not by construction. For this module the scope of
+`aether-order-classic` is literally
+`{ domain: 'aether-order-classic', roundId, proofVersion }`. Nothing here is
+exploitable: a collision needs two definitions that already share an id, the
+commitment body binds the module id and the definition fingerprint (§8), so the
+two rounds would still produce different, non-interchangeable proofs. But the
+uniqueness is an operational property of the registry, and a deployment that
+mints definition ids from user input should read it as one.
 
 Uniformity rests on two lemmas and one stated assumption.
 
@@ -436,23 +450,68 @@ because "this proof is for round X, not round Y" is a better diagnostic than a
 hash that failed to match, and because the round id is what a host's own logs are
 keyed by.
 
-**In a snapshot, the binding is pinned by the receipt log rather than read.** A
-`place` command's fingerprint covers `(roundId, commitment, code, parameters,
-stake)`: a bet is a claim on a particular draw, and the same bet in another round
-is a different command. This matters most where nothing else could contradict a
-rewrite — a **staked, non-terminal** snapshot has no settlement and no revealed
-seed, so before this the binding was the one field a reconnect could re-point
-freely, moving no balance and reconciling perfectly. A terminal snapshot is
-pinned twice: the settlement re-derives from the seed, and the binding must equal
-it.
+#### A snapshot cannot say which round it belongs to
 
-What is **not** pinned is a snapshot with no claims and no settlement. That is a
-book which has done nothing, and restoring one under another round is
-indistinguishable from constructing a fresh book bound to that round — which any
-caller may do anyway. `PermutationBook.restore()` also takes an optional third
-argument, the round the caller published; when supplied, any snapshot naming a
-different one is refused outright. An operator always holds that value, because
-publishing it is what opened the round.
+That sentence is the whole of this subsection, and the code is built around it
+rather than around a hash that looks like it disagrees.
+
+A `place` command's fingerprint covers `(roundId, commitment, code, parameters,
+stake)`: a bet is a claim on a particular draw, and the same bet in another round
+is a different command. So on a snapshot that carries any placement at all, a
+**partial** rewrite — the binding moved and the receipts left alone —
+contradicts every one of them and is refused. A settled snapshot is refused twice
+over, because its settlement re-derives from the revealed seed and must name the
+same round the binding does.
+
+**That is all it buys, and it is not enough.** `commandFingerprint`
+(`src/core/ledger.ts`) is an unkeyed SHA-256 over public fields, and
+`makePermutationTranscript` and `serializePermutationTranscript` are public
+exports. So whoever can rewrite the snapshot can also recompute every place
+fingerprint, the settle fingerprint and the checksum, and produce a **wholly
+consistent** snapshot of a different round. That artefact is not a forgery in any
+detectable sense: it is a real snapshot of a real round, it reconciles against
+every check `restore()` performs, and it re-serializes to itself as a fixed
+point. No in-process check distinguishes it from the truth — not at any stake
+level, not staked, not settled, not with the revealed seed inside it, because a
+proof says how a round went and never which round was played.
+
+So `restore()` does not try to tell them apart. **The round comes from the
+caller.**
+
+```ts
+PermutationBook.restore(definition, snapshot, publishedRound);
+```
+
+The third argument is **required whenever the snapshot carries a binding**. The
+snapshot's own binding is reconciled against it and is never the source. Omit it
+on a bound snapshot and the call fails with `CLAIM_REJECTED` at `$.expected`;
+supply a different round and it fails with `COMMITMENT_MISMATCH` at `$.binding`.
+An operator always holds that value, because publishing it is what opened the
+round — and, critically, it comes from outside the snapshot store the adversary
+would have had to rewrite.
+
+The rule is uniform: a binding means evidence, with no carve-out for the empty
+bound snapshot. Restoring an empty one under another round genuinely is harmless
+— it describes a book that has done nothing, indistinguishable from
+`new PermutationBook(definition)` — but "bound implies evidence" is a rule an
+auditor checks in one line, and a carve-out is a seam a later change reopens.
+
+The evidence-free path is therefore exactly the **unbound** snapshot, which is
+the one state that cannot hold a claim or a settlement (`restore()` refuses one
+that does). That is also, deliberately, the only thing the lifecycle contract's
+two-argument `book.restore(definition, snapshot)` can produce: the signature has
+no round to hand over, so it refuses every bound snapshot rather than shipping
+the weaker reconstruction as the default a host falls into. It is the same
+narrowness as the contract's `create`, for the same reason — the states these two
+can reach are the states in which no money is at risk. A host reconnecting a real
+ticket calls the class, which is this shape's `book` type and therefore already
+in hand.
+
+`tests/permutation-module.test.ts` builds the consistent rewrite out of exported
+functions only, shows it restoring as a fixed point and settling for `0` where
+the honest round pays, and then shows the published round refusing it. The
+`SNAPSHOT_NOT_REVALIDATED` conformance check carries both cases for every shipped
+reference.
 
 **What this does not do** is constrain the operator's choice of seed _before_
 publication. Grinding a seed pre-publication is a custody and publication-ordering
@@ -469,8 +528,13 @@ than implying the platform does it.
 `restore()` re-validates rather than trusts, and every money-bearing field is
 re-derived:
 
-- each claim's **round, bet and stake** are pinned by the `place` receipt's own
-  command fingerprint, so a rewritten ticket cannot survive its own log;
+- the **round** is supplied by the caller, not read: a bound snapshot restores
+  only against the published round passed as the third argument, for the reason
+  given above;
+- each claim's **bet and stake** are pinned by the `place` receipt's own command
+  fingerprint, so a rewritten ticket cannot survive its own log — and, since that
+  fingerprint also covers the round, a snapshot whose binding and receipts
+  disagree is refused whichever of the two was rewritten;
 - each `place` receipt's **`capped` flag** is pinned to `false` and the settle
   receipt's **idempotency key** to the one the settlement records. Neither moves
   a balance, which is precisely why they need pinning: a restored receipt log
@@ -516,7 +580,7 @@ This module is `src/modules/permutation/` and nothing else. No file under
 value was added or moved. There is therefore no ADR here — the contract expressed
 the shape as it stands.
 
-Two places came close enough to be worth recording, because "we changed core to
+Three places came close enough to be worth recording, because "we changed core to
 make our module fit" is a claim that should never pass silently:
 
 1. **The all-zero belief vector.** `weightVector` admits `2..maxOutcomes`
@@ -532,6 +596,21 @@ make our module fit" is a claim that should never pass silently:
    enum every host branches on, for a case that is already a refused claim. The
    module reports `CLAIM_REJECTED` with the path `$.stake` and a message that
    says what happened.
+3. **`book.restore(definition, snapshot)` has nowhere to put the published
+   round.** The contract's signature takes two arguments, and §9.1 establishes
+   that a bound snapshot cannot safely be reconstructed without a third. The
+   tempting core change is to widen the slot — `restore(definition, snapshot,
+evidence?)` with a new `S['restoreEvidence']` on the shape. It was not made.
+   Widening the contract for one module's control would put a slot on every
+   module that only one fills, and `defineLifecycleModule()` would then have to
+   validate a type it cannot say anything about. The module resolves it inside
+   its own boundary instead: the two-argument declaration restores exactly the
+   snapshots that carry no money — the unbound ones — and refuses the rest, which
+   is the same narrowness `create` already has and needs no new contract surface.
+   A host reaches the third argument through `PermutationBook`, which is this
+   shape's declared `book` type. If a second module ever needs out-of-band
+   restore evidence, that is the point at which the contract should grow the slot
+   and an ADR should argue for it; one module is not a pattern.
 
 ## 11. Relationship to AETHER ORDER
 
@@ -645,9 +724,20 @@ round under an operator key is a host-layer concern and this module does not
 implement it. See `docs/certification-boundary.md`.
 
 The round binding (§9.1) is a narrower claim than it may read as. It proves that
-**this book settled the round it was told about before it took a bet**, and that
-a snapshot of a staked or settled round cannot be re-pointed at another one. It
-does not prove the commitment was published, does not prove when it was
-published, and does not constrain which seed the operator chose before publishing
-it. Those are ordering and custody controls the host owns; §11.1 names them and
-the integration checklist is where a deployment signs them off.
+**this book settled the round it was told about before it took a bet**. It does
+not prove the commitment was published, does not prove when it was published, and
+does not constrain which seed the operator chose before publishing it. Those are
+ordering and custody controls the host owns; §11.1 names them and the integration
+checklist is where a deployment signs them off.
+
+In particular, **nothing here detects a whole-round rewrite of a snapshot**. An
+adversary who can write to the snapshot store can move a staked or settled ticket
+onto any round it likes, consistently, using only exported functions and no
+secret, and the result is indistinguishable in process from an honest snapshot of
+that other round. The command fingerprint does not stop this and §9.1 does not
+claim it does. What stands between that rewrite and a mis-settled ticket is a
+single operational fact: `restore()` refuses to reconstruct a bound snapshot
+unless the caller names the round it published, and that name comes from outside
+the rewritten store. If a deployment's reconnect path takes the round from the
+same store as the snapshot, this control is worth nothing and the deployment has
+reintroduced the whole problem. The integration checklist asks for it explicitly.

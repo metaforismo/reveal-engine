@@ -8,6 +8,7 @@
  * and a changelog entry — see `docs/versioning.md`.
  */
 import { writeFileSync } from 'node:fs';
+import { format, resolveConfig } from 'prettier';
 import { buildFrozenRound, FROZEN_ROUND_ID, FROZEN_SEED } from '../tests/support/frozen-round.js';
 import {
   buildFrozenPermutationRound,
@@ -64,7 +65,19 @@ const files: readonly [string, unknown][] = [
   ],
 ];
 
+// Written through prettier with the repository's own config, so regenerating an
+// unchanged tree is a no-op rather than a whitespace diff that `npm run verify`
+// rejects at its first step. `JSON.stringify` alone disagrees with the formatter
+// about arrays — it puts one element per line where prettier packs them to
+// `printWidth`.
+//
+// The input is *indented* rather than compact on purpose: prettier's JSON
+// `objectWrap` default is `preserve`, so an object that arrives already broken
+// across lines stays broken. That keeps a fixture readable one field per line
+// while still letting short arrays such as `"order": [3, 1, 0, 4, 2]` pack.
+const options = await resolveConfig('fixture.json');
 for (const [path, value] of files) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  const source = JSON.stringify(value, null, 2);
+  writeFileSync(path, await format(source, { ...options, filepath: path, parser: 'json' }));
   console.log(`wrote ${path}`);
 }
