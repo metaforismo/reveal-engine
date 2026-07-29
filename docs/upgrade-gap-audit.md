@@ -2,6 +2,12 @@
 
 Baseline reviewed: `67d73ab` on 2026-07-27. This audit is a delivery gate, not a certification report.
 
+**Historical.** This audit describes the 0.2 hardening pass and its file layout,
+before the 0.3 split into core plus lifecycle modules. Every item below was
+closed in 0.2; the layer names it uses (`src/protocol`, `src/serialization`,
+`src/reference`) are now deprecated aliases. See
+[`architecture.md`](architecture.md) for the current layout.
+
 | Priority | Gap / risk                                                                                                                                                                    | Required closure                                                                                                                                                   |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | P0       | Commitments use delimiter-joined strings, so unescaped IDs and labels can produce ambiguous encodings.                                                                        | Length-prefixed canonical binary encoding, a new proof version, frozen legacy verification fixtures, and cross-domain collision tests.                             |

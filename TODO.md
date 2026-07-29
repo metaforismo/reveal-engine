@@ -1,18 +1,30 @@
-# Reveal Engine 0.2 hardening checklist
+# Reveal Engine platform checklist
 
-- [x] Record the pre-implementation gaps and risks in `docs/upgrade-gap-audit.md`.
-- [x] Freeze a versioned public API, adapter fingerprint, and typed failure taxonomy.
-- [x] Add strict wire codecs, legacy transcript migration, deterministic replay, and frozen fixtures.
-- [x] Bind commit/reveal to canonical fields, deterministic truth, adapter economics, and model version.
-- [x] Harden stale-frame, idempotency, race, settlement, snapshot, accounting, and chain-cap behavior.
-- [x] Prove generality with four-outcome, three-outcome, and two-outcome adapters plus conformance tooling.
-- [x] Add independent mathematical oracles, deterministic property seeds, adversarial tests, and real-path stress.
-- [x] Add export/package smoke checks, a Node compatibility matrix, coverage gates, security checks, and bounded load CI.
-- [x] Record final local evidence and prepare scoped implementation/evidence commits.
+## 0.3 — core and lifecycle modules (done)
+
+- [x] Split core from the progressive-market lifecycle; relocate the lifecycle into `src/modules/progressive-market/`.
+- [x] Extract reusable core primitives: weights, permutations, random tape, commitment sealing, command ledger, snapshot wire safety, verification taxonomy.
+- [x] Define, type, and document the lifecycle-module contract (`docs/lifecycle-modules.md`).
+- [x] Prove the contract with a module-agnostic conformance runner plus a test-only non-market module.
+- [x] Keep every frozen wire fixture verifying and the stress correctness digest identical.
+- [x] Record the branch-adoption decision in `docs/adr/0001-branch-adoption.md`.
+- [x] Rewrite the README for a public audience with an honest certification boundary.
+
+## Next modules (other agents)
+
+- [ ] `sequential-cards`: committed deck shuffle, reveals that eliminate outcomes to exactly zero, multi-position book with independent fair-value sells and switches.
+- [ ] `staged-survival`: N entities through S stages, a contract chosen per stage before it resolves, per-entity partial claims, banking subsets between stages.
+- [ ] `permutation`: structured permutation truth with multi-bet paytable settlement.
+
+## Deferred
+
+- [ ] Retire the deprecated `./protocol`, `./serialization`, `./reference` aliases once no consumer depends on them.
+- [ ] Decide whether the module contract should become an out-of-tree plugin API (needs a published canonical encoder, a `MODULE_API_VERSION` compatibility policy, and a third-party-code trust decision).
+- [ ] Revive the BLACK SIGNAL compatibility corpus in the title repository or a dedicated artifact repository; see ADR 0001.
 - [ ] Hosted Actions execution (externally blocked by the account billing/spending limit; no runner steps execute).
 
 ## Non-negotiable boundaries
 
-- This repository is proprietary and private. No publishing, announcement, or certification claim is authorized.
 - `BLACK SIGNAL` is a reference integration only. Its art, UI, narrative, and source content do not belong here.
 - Engine math never receives tone, compliance copy, or player-facing presentation decisions.
+- No certification, fairness, or production-capacity claim is authorised.
