@@ -1,0 +1,17 @@
+dist
+coverage
+node_modules
+
+# Frozen cross-repository wire fixture, copied verbatim from
+# aether-order/tests/fixtures/transcripts.json.
+#
+# Its BYTES are the contract, not its content: aether-order/docs/ENGINE.md §10
+# says "if a single commitment digest differs, the port is wrong", and this file
+# is what that claim is checked against. Reformatting it would not change the
+# JSON it parses to, so nothing in the suite would fail — and the file would
+# silently stop being a copy of the artefact it is supposed to be a copy of.
+# `tests/aether-frozen-fixtures.test.ts` pins its SHA-256 for the same reason.
+#
+# It is also not generated here: `npm run fixtures:update` does not write it.
+# A change to it is a protocol change in the game repository, copied deliberately.
+tests/fixtures/aether-order-transcripts.json

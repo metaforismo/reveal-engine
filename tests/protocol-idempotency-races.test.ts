@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { makeTranscript } from '../src/core/fairness.js';
-import { initialPosterior } from '../src/core/posterior.js';
-import { RoundBook } from '../src/protocol/round-book.js';
-import { binaryBeaconReference, constellationReference } from '../src/reference/index.js';
-import { advanceAll, completedBook, seed } from './helpers.js';
+import { makeTranscript } from '../src/modules/progressive-market/fairness.js';
+import { initialPosterior } from '../src/modules/progressive-market/posterior.js';
+import { RoundBook } from '../src/modules/progressive-market/round-book.js';
+import {
+  binaryBeaconReference,
+  constellationReference,
+} from '../src/modules/progressive-market/references/index.js';
+import { completedBook, seed } from './helpers.js';
 
 describe('idempotency, stale frames, races, and atomicity', () => {
   it.each([

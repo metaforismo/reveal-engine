@@ -1,25 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { defineGame } from '../../src/core/adapter.js';
+import { defineGame } from '../../src/modules/progressive-market/adapter.js';
 import {
   COMMITMENT_VERSION,
   LEGACY_COMMITMENT_VERSION,
   type RoundContext,
-} from '../../src/core/contracts.js';
+} from '../../src/modules/progressive-market/contracts.js';
 import {
   commitment,
   legacyCommitment,
   makeTranscript,
   uniform,
   verifyTranscriptDetailed,
-} from '../../src/core/fairness.js';
+} from '../../src/modules/progressive-market/fairness.js';
 import { rational } from '../../src/core/rational.js';
 import {
   deserializeTranscript,
   serializeTranscript,
   transcriptToWire,
-} from '../../src/serialization/transcript.js';
-import { binaryBeaconReference } from '../../src/reference/index.js';
+} from '../../src/modules/progressive-market/transcript.js';
+import { binaryBeaconReference } from '../../src/modules/progressive-market/references/index.js';
 import { seed } from '../helpers.js';
 
 describe('commit-reveal proof vectors and separation', () => {

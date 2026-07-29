@@ -1,0 +1,1491 @@
+{
+  "operatorPublicKey": "f1cdb5134c4dc6334b09bddfc39cd6b40ce46f04bc2e89786a5e22e03d397a60",
+  "operatorSignerId": "axiom-games/reference-signer",
+  "schemaNote": "Frozen wire-format vectors. Regenerate only with an intentional protocol change.",
+  "vectors": [
+    {
+      "context": {
+        "clientSeed": "axiom",
+        "nonce": 0,
+        "roundId": "fixture-classic-0",
+        "variantId": "classic"
+      },
+      "receipt": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "commitment": "b631deee04c50013188468e8d637ccef833df695813e9d44a7878ff2f9722c1e",
+        "creditedChips": "696",
+        "digest": "43844169d6b621bd2a9fcc805184873eff1c68b0ea17cf4c950cc45d4efc9657",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 0,
+        "roundId": "fixture-classic-0",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "fc4232d8e8bc46fe2057f3824a6df92f03d47932bfa0535793a2c493e031cb34",
+        "settlementDigest": "8c4388823cebf8496f288423b5c4be7cf5f86a2b96a3bd065e60520bc2773b54",
+        "signature": "80bca513bbf01758d705655cf57eb030fe5ad2032484085064a489cb2fcd0c029d13ab246d86157b3f4e2230cfce0ccfb534da5718161dfaad57bafe5b5fb701",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "e6bde08d572cc64f04a81441a227cb984d768926bf317e7b248329920751655d",
+        "totalStakeChips": "175",
+        "variantId": "classic"
+      },
+      "serverSeed": "3ee21536ede1e7e1c572daf5a9cc118a628539b9804cb069a573190e4e308f0d",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "696",
+        "grossChips": "696",
+        "lines": [
+          {
+            "code": "before",
+            "grossChips": "96",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "50",
+            "won": true
+          },
+          {
+            "code": "first",
+            "grossChips": "480",
+            "params": {
+              "c": 2
+            },
+            "stakeChips": "100",
+            "won": true
+          },
+          {
+            "code": "slot",
+            "grossChips": "120",
+            "params": {
+              "c": 4,
+              "k": 4
+            },
+            "stakeChips": "25",
+            "won": true
+          }
+        ],
+        "netChips": "521",
+        "totalStakeChips": "175"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "b081e2799e16369603aacff49ee41d6d41e4afbcc787b681126e014a582a48e5",
+        "lines": [
+          {
+            "code": "before",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "50"
+          },
+          {
+            "code": "first",
+            "params": {
+              "c": 2
+            },
+            "stakeChips": "100"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 4,
+              "k": 4
+            },
+            "stakeChips": "25"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 0,
+        "roundId": "fixture-classic-0",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "e6bde08d572cc64f04a81441a227cb984d768926bf317e7b248329920751655d",
+        "totalStakeChips": "175",
+        "variantId": "classic"
+      },
+      "transcript": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "axiom",
+        "commitment": "b631deee04c50013188468e8d637ccef833df695813e9d44a7878ff2f9722c1e",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 5,
+        "nonce": 0,
+        "permutation": [
+          2,
+          0,
+          1,
+          3,
+          4
+        ],
+        "previousCommitment": "0000000000000000000000000000000000000000000000000000000000000000",
+        "roundId": "fixture-classic-0",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "fc4232d8e8bc46fe2057f3824a6df92f03d47932bfa0535793a2c493e031cb34",
+        "variantId": "classic"
+      }
+    },
+    {
+      "context": {
+        "clientSeed": "",
+        "nonce": 1,
+        "roundId": "fixture-classic-1",
+        "variantId": "classic"
+      },
+      "receipt": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "commitment": "bc136a60cf2026e1c07ff7308352b1b4335df46399bce7f92ea0dcbf73c8a934",
+        "creditedChips": "739200",
+        "digest": "25f838a3be7eee39bdd27b3649cf2d8da97cf6e8a427870e0b6f8e89d5f8a4a6",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 1,
+        "roundId": "fixture-classic-1",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "d5bfa526c29cefc6900561f05675e49f4f388d5c4b25a56f218241960fb2f304",
+        "settlementDigest": "6b48c6ed8e9bc15e4ec0d8c802517b0cae902df1bac7fe5a0979573255d1ed34",
+        "signature": "09effb1a9f9022f1ffeb72f146035389b3f8ee48a691aa7ec9d476b9ca1d4d1e24d7b54f0fe71d70dac8d7d1fa9c65f43904c9f8a2719c9bec03250bd2400a06",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "088312bb50aea446aebedaf10cdb96534bd39c19a0ac79299a7656f22e5c8895",
+        "totalStakeChips": "8500",
+        "variantId": "classic"
+      },
+      "serverSeed": "c2a449a0a39c51cc3d6defb32a241511cc9db81c2f2be06d77e9449eaef31011",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "739200",
+        "grossChips": "739200",
+        "lines": [
+          {
+            "code": "full",
+            "grossChips": "576000",
+            "params": {
+              "order": "3-4-0-1-2"
+            },
+            "stakeChips": "5000",
+            "won": true
+          },
+          {
+            "code": "opening",
+            "grossChips": "19200",
+            "params": {
+              "a": 3,
+              "b": 4
+            },
+            "stakeChips": "1000",
+            "won": true
+          },
+          {
+            "code": "podium",
+            "grossChips": "144000",
+            "params": {
+              "a": 3,
+              "b": 4,
+              "c": 0
+            },
+            "stakeChips": "2500",
+            "won": true
+          }
+        ],
+        "netChips": "730700",
+        "totalStakeChips": "8500"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "90f0c40f7d7f7c8af99cc9fde7418ce696e7521d320ece756051245687a5d35c",
+        "lines": [
+          {
+            "code": "full",
+            "params": {
+              "order": "3-4-0-1-2"
+            },
+            "stakeChips": "5000"
+          },
+          {
+            "code": "opening",
+            "params": {
+              "a": 3,
+              "b": 4
+            },
+            "stakeChips": "1000"
+          },
+          {
+            "code": "podium",
+            "params": {
+              "a": 3,
+              "b": 4,
+              "c": 0
+            },
+            "stakeChips": "2500"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 1,
+        "roundId": "fixture-classic-1",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "088312bb50aea446aebedaf10cdb96534bd39c19a0ac79299a7656f22e5c8895",
+        "totalStakeChips": "8500",
+        "variantId": "classic"
+      },
+      "transcript": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "",
+        "commitment": "bc136a60cf2026e1c07ff7308352b1b4335df46399bce7f92ea0dcbf73c8a934",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 5,
+        "nonce": 1,
+        "permutation": [
+          3,
+          4,
+          0,
+          1,
+          2
+        ],
+        "previousCommitment": "b631deee04c50013188468e8d637ccef833df695813e9d44a7878ff2f9722c1e",
+        "roundId": "fixture-classic-1",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "d5bfa526c29cefc6900561f05675e49f4f388d5c4b25a56f218241960fb2f304",
+        "variantId": "classic"
+      }
+    },
+    {
+      "context": {
+        "clientSeed": "axiom",
+        "nonce": 2,
+        "roundId": "fixture-classic-2",
+        "variantId": "classic"
+      },
+      "receipt": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "commitment": "6d2a651d2fa8b55f1e03dbf868721ef5b9ae9c5ad37f0ea5accd6c15581ebb2b",
+        "creditedChips": "780",
+        "digest": "6661bf9afe05b65e5bcf9f9542e0cda1859322140709864db68f7b8e082945e1",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 2,
+        "roundId": "fixture-classic-2",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "e5cab0ce6000e879ce031ca5ef7601508047a2d053e7295922e029dca9fb3c54",
+        "settlementDigest": "019bfb252a07407a7963878727acce28b81c03b009c3e4f1658349bcfe3ab191",
+        "signature": "8d48b785e58804fcbfff1b734139ee6b76cef5f1b6a1f03bf2a468d3b235b466e4799be5a7b63ac035f202bac2c199d116fbf065ebcb81ce84a5563c71a1a706",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "c6f8e5cddd7b04bc9461ceaa11068db73f7f9c5109f85a4d0061089f049e3308",
+        "totalStakeChips": "250",
+        "variantId": "classic"
+      },
+      "serverSeed": "4a6d0097dbeb6e0d56d581ada31517b699696d79992a3f978a6092e902540b40",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "780",
+        "grossChips": "780",
+        "lines": [
+          {
+            "code": "before",
+            "grossChips": "0",
+            "params": {
+              "a": 4,
+              "b": 0
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "early",
+            "grossChips": "60",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "first",
+            "grossChips": "0",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "last",
+            "grossChips": "240",
+            "params": {
+              "c": 3
+            },
+            "stakeChips": "50",
+            "won": true
+          },
+          {
+            "code": "late",
+            "grossChips": "60",
+            "params": {
+              "c": 3
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "neighbours",
+            "grossChips": "60",
+            "params": {
+              "a": 0,
+              "b": 4
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "slot",
+            "grossChips": "120",
+            "params": {
+              "c": 4,
+              "k": 1
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "stack",
+            "grossChips": "240",
+            "params": {
+              "a": 0,
+              "b": 4
+            },
+            "stakeChips": "50",
+            "won": true
+          }
+        ],
+        "netChips": "530",
+        "totalStakeChips": "250"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "84434d1929964583bc0f33c5295627961bbf597106d41655ad29e0159a474999",
+        "lines": [
+          {
+            "code": "before",
+            "params": {
+              "a": 4,
+              "b": 0
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "early",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "first",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "last",
+            "params": {
+              "c": 3
+            },
+            "stakeChips": "50"
+          },
+          {
+            "code": "late",
+            "params": {
+              "c": 3
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "neighbours",
+            "params": {
+              "a": 0,
+              "b": 4
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 4,
+              "k": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "stack",
+            "params": {
+              "a": 0,
+              "b": 4
+            },
+            "stakeChips": "50"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 2,
+        "roundId": "fixture-classic-2",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "c6f8e5cddd7b04bc9461ceaa11068db73f7f9c5109f85a4d0061089f049e3308",
+        "totalStakeChips": "250",
+        "variantId": "classic"
+      },
+      "transcript": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "axiom",
+        "commitment": "6d2a651d2fa8b55f1e03dbf868721ef5b9ae9c5ad37f0ea5accd6c15581ebb2b",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 5,
+        "nonce": 2,
+        "permutation": [
+          0,
+          4,
+          2,
+          1,
+          3
+        ],
+        "previousCommitment": "bc136a60cf2026e1c07ff7308352b1b4335df46399bce7f92ea0dcbf73c8a934",
+        "roundId": "fixture-classic-2",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "e5cab0ce6000e879ce031ca5ef7601508047a2d053e7295922e029dca9fb3c54",
+        "variantId": "classic"
+      }
+    },
+    {
+      "context": {
+        "clientSeed": "",
+        "nonce": 3,
+        "roundId": "fixture-classic-3",
+        "variantId": "classic"
+      },
+      "receipt": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "commitment": "683099e66c8fa7e9f0ede7e0c4ab3c6a784f94cae8256d4d23fbd60d046bd458",
+        "creditedChips": "180",
+        "digest": "6fb04803ef10807b3e7e323bd4de841d0237ec2c64b366f5d5397e6daa5545f8",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 3,
+        "roundId": "fixture-classic-3",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "506d9d9d0f27b1f040a544327834711b98e63dc076035b0bec2fd5037396e73c",
+        "settlementDigest": "7524d395db4e172610888d10af5302a328fca507ad714e26aa3fc1506191bd22",
+        "signature": "d0ddf46a63a87ab849202def0784837ea9736bcb431952204347a13e89b70b38a5a33239ad1373a067e76605756f1ea50549967117cb71ee0fb025c3b9cf0700",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "679c0b9e7becbd5e3aadd97bff025292042eb4e4993a9e8a970071a9725de33e",
+        "totalStakeChips": "300",
+        "variantId": "classic"
+      },
+      "serverSeed": "6382c81920c9dbeab1a754151b811dced08418e022139fc9f343a1138364f4b8",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "180",
+        "grossChips": "180",
+        "lines": [
+          {
+            "code": "before",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "early",
+            "grossChips": "0",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "first",
+            "grossChips": "0",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "full",
+            "grossChips": "0",
+            "params": {
+              "order": "0-1-2-3-4"
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "last",
+            "grossChips": "0",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "late",
+            "grossChips": "0",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "neighbours",
+            "grossChips": "60",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "opening",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "podium",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1,
+              "c": 2
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "slot",
+            "grossChips": "120",
+            "params": {
+              "c": 2,
+              "k": 2
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "slot",
+            "grossChips": "0",
+            "params": {
+              "c": 3,
+              "k": 3
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "stack",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": false
+          }
+        ],
+        "netChips": "-120",
+        "totalStakeChips": "300"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "09f815819b3cf3b7f004507d45744e25cc94289272382620fd4877d043c70dcc",
+        "lines": [
+          {
+            "code": "before",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "early",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "first",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "full",
+            "params": {
+              "order": "0-1-2-3-4"
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "last",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "late",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "neighbours",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "opening",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "podium",
+            "params": {
+              "a": 0,
+              "b": 1,
+              "c": 2
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 2,
+              "k": 2
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 3,
+              "k": 3
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "stack",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 3,
+        "roundId": "fixture-classic-3",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "679c0b9e7becbd5e3aadd97bff025292042eb4e4993a9e8a970071a9725de33e",
+        "totalStakeChips": "300",
+        "variantId": "classic"
+      },
+      "transcript": {
+        "adapterFingerprint": "80c6f763e57090d483df02284ff874275ce0a72e8ef47e9ae5b311592edd824b",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "",
+        "commitment": "683099e66c8fa7e9f0ede7e0c4ab3c6a784f94cae8256d4d23fbd60d046bd458",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 5,
+        "nonce": 3,
+        "permutation": [
+          4,
+          3,
+          2,
+          1,
+          0
+        ],
+        "previousCommitment": "6d2a651d2fa8b55f1e03dbf868721ef5b9ae9c5ad37f0ea5accd6c15581ebb2b",
+        "roundId": "fixture-classic-3",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "506d9d9d0f27b1f040a544327834711b98e63dc076035b0bec2fd5037396e73c",
+        "variantId": "classic"
+      }
+    },
+    {
+      "context": {
+        "clientSeed": "axiom",
+        "nonce": 0,
+        "roundId": "fixture-seven-0",
+        "variantId": "seven"
+      },
+      "receipt": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "commitment": "b7b1ab1265f8903a9c9dad60ed0ffaf867ba82d5f5453a33468f62c99b625d93",
+        "creditedChips": "936",
+        "digest": "646efdd1d4519799e9db1c40a2895721413f52a7f15b432f1175fcec124c3963",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 0,
+        "roundId": "fixture-seven-0",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "6c031c612dc037423606033d775af9e87e01acd41b0665939b960f21e4556e58",
+        "settlementDigest": "6e8a14b81eb51da5c05cf2721e8958d28300b69d628f491963dc2f5399d9d32b",
+        "signature": "bd67e3c538a7029f08022eddb209e7cf071386f9dd6bcabfd8012d9120fe240b22cf3f3e9653009fa8e2f32939166e8642c1d6de3e8137ffa9fe1ebd83a11f0b",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "ed35ced2415efb67cd17dc629633c20e71856f0d89825048a901846c34230e12",
+        "totalStakeChips": "175",
+        "variantId": "seven"
+      },
+      "serverSeed": "852aa050d2ad61ec9015a07a8718cfcbe78a24a209efa3882b35f6d5fadd9e9b",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "936",
+        "grossChips": "936",
+        "lines": [
+          {
+            "code": "before",
+            "grossChips": "96",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "50",
+            "won": true
+          },
+          {
+            "code": "first",
+            "grossChips": "672",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "100",
+            "won": true
+          },
+          {
+            "code": "slot",
+            "grossChips": "168",
+            "params": {
+              "c": 1,
+              "k": 6
+            },
+            "stakeChips": "25",
+            "won": true
+          }
+        ],
+        "netChips": "761",
+        "totalStakeChips": "175"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "ab6934431ca2ea9f5c683b67600ed7e4c5acc63724f04b1edefba14763c8a35e",
+        "lines": [
+          {
+            "code": "before",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "50"
+          },
+          {
+            "code": "first",
+            "params": {
+              "c": 4
+            },
+            "stakeChips": "100"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 1,
+              "k": 6
+            },
+            "stakeChips": "25"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 0,
+        "roundId": "fixture-seven-0",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "ed35ced2415efb67cd17dc629633c20e71856f0d89825048a901846c34230e12",
+        "totalStakeChips": "175",
+        "variantId": "seven"
+      },
+      "transcript": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "axiom",
+        "commitment": "b7b1ab1265f8903a9c9dad60ed0ffaf867ba82d5f5453a33468f62c99b625d93",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 7,
+        "nonce": 0,
+        "permutation": [
+          4,
+          6,
+          3,
+          2,
+          5,
+          0,
+          1
+        ],
+        "previousCommitment": "0000000000000000000000000000000000000000000000000000000000000000",
+        "roundId": "fixture-seven-0",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "6c031c612dc037423606033d775af9e87e01acd41b0665939b960f21e4556e58",
+        "variantId": "seven"
+      }
+    },
+    {
+      "context": {
+        "clientSeed": "",
+        "nonce": 1,
+        "roundId": "fixture-seven-1",
+        "variantId": "seven"
+      },
+      "receipt": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "commitment": "783850e47c969d2a214803d0f1e5419a1affe7a5095d1c1f55ce2a11f9381c30",
+        "creditedChips": "24736320",
+        "digest": "8f5c8bcf1f2854858772200c6e8a67d649a2d3cc8c2955a0efcba0b8a3d25291",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 1,
+        "roundId": "fixture-seven-1",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "54e2d43b3d45333aed37c0ad9dde54d3d9a2bfd19f6e5a8f80c367bf04442174",
+        "settlementDigest": "d7d33d408d03b94005826fd494a85b0c8e0ad2a01af15b85d0aca6e762eae3c7",
+        "signature": "4a25bea84aee2106639df843270c5c1da96bad9a705a5bbaf484a297c51b9d0e74eef933ef85d7c2057dca3baff0b0c0d27eca68aaf686e940e8698b6865e20c",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "2d05c9c0b5324b9bf53649eddaa8ffd24c3ea017d719cf089f5bb5f00f27319d",
+        "totalStakeChips": "8500",
+        "variantId": "seven"
+      },
+      "serverSeed": "57d1dc0543549ad1ed85fa023ccc3e6178480dfc55e06f81975d2990f39eb02c",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "24736320",
+        "grossChips": "24736320",
+        "lines": [
+          {
+            "code": "full",
+            "grossChips": "24192000",
+            "params": {
+              "order": "6-3-0-1-5-2-4"
+            },
+            "stakeChips": "5000",
+            "won": true
+          },
+          {
+            "code": "opening",
+            "grossChips": "40320",
+            "params": {
+              "a": 6,
+              "b": 3
+            },
+            "stakeChips": "1000",
+            "won": true
+          },
+          {
+            "code": "podium",
+            "grossChips": "504000",
+            "params": {
+              "a": 6,
+              "b": 3,
+              "c": 0
+            },
+            "stakeChips": "2500",
+            "won": true
+          }
+        ],
+        "netChips": "24727820",
+        "totalStakeChips": "8500"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "da416fc5576868aeabf10ed28181f96ed443e8b98fe9c88f9781ddac27ac1b5f",
+        "lines": [
+          {
+            "code": "full",
+            "params": {
+              "order": "6-3-0-1-5-2-4"
+            },
+            "stakeChips": "5000"
+          },
+          {
+            "code": "opening",
+            "params": {
+              "a": 6,
+              "b": 3
+            },
+            "stakeChips": "1000"
+          },
+          {
+            "code": "podium",
+            "params": {
+              "a": 6,
+              "b": 3,
+              "c": 0
+            },
+            "stakeChips": "2500"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 1,
+        "roundId": "fixture-seven-1",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "2d05c9c0b5324b9bf53649eddaa8ffd24c3ea017d719cf089f5bb5f00f27319d",
+        "totalStakeChips": "8500",
+        "variantId": "seven"
+      },
+      "transcript": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "",
+        "commitment": "783850e47c969d2a214803d0f1e5419a1affe7a5095d1c1f55ce2a11f9381c30",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 7,
+        "nonce": 1,
+        "permutation": [
+          6,
+          3,
+          0,
+          1,
+          5,
+          2,
+          4
+        ],
+        "previousCommitment": "b7b1ab1265f8903a9c9dad60ed0ffaf867ba82d5f5453a33468f62c99b625d93",
+        "roundId": "fixture-seven-1",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "54e2d43b3d45333aed37c0ad9dde54d3d9a2bfd19f6e5a8f80c367bf04442174",
+        "variantId": "seven"
+      }
+    },
+    {
+      "context": {
+        "clientSeed": "axiom",
+        "nonce": 2,
+        "roundId": "fixture-seven-2",
+        "variantId": "seven"
+      },
+      "receipt": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "commitment": "b22e2c9d1bff0a89ee6f7d83900bb8253eee7221dea73ac85466797e8ea045c0",
+        "creditedChips": "1092",
+        "digest": "3da1e28eff7210d4ae0335fbae4444a6dae006f3f50f4187597494b33fc53a7c",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 2,
+        "roundId": "fixture-seven-2",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "24f51eb79a45c62b9a11092056fcfd882164f76f4f703555ab056bd7c1316e2c",
+        "settlementDigest": "8e30711598c84cc13cdfcd509d110d6d6c7921cfd9acc83010350f13d97ea0d9",
+        "signature": "93ced8bb41a938bb711154bc2d139a4d0cad92105d94004855a5ad70fc383d6c604381fbfef03f17904ee047bc4376d1ff7850d7400acde02c715cb373e46a08",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "4d432375b2bb80523595e8237686f5587191da46100abecbb908926088a08611",
+        "totalStakeChips": "250",
+        "variantId": "seven"
+      },
+      "serverSeed": "44fd5855a1b4a619b0bec2a27fd1d1b3961692dccb9e22a0eeb5cc5fc5fdb8c6",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "1092",
+        "grossChips": "1092",
+        "lines": [
+          {
+            "code": "before",
+            "grossChips": "0",
+            "params": {
+              "a": 3,
+              "b": 6
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "early",
+            "grossChips": "84",
+            "params": {
+              "c": 6
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "first",
+            "grossChips": "0",
+            "params": {
+              "c": 3
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "last",
+            "grossChips": "336",
+            "params": {
+              "c": 2
+            },
+            "stakeChips": "50",
+            "won": true
+          },
+          {
+            "code": "late",
+            "grossChips": "84",
+            "params": {
+              "c": 2
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "neighbours",
+            "grossChips": "84",
+            "params": {
+              "a": 3,
+              "b": 6
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "slot",
+            "grossChips": "168",
+            "params": {
+              "c": 3,
+              "k": 1
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "stack",
+            "grossChips": "336",
+            "params": {
+              "a": 6,
+              "b": 3
+            },
+            "stakeChips": "50",
+            "won": true
+          }
+        ],
+        "netChips": "842",
+        "totalStakeChips": "250"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "4c943c830d42fb09320d0d22ceae2c0533401cec8de4f7700ffe216c3d3a4661",
+        "lines": [
+          {
+            "code": "before",
+            "params": {
+              "a": 3,
+              "b": 6
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "early",
+            "params": {
+              "c": 6
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "first",
+            "params": {
+              "c": 3
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "last",
+            "params": {
+              "c": 2
+            },
+            "stakeChips": "50"
+          },
+          {
+            "code": "late",
+            "params": {
+              "c": 2
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "neighbours",
+            "params": {
+              "a": 3,
+              "b": 6
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 3,
+              "k": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "stack",
+            "params": {
+              "a": 6,
+              "b": 3
+            },
+            "stakeChips": "50"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 2,
+        "roundId": "fixture-seven-2",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "4d432375b2bb80523595e8237686f5587191da46100abecbb908926088a08611",
+        "totalStakeChips": "250",
+        "variantId": "seven"
+      },
+      "transcript": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "axiom",
+        "commitment": "b22e2c9d1bff0a89ee6f7d83900bb8253eee7221dea73ac85466797e8ea045c0",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 7,
+        "nonce": 2,
+        "permutation": [
+          6,
+          3,
+          1,
+          5,
+          4,
+          0,
+          2
+        ],
+        "previousCommitment": "783850e47c969d2a214803d0f1e5419a1affe7a5095d1c1f55ce2a11f9381c30",
+        "roundId": "fixture-seven-2",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "24f51eb79a45c62b9a11092056fcfd882164f76f4f703555ab056bd7c1316e2c",
+        "variantId": "seven"
+      }
+    },
+    {
+      "context": {
+        "clientSeed": "",
+        "nonce": 3,
+        "roundId": "fixture-seven-3",
+        "variantId": "seven"
+      },
+      "receipt": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "commitment": "c5f766009c30c5a168051044d1dc4d442c4bedc24fabd606044272237ee2457d",
+        "creditedChips": "252",
+        "digest": "255af7947e074abe0d29ea026674424e3f42db9b391e45e3c8095e78b910c39e",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 3,
+        "roundId": "fixture-seven-3",
+        "schema": "reveal-engine/permutation-receipt-v1",
+        "seedCommitment": "99d338e363e7b007d0d2e6742bcaeca39651fdadb4afeeb85e3cc00f15446a05",
+        "settlementDigest": "ab1a413af9fef66586c70accb21e6a6596d62307b12ff2489c859ed33d46309d",
+        "signature": "2624c2653ca31acfb9d5c6867d7f2d2832cb61aea17683d4b3915e28fe940905d760ce5db3813a20f2f91cbedbb63017163c7233d368298724b18f9ea5bd080d",
+        "signerId": "axiom-games/reference-signer",
+        "ticketDigest": "dd9c45dbecac7d7f0989705236622382ee70085e7f8b934a3279625a03ade872",
+        "totalStakeChips": "300",
+        "variantId": "seven"
+      },
+      "serverSeed": "a556e2e60eddaa18b41ae395293f03c8a36d3a1ea0454b096bb5816cfe62bccb",
+      "settlement": {
+        "capped": false,
+        "creditedChips": "252",
+        "grossChips": "252",
+        "lines": [
+          {
+            "code": "before",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "early",
+            "grossChips": "0",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "first",
+            "grossChips": "0",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "full",
+            "grossChips": "0",
+            "params": {
+              "order": "0-1-2-3-4-5-6"
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "last",
+            "grossChips": "0",
+            "params": {
+              "c": 6
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "late",
+            "grossChips": "84",
+            "params": {
+              "c": 6
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "neighbours",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "opening",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "podium",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1,
+              "c": 2
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "slot",
+            "grossChips": "0",
+            "params": {
+              "c": 2,
+              "k": 2
+            },
+            "stakeChips": "25",
+            "won": false
+          },
+          {
+            "code": "slot",
+            "grossChips": "168",
+            "params": {
+              "c": 3,
+              "k": 3
+            },
+            "stakeChips": "25",
+            "won": true
+          },
+          {
+            "code": "stack",
+            "grossChips": "0",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25",
+            "won": false
+          }
+        ],
+        "netChips": "-48",
+        "totalStakeChips": "300"
+      },
+      "ticket": {
+        "gameId": "aether-order",
+        "idempotencyKey": "54f260395fe47a6f83326dbd367769ecc8197dcdbf39838e494a9df1567101d5",
+        "lines": [
+          {
+            "code": "before",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "early",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "first",
+            "params": {
+              "c": 0
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "full",
+            "params": {
+              "order": "0-1-2-3-4-5-6"
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "last",
+            "params": {
+              "c": 6
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "late",
+            "params": {
+              "c": 6
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "neighbours",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "opening",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "podium",
+            "params": {
+              "a": 0,
+              "b": 1,
+              "c": 2
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 2,
+              "k": 2
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "slot",
+            "params": {
+              "c": 3,
+              "k": 3
+            },
+            "stakeChips": "25"
+          },
+          {
+            "code": "stack",
+            "params": {
+              "a": 0,
+              "b": 1
+            },
+            "stakeChips": "25"
+          }
+        ],
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "nonce": 3,
+        "roundId": "fixture-seven-3",
+        "schema": "reveal-engine/permutation-ticket-v1",
+        "ticketDigest": "dd9c45dbecac7d7f0989705236622382ee70085e7f8b934a3279625a03ade872",
+        "totalStakeChips": "300",
+        "variantId": "seven"
+      },
+      "transcript": {
+        "adapterFingerprint": "bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801",
+        "adapterVersion": "1.3.0",
+        "clientSeed": "",
+        "commitment": "c5f766009c30c5a168051044d1dc4d442c4bedc24fabd606044272237ee2457d",
+        "gameId": "aether-order",
+        "moduleVersion": "reveal-engine/permutation-v1",
+        "n": 7,
+        "nonce": 3,
+        "permutation": [
+          4,
+          2,
+          5,
+          3,
+          1,
+          6,
+          0
+        ],
+        "previousCommitment": "b22e2c9d1bff0a89ee6f7d83900bb8253eee7221dea73ac85466797e8ea045c0",
+        "roundId": "fixture-seven-3",
+        "schema": "reveal-engine/permutation-transcript-v1",
+        "seedCommitment": "99d338e363e7b007d0d2e6742bcaeca39651fdadb4afeeb85e3cc00f15446a05",
+        "variantId": "seven"
+      }
+    }
+  ]
+}

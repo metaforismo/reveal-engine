@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { readFileSync, statSync } from 'node:fs';
 import { ENGINE_LIMITS } from '../api/limits.js';
-import { verifyTranscriptDetailed } from '../core/fairness.js';
-import { deserializeTranscript } from '../serialization/transcript.js';
+import { verifyTranscriptDetailed } from '../modules/progressive-market/fairness.js';
+import { deserializeTranscript } from '../modules/progressive-market/transcript.js';
 import {
   binaryBeaconReference,
   blackSignalReference,
   constellationReference,
-} from '../reference/index.js';
+} from '../modules/progressive-market/references/index.js';
 
 const [file, seed] = process.argv.slice(2);
 if (!file || !seed) {
@@ -33,6 +33,7 @@ if (!file || !seed) {
     console.log(
       JSON.stringify({
         ...result,
+        moduleId: 'progressive-market',
         gameId: transcript.context.gameId,
         roundId: transcript.context.roundId,
       }),

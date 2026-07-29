@@ -1,7 +1,7 @@
-import type { GameDefinition, Transcript } from '../src/core/contracts.js';
-import { makeTranscript } from '../src/core/fairness.js';
-import { initialPosterior } from '../src/core/posterior.js';
-import { RoundBook } from '../src/protocol/round-book.js';
+import type { GameDefinition, Transcript } from '../src/modules/progressive-market/contracts.js';
+import { makeTranscript } from '../src/modules/progressive-market/fairness.js';
+import { initialPosterior } from '../src/modules/progressive-market/posterior.js';
+import { RoundBook } from '../src/modules/progressive-market/round-book.js';
 
 export function seed(index: number): string {
   return index.toString(16).padStart(64, '0');

@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { defineGame } from '../src/core/adapter.js';
-import { ENGINE_API_VERSION, type EvidenceEvent } from '../src/core/contracts.js';
-import { deriveTruth, makeTranscript } from '../src/core/fairness.js';
-import { initialPosterior, posteriorFor, updatePosterior } from '../src/core/posterior.js';
+import { defineGame } from '../src/modules/progressive-market/adapter.js';
+import {
+  ENGINE_API_VERSION,
+  type EvidenceEvent,
+} from '../src/modules/progressive-market/contracts.js';
+import { deriveTruth, makeTranscript } from '../src/modules/progressive-market/fairness.js';
+import {
+  initialPosterior,
+  posteriorFor,
+  updatePosterior,
+} from '../src/modules/progressive-market/posterior.js';
 import { rational } from '../src/core/rational.js';
-import { binaryBeaconReference } from '../src/reference/index.js';
+import { binaryBeaconReference } from '../src/modules/progressive-market/references/index.js';
 import { seed } from './helpers.js';
 
 function generator(state: number): () => number {

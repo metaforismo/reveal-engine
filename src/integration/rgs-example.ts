@@ -4,7 +4,7 @@ import type {
   RoundBook,
   SellRequest,
   SettleRequest,
-} from '../protocol/round-book.js';
+} from '../modules/progressive-market/round-book.js';
 /** Sketch of an RGS adapter: replace this process-local map with one DB transaction and durable receipt store. */
 export class RgsExample {
   constructor(private readonly books: Map<string, RoundBook>) {}

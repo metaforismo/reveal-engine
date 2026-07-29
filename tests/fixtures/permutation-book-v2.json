@@ -1,0 +1,113 @@
+{
+  "note": "Frozen reveal-engine/permutation-book-v2 snapshot for a settled three-line ticket on a bound round.",
+  "seed": "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+  "roundId": "frozen-permutation-round",
+  "credited": "3360",
+  "snapshot": {
+    "schema": "reveal-engine/permutation-book-v2",
+    "definition": {
+      "id": "aether-order-classic",
+      "version": "1.0.0",
+      "fingerprint": "96e2c63ace89ba059d89cba7150fbf7f6995c187fb7a8b07a782278ec583abc1"
+    },
+    "binding": {
+      "roundId": "frozen-permutation-round",
+      "commitment": "c94ede35a41dd1df4bab55d5ecb8784c8b3a9c53282564f950502d813bbff090"
+    },
+    "terminal": true,
+    "ledgerRevision": 4,
+    "stepRevision": 4,
+    "liquidBalance": "3360",
+    "capBasisStake": "175",
+    "claims": [
+      {
+        "key": "place-first",
+        "code": "first",
+        "parameters": [3],
+        "stake": "100"
+      },
+      {
+        "key": "place-full",
+        "code": "full",
+        "parameters": [3, 1, 0, 4, 2],
+        "stake": "25"
+      },
+      {
+        "key": "place-last",
+        "code": "last",
+        "parameters": [3],
+        "stake": "50"
+      }
+    ],
+    "settlement": {
+      "roundId": "frozen-permutation-round",
+      "revealedSeed": "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+      "order": [3, 1, 0, 4, 2],
+      "commitment": "c94ede35a41dd1df4bab55d5ecb8784c8b3a9c53282564f950502d813bbff090",
+      "idempotencyKey": "settle"
+    },
+    "receipts": [
+      {
+        "fingerprint": "49aee9d3967432c0be2a8130d967f07a658bf0b31415a354770b0c70f1490b70",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "place-first",
+          "commandFingerprint": "49aee9d3967432c0be2a8130d967f07a658bf0b31415a354770b0c70f1490b70",
+          "action": "place",
+          "ledgerRevision": 1,
+          "frameRevision": 0,
+          "debited": "100",
+          "credited": "0",
+          "balanceDelta": "-100",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "3eba736755f32e6b6b6d95646acf818c413deb613877f8a6df22163a201733b8",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "place-full",
+          "commandFingerprint": "3eba736755f32e6b6b6d95646acf818c413deb613877f8a6df22163a201733b8",
+          "action": "place",
+          "ledgerRevision": 2,
+          "frameRevision": 0,
+          "debited": "25",
+          "credited": "0",
+          "balanceDelta": "-25",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "8d31b43a67becc4dca9c3609138f7d41ee2437fe775195bdd4685ce293c2c528",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "place-last",
+          "commandFingerprint": "8d31b43a67becc4dca9c3609138f7d41ee2437fe775195bdd4685ce293c2c528",
+          "action": "place",
+          "ledgerRevision": 3,
+          "frameRevision": 0,
+          "debited": "50",
+          "credited": "0",
+          "balanceDelta": "-50",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "c657f278770cb05f1f5a743f2f56a812a3430abdfec842794fa11dfddb501f76",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "settle",
+          "commandFingerprint": "c657f278770cb05f1f5a743f2f56a812a3430abdfec842794fa11dfddb501f76",
+          "action": "settle",
+          "ledgerRevision": 4,
+          "frameRevision": 4,
+          "debited": "0",
+          "credited": "3360",
+          "balanceDelta": "3360",
+          "capped": false
+        }
+      }
+    ],
+    "snapshotHash": "a82038939840f4a5790056b7c3790fd0bdcbf71473f840256d20765447698bb9"
+  }
+}

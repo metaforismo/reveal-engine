@@ -1,18 +1,39 @@
-# Reveal Engine 0.2 hardening checklist
+# Reveal Engine platform checklist
 
-- [x] Record the pre-implementation gaps and risks in `docs/upgrade-gap-audit.md`.
-- [x] Freeze a versioned public API, adapter fingerprint, and typed failure taxonomy.
-- [x] Add strict wire codecs, legacy transcript migration, deterministic replay, and frozen fixtures.
-- [x] Bind commit/reveal to canonical fields, deterministic truth, adapter economics, and model version.
-- [x] Harden stale-frame, idempotency, race, settlement, snapshot, accounting, and chain-cap behavior.
-- [x] Prove generality with four-outcome, three-outcome, and two-outcome adapters plus conformance tooling.
-- [x] Add independent mathematical oracles, deterministic property seeds, adversarial tests, and real-path stress.
-- [x] Add export/package smoke checks, a Node compatibility matrix, coverage gates, security checks, and bounded load CI.
-- [x] Record final local evidence and prepare scoped implementation/evidence commits.
+## 0.3 — core and lifecycle modules (done)
+
+- [x] Split core from the progressive-market lifecycle; relocate the lifecycle into `src/modules/progressive-market/`.
+- [x] Extract reusable core primitives: weights, permutations, random tape, commitment sealing, command ledger, snapshot wire safety, verification taxonomy.
+- [x] Define, type, and document the lifecycle-module contract (`docs/lifecycle-modules.md`).
+- [x] Prove the contract with a module-agnostic conformance runner plus a test-only non-market module.
+- [x] Keep every frozen wire fixture verifying and the stress correctness digest identical.
+- [x] Record the branch-adoption decision in `docs/adr/0001-branch-adoption.md`.
+- [x] Rewrite the README for a public audience with an honest certification boundary.
+- [x] Close the contract's guard rails: an atomic `creditClaim`, a fail-closed `assertClaimBudget`, complete declaration validation in `defineLifecycleModule`, and a conformance report that cannot claim a check it did not run (`docs/adr/0004`).
+
+## 0.4 — the lifecycle modules (done)
+
+- [x] `staged-survival`: N entities through S stages, a contract chosen per stage before it resolves, per-entity partial claims, banking subsets between stages. Ships with `fiveRunnerReference` and `oracleTrialReference`, twelve conformance checks, an exhaustive oracle test, frozen `transcript-v1` / `book-v1` fixtures, and `docs/modules/staged-survival.md`. No core file was modified; `docs/adr/0008` records why.
+- [x] `sequential-cards`: committed deck shuffle, reveals that eliminate outcomes to exactly zero, multi-position book with independent fair-value sells and switches. Ships with four reference definitions, 23 conformance checks, an exhaustive three-card oracle, frozen `cards-transcript-v1` / `cards-book-v1` fixtures (including the stochastic and dormant rounds), and `docs/modules/sequential-cards.md`. `docs/adr/0005`-`0007` record the scope, the settlement draw, and the dormant settlement.
+- [x] `permutation`: structured permutation truth with multi-bet paytable settlement. Shipped on `platform/permutation` with no core change; see `docs/modules/permutation.md`.
+- [x] `permutation`: the six AETHER ORDER families the lifecycle module does not price (`before`, `early`, `late`, `neighbours`, `opening`, `podium`). Resolved in `src/modules/permutation/aether/`, which takes adapter-supplied `resolve` predicates and prices them exactly by enumeration over the full `n!` space — a predicate the module did not write cannot be reduced to the pairwise-exclusive pins the lifecycle module counts with. The lifecycle module still prices five; see `docs/modules/permutation.md` §11 and `docs/adr/0010`.
+- [x] Give every lifecycle module its own replay anchor in the stress and benchmark artifacts (`moduleDigests`, schemas `stress-v3` / `benchmark-v3`), so a second module can join the workload without disturbing the first module's digest.
+
+## Next modules (other agents)
+
+- [ ] `permutation`: RGS-side pacing. `aether-order/docs/ENGINE.md` §5 requires a commit-to-commit cycle floor and a rolling-hour ceiling, and §9 gives them `CYCLE_FLOOR` and `BETTING_CLOSED`. The codes exist so a host raises the right one; the enforcement needs session state neither repository has.
+- [ ] `branching-population`: SWARM's cohort model — a population that _splits_, so draw consumption per stage is the population rather than a shrinking subset of a fixed entity set. Named as not-provided in `docs/modules/staged-survival.md` §10.
+
+## Deferred
+
+- [ ] Adapter-defined lane **geometry**, not only an adapter-defined menu. `laneWidth` cuts the field into consecutive lanes with the remainder last, so the lane count is a function of the field and a later lane is never larger than an earlier one. BRANCHFALL's per-field balance menu (`laneSplits(n)` / `laneSizes(n, k)`, a fixed `laneCount`) is only partly expressible; there is also no `maxEntities` to restrict a contract to the field sizes its balance was designed for. Closing it means a widened `StageContract` with its own fingerprint enumeration and conformance obligation. See `docs/modules/staged-survival.md` §10.
+- [ ] Retire the deprecated `./protocol`, `./serialization`, `./reference` aliases **and the progressive-market re-exports from the package root** (`RoundBook`, `makeTranscript`, `deriveTruth`, `initialPosterior`, `quote`, `defineGame`, `adapterFingerprint`, the transcript codec, the adapter conformance view, `progressiveMarket`, the three references) once no consumer depends on them. All of them carry `@deprecated` markers today; see ADR 0004.
+- [ ] Decide whether the module contract should become an out-of-tree plugin API (needs a published canonical encoder, a `MODULE_API_VERSION` compatibility policy, and a third-party-code trust decision).
+- [ ] Revive the BLACK SIGNAL compatibility corpus in the title repository or a dedicated artifact repository; see ADR 0001.
 - [ ] Hosted Actions execution (externally blocked by the account billing/spending limit; no runner steps execute).
 
 ## Non-negotiable boundaries
 
-- This repository is proprietary and private. No publishing, announcement, or certification claim is authorized.
 - `BLACK SIGNAL` is a reference integration only. Its art, UI, narrative, and source content do not belong here.
 - Engine math never receives tone, compliance copy, or player-facing presentation decisions.
+- No certification, fairness, or production-capacity claim is authorised.

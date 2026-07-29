@@ -2,6 +2,17 @@
 
 Baseline reviewed: `67d73ab` on 2026-07-27. This audit is a delivery gate, not a certification report.
 
+**Historical.** This audit describes the 0.2 hardening pass and its file layout,
+before the 0.3 split into core plus lifecycle modules. Every item below was
+closed in 0.2; the layer names it uses (`src/protocol`, `src/serialization`,
+`src/reference`) are now deprecated aliases. See
+[`architecture.md`](architecture.md) for the current layout. One 0.2 closure has
+since been superseded: "preserve the first entry's cap basis for the entire
+chain" was the right rule for a single-position book and the wrong one for a
+round holding several independently funded positions. The current rule — the
+basis accumulates external stakes and ignores recycled winnings — is in
+[`adr/0002-cap-basis-and-choice-timed-commitment.md`](adr/0002-cap-basis-and-choice-timed-commitment.md).
+
 | Priority | Gap / risk                                                                                                                                                                    | Required closure                                                                                                                                                   |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | P0       | Commitments use delimiter-joined strings, so unescaped IDs and labels can produce ambiguous encodings.                                                                        | Length-prefixed canonical binary encoding, a new proof version, frozen legacy verification fixtures, and cross-domain collision tests.                             |

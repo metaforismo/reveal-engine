@@ -1,6 +1,12 @@
 import { fail } from '../api/errors.js';
 import { floor, type Rational } from './rational.js';
-import type { Payable } from './contracts.js';
+
+export interface Payable {
+  readonly theoretical: Rational;
+  readonly credited: bigint;
+  readonly capped: boolean;
+}
+
 /** Applies the cap at every credit boundary, including sell and settlement. */
 export function payable(
   theoretical: Rational,
