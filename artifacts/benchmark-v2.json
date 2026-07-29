@@ -3,15 +3,15 @@
   "evidenceClass": "synthetic-local-or-ci",
   "samples": 1200,
   "events": 52000,
-  "elapsedMs": 3612.936,
-  "eventsPerSecond": 14392.72658026602,
+  "elapsedMs": 1404.017708,
+  "eventsPerSecond": 37036.569911980056,
   "latency": {
-    "p50Ms": 0.5573330000001988,
-    "p95Ms": 10.383041999999932,
-    "p99Ms": 16.29541700000027,
-    "maxMs": 33.610749999999996
+    "p50Ms": 0.23391599999996515,
+    "p95Ms": 3.5564999999999145,
+    "p99Ms": 4.429417000000058,
+    "maxMs": 6.248165999999969
   },
-  "correctnessDigest": "dab610f41f51e4499b8871df951ec948960eeacf5b7a3750e61468857d9b0412",
+  "correctnessDigest": "f8b8d1660c1a864135a9f6d94f678ff1735cb7a494f71e7f29e67f6e44807fa8",
   "thresholds": {
     "elapsedMs": 20000,
     "p99Ms": 50,
@@ -22,6 +22,6 @@
     "node": "v25.8.2",
     "platform": "darwin",
     "arch": "arm64",
-    "sourceRevision": "d5bd077d21801b33dcf45e35c518df509c15732e"
+    "sourceRevision": "local-working-tree"
   }
 }
