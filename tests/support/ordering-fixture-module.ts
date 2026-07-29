@@ -35,6 +35,7 @@ import {
   type ModuleConformanceCheck,
   type RoundIdentity,
 } from '../../src/core/module.js';
+import type { Payable } from '../../src/core/payments.js';
 import { uniformPermutation } from '../../src/core/random.js';
 import { add, divide, multiply, rational, type Rational } from '../../src/core/rational.js';
 import {
@@ -382,23 +383,25 @@ export class OrderingBook {
       const total = this.claims
         .filter((claim) => betWins(claim.bet, transcript.truth))
         .reduce((sum, claim) => add(sum, claim.payout), rational(0n));
-      const result =
-        this.#ledger.capBasisStake === undefined
-          ? Object.freeze({ theoretical: total, credited: 0n, capped: false })
-          : this.#ledger.creditWithinCap(total);
-      const receipt = this.#ledger.mint(
-        key,
-        fp,
-        'settle',
-        transcript.steps.length,
-        0n,
-        result.credited,
-        result.capped,
-      );
-      this.#terminal = true;
-      this.#stepRevision = Math.max(this.#stepRevision, transcript.steps.length);
-      this.#ledger.applyCredit(result.credited);
-      return receipt;
+      const close = (result: Payable): LedgerReceipt<'stake' | 'settle'> => {
+        const receipt = this.#ledger.mint(
+          key,
+          fp,
+          'settle',
+          transcript.steps.length,
+          0n,
+          result.credited,
+          result.capped,
+        );
+        this.#terminal = true;
+        this.#stepRevision = Math.max(this.#stepRevision, transcript.steps.length);
+        return receipt;
+      };
+      // `creditClaim` prices, mints, and credits as one step, so a paytable that
+      // settles several claims at once cannot half-perform the cap chain.
+      return this.#ledger.capBasisStake === undefined
+        ? close(Object.freeze({ theoretical: total, credited: 0n, capped: false }))
+        : this.#ledger.creditClaim(total, close);
     });
   }
 

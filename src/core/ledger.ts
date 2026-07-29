@@ -308,7 +308,15 @@ export class CommandLedger {
   }
 
   /**
-   * Credit an exact rational claim, floored and bounded by the remaining ceiling.
+   * Prices an exact rational claim against the remaining ceiling. **A query.**
+   *
+   * It floors the claim and bounds it by `ceiling - liquidBalance`, but it does
+   * not move the balance: only `applyCredit()` does. The two are one operation
+   * with two halves, and a book that performs the first without the second keeps
+   * measuring against a balance that never grows — five settlements of a full
+   * ceiling, each stamped `capped: false`, with the round's stated invariant
+   * silently void. Prefer `creditClaim()`, which cannot be half-performed, and
+   * reach for this pair only to quote a claim without crediting it.
    *
    * A round that has taken no stake has no ceiling, so there is nothing to
    * credit against: that is a module state-machine bug and fails loudly rather
@@ -325,9 +333,35 @@ export class CommandLedger {
     );
   }
 
+  /** Second half of the credit pair: the only call that moves the liquid balance. */
   applyCredit(amount: bigint): void {
     if (amount < 0n) fail('INVALID_RATIONAL', 'Credit must be non-negative', '$.credited');
     this.#liquidBalance += amount;
+  }
+
+  /**
+   * Prices a claim, mints its receipt, and applies the credit as one step.
+   *
+   * This is the call a book should make. `creditWithinCap()` is a pure query and
+   * `applyCredit()` is the mutation, so the cap chain only holds if every credit
+   * path performs both — and nothing about the type of either enforces that.
+   * Here the ledger owns the sequence: it computes the payable, hands it to
+   * `mint`, and credits the balance only once `mint` has returned.
+   *
+   * `mint` must build the receipt (with `mint()`) and may mutate the module's
+   * own state; the ordering is deliberate, so a rejection inside it leaves both
+   * the module and the balance untouched.
+   */
+  creditClaim<Action extends string>(
+    theoretical: Rational,
+    mint: (payable: Payable) => Receipt<Action>,
+  ): Receipt<Action> {
+    if (typeof mint !== 'function')
+      fail('CLAIM_REJECTED', 'Crediting a claim requires a receipt factory', '$.mint');
+    const result = this.creditWithinCap(theoretical);
+    const receipt = mint(result);
+    this.applyCredit(result.credited);
+    return receipt;
   }
 
   /**

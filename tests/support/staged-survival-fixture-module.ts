@@ -44,6 +44,7 @@ import {
   type ModuleConformanceCheck,
   type RoundIdentity,
 } from '../../src/core/module.js';
+import type { Payable } from '../../src/core/payments.js';
 import { RandomTape, type TapeDraw } from '../../src/core/random.js';
 import { floor, multiply, rational, type Rational } from '../../src/core/rational.js';
 import {
@@ -564,23 +565,27 @@ export class SurvivalBook {
           total.denominator * claim.value.denominator,
         );
       }
-      const result = this.#ledger.creditWithinCap(total);
-      const receipt = this.#ledger.mint(
-        key,
-        fp,
-        'bank',
-        this.#stageRevision,
-        0n,
-        result.credited,
-        result.capped,
-      );
-      for (const entity of chosen) {
-        const claim = this.#claims.get(entity) as SurvivalClaim;
-        this.#claims.set(entity, Object.freeze({ ...claim, live: false, banked: true }));
-      }
-      this.#ledger.applyCredit(result.credited);
-      if (this.claims.every((claim) => !claim.live)) this.#terminal = true;
-      return receipt;
+      // Banking happens repeatedly inside one round, which is exactly the shape
+      // that punishes a forgotten `applyCredit`: `creditClaim` makes the pair
+      // one call, so every banked subset measures against the balance the last
+      // one left behind.
+      return this.#ledger.creditClaim(total, (result) => {
+        const receipt = this.#ledger.mint(
+          key,
+          fp,
+          'bank',
+          this.#stageRevision,
+          0n,
+          result.credited,
+          result.capped,
+        );
+        for (const entity of chosen) {
+          const claim = this.#claims.get(entity) as SurvivalClaim;
+          this.#claims.set(entity, Object.freeze({ ...claim, live: false, banked: true }));
+        }
+        if (this.claims.every((claim) => !claim.live)) this.#terminal = true;
+        return receipt;
+      });
     });
   }
 
@@ -625,24 +630,24 @@ export class SurvivalBook {
             total.numerator * claim.value.denominator + claim.value.numerator * total.denominator,
             total.denominator * claim.value.denominator,
           );
-      const result =
-        this.#ledger.capBasisStake === undefined
-          ? Object.freeze({ theoretical: total, credited: 0n, capped: false })
-          : this.#ledger.creditWithinCap(total);
-      const receipt = this.#ledger.mint(
-        key,
-        fp,
-        'settle',
-        this.#stageRevision,
-        0n,
-        result.credited,
-        result.capped,
-      );
-      for (const claim of this.claims)
-        this.#claims.set(claim.entity, Object.freeze({ ...claim, live: false }));
-      this.#terminal = true;
-      this.#ledger.applyCredit(result.credited);
-      return receipt;
+      const close = (result: Payable): LedgerReceipt<SurvivalAction> => {
+        const receipt = this.#ledger.mint(
+          key,
+          fp,
+          'settle',
+          this.#stageRevision,
+          0n,
+          result.credited,
+          result.capped,
+        );
+        for (const claim of this.claims)
+          this.#claims.set(claim.entity, Object.freeze({ ...claim, live: false }));
+        this.#terminal = true;
+        return receipt;
+      };
+      return this.#ledger.capBasisStake === undefined
+        ? close(Object.freeze({ theoretical: total, credited: 0n, capped: false }))
+        : this.#ledger.creditClaim(total, close);
     });
   }
 

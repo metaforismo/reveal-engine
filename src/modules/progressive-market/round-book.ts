@@ -240,18 +240,20 @@ export class RoundBook {
         this.#position.outcome,
         this.game.pricing.liquidationSpread,
       );
-      const result = this.#ledger.creditWithinCap(theoretical);
-      const receipt = this.#mint(
-        request.idempotencyKey,
-        fingerprint,
-        'sell',
-        0n,
-        result.credited,
-        result.capped,
-      );
-      this.#position = undefined;
-      this.#ledger.applyCredit(result.credited);
-      return receipt;
+      // One ledger call prices, mints, and credits: the cap chain only holds if
+      // every credit path performs all three, so the ledger owns the sequence.
+      return this.#ledger.creditClaim(theoretical, (result) => {
+        const receipt = this.#mint(
+          request.idempotencyKey,
+          fingerprint,
+          'sell',
+          0n,
+          result.credited,
+          result.capped,
+        );
+        this.#position = undefined;
+        return receipt;
+      });
     });
   }
 
@@ -282,23 +284,24 @@ export class RoundBook {
         this.#position && this.#position.outcome === transcript.truth
           ? this.#position.contingentPayout
           : rational(0n);
-      // A round that never took a stake has no cap chain to credit against.
-      const result: Payable =
-        this.#ledger.capBasisStake === undefined
-          ? Object.freeze({ theoretical, credited: 0n, capped: false })
-          : this.#ledger.creditWithinCap(theoretical);
-      const receipt = this.#mint(
-        request.idempotencyKey,
-        fingerprint,
-        'settle',
-        0n,
-        result.credited,
-        result.capped,
-      );
-      this.#terminal = true;
-      this.#position = undefined;
-      this.#ledger.applyCredit(result.credited);
-      return receipt;
+      const close = (result: Payable): Receipt => {
+        const receipt = this.#mint(
+          request.idempotencyKey,
+          fingerprint,
+          'settle',
+          0n,
+          result.credited,
+          result.capped,
+        );
+        this.#terminal = true;
+        this.#position = undefined;
+        return receipt;
+      };
+      // A round that never took a stake has no cap chain to credit against, so
+      // there is nothing to credit and no ceiling to measure it against.
+      return this.#ledger.capBasisStake === undefined
+        ? close(Object.freeze({ theoretical, credited: 0n, capped: false }))
+        : this.#ledger.creditClaim(theoretical, close);
     });
   }
 

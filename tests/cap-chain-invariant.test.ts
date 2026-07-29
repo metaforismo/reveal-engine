@@ -50,12 +50,24 @@ interface Outcome {
 }
 
 /**
+ * How a credit reaches the ledger.
+ *
+ * `pair` is the low-level `creditWithinCap()` query followed by the
+ * `applyCredit()` mutation; `claim` is `creditClaim()`, which performs both in
+ * one call and is what every book in this repository uses. Both are swept,
+ * because the invariant has to hold whichever a module reaches for — and because
+ * the two agreeing on every one of the 7,380 sequences is what says
+ * `creditClaim` is the same arithmetic, not a second implementation of it.
+ */
+type CreditPath = 'pair' | 'claim';
+
+/**
  * Runs one sequence, checking the invariant after every accepted command.
  *
  * The checks throw rather than going through `expect` because this runs tens of
  * thousands of times; the assertion library's overhead would dominate.
  */
-function run(sequence: readonly Command[]): Outcome {
+function run(sequence: readonly Command[], path: CreditPath = 'pair'): Outcome {
   const ledger = new CommandLedger({ maxWinMultiple: MAX_WIN_MULTIPLE });
   let externalTotal = 0n;
   let creditedTotal = 0n;
@@ -75,7 +87,20 @@ function run(sequence: readonly Command[]): Outcome {
   check(-1);
   for (const [step, command] of sequence.entries()) {
     try {
-      if (command.kind === 'credit') {
+      if (command.kind === 'credit' && path === 'claim') {
+        const receipt = ledger.creditClaim(rational(command.theoretical), (payable) =>
+          ledger.mint(
+            `k${step}`,
+            '0'.repeat(64),
+            'credit',
+            0,
+            0n,
+            payable.credited,
+            payable.capped,
+          ),
+        );
+        creditedTotal += receipt.credited;
+      } else if (command.kind === 'credit') {
         const payable = ledger.creditWithinCap(rational(command.theoretical));
         ledger.applyCredit(payable.credited);
         creditedTotal += payable.credited;
@@ -118,6 +143,14 @@ describe('cap-chain invariant, by enumeration', () => {
         // The headline statement, restated over the whole sequence.
         if (outcome.liquid > outcome.externalTotal * MAX_WIN_MULTIPLE)
           throw new Error(`paid ${outcome.liquid} on ${outcome.externalTotal} staked`);
+        // The atomic path must be the same arithmetic, not a second one.
+        const viaClaim = run(prefix, 'claim');
+        if (
+          viaClaim.liquid !== outcome.liquid ||
+          viaClaim.basis !== outcome.basis ||
+          viaClaim.creditedTotal !== outcome.creditedTotal
+        )
+          throw new Error(`creditClaim diverged from creditWithinCap + applyCredit`);
       }
       if (prefix.length === 4) return;
       for (const command of ALPHABET) walk([...prefix, command]);
@@ -162,6 +195,72 @@ describe('cap-chain invariant, by enumeration', () => {
     expect(ledger.liquidBalance).toBe(1000n);
     // Total extracted over the whole round is still 10x the 100 brought in.
     expect(ledger.liquidBalance).toBeLessThanOrEqual(100n * MAX_WIN_MULTIPLE);
+  });
+
+  /**
+   * Why `creditClaim()` exists, stated as the failure it removes.
+   *
+   * `creditWithinCap()` is a query: it computes `ceiling - liquidBalance` and
+   * moves nothing. A book that calls it without the matching `applyCredit()`
+   * measures every claim against a balance that never grows, so the ceiling is
+   * re-payable once per claim — and every receipt says `capped: false`, because
+   * from the query's point of view nothing was ever capped. This is the shape a
+   * multi-credit round (banking subsets, selling positions independently) walks
+   * into first, and it is why the atomic call is the documented default.
+   */
+  it('pays its ceiling once through creditClaim, and five times without applyCredit', () => {
+    const ceiling = 100n * MAX_WIN_MULTIPLE;
+
+    const halfPerformed = new CommandLedger({ maxWinMultiple: MAX_WIN_MULTIPLE });
+    halfPerformed.fundStake(100n, 'external');
+    let leaked = 0n;
+    for (let claim = 0; claim < 5; claim += 1) {
+      const payable = halfPerformed.creditWithinCap(rational(ceiling));
+      expect(payable).toMatchObject({ credited: ceiling, capped: false });
+      leaked += payable.credited;
+    }
+    expect(leaked).toBe(5n * ceiling);
+    // Nothing was applied, so the ledger's own balance never left zero — the
+    // money escaped through the receipts, which is exactly why this is silent.
+    expect(halfPerformed.liquidBalance).toBe(0n);
+
+    const correct = new CommandLedger({ maxWinMultiple: MAX_WIN_MULTIPLE });
+    correct.fundStake(100n, 'external');
+    let paid = 0n;
+    for (let claim = 0; claim < 5; claim += 1) {
+      const receipt = correct.creditClaim(rational(ceiling), (payable) =>
+        correct.mint(
+          `claim-${claim}`,
+          '0'.repeat(64),
+          'settle',
+          0,
+          0n,
+          payable.credited,
+          payable.capped,
+        ),
+      );
+      paid += receipt.credited;
+      // The first claim takes the whole ceiling; every later one is capped to 0.
+      expect(receipt.capped).toBe(claim > 0);
+    }
+    expect(paid).toBe(ceiling);
+    expect(correct.liquidBalance).toBe(ceiling);
+    expect(correct.liquidBalance).toBeLessThanOrEqual(100n * MAX_WIN_MULTIPLE);
+  });
+
+  it('refuses to credit a claim without a receipt factory', () => {
+    const ledger = new CommandLedger({ maxWinMultiple: MAX_WIN_MULTIPLE });
+    ledger.fundStake(10n, 'external');
+    expect(() => ledger.creditClaim(rational(5n), undefined as never)).toThrowError(
+      expect.objectContaining({ code: 'CLAIM_REJECTED' }),
+    );
+    // A receipt factory that rejects leaves the balance exactly where it was.
+    expect(() =>
+      ledger.creditClaim(rational(5n), () => {
+        throw new RevealEngineError('CLAIM_REJECTED', 'module said no');
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'CLAIM_REJECTED' }));
+    expect(ledger.liquidBalance).toBe(0n);
   });
 
   it('holds through a real progressive-market round with sell and re-entry', async () => {
