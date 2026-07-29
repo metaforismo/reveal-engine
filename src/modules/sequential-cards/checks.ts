@@ -1547,7 +1547,7 @@ const roundingIsUnbiased: Check = {
 const roundingIsBounded: Check = {
   code: 'CARDS_ROUNDING_BOUNDED',
   description:
-    "The extremal realised credit return equals entryRtp exactly under 'stochastic', and is within one credit per credit event under 'floor'",
+    'The exact extremal return is entryRtp and the conversion moves no payout by a whole credit',
   scope: 'definition',
   run({ definition, count }) {
     const failures: ConformanceFailure[] = [];

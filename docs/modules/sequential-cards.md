@@ -288,6 +288,17 @@ is real at the minimum stake, where one credit can be most of a small payout.
 The module cannot see whether a host leaked the tape; the obligation is on the
 integration checklist rather than implied to be closed.
 
+**And a tape can be _chosen_ before settlement can object.** The book holds no
+seed, so `open()` cannot check that the tape it was handed is the one the sealed
+seed produces — only `settle` can, and by then every mid-round `cash` has already
+been credited. A tape picked so that every draw pays the extra credit is worth
+one credit per credit event and no more, `settle` refuses the round afterwards,
+and a host that never settles is never contradicted. That is the same boundary as
+the fabricated reveal in §6.2, two orders of magnitude smaller — a chosen reveal
+is worth 240 credits on a 100-credit `triad-middle-v1` stake and a chosen tape is
+worth one — and it is closed the same way: the host derives the tape with
+`deriveRoundingSeed()` against the sealed seed rather than accepting one.
+
 **What the wire format does and does not change.** A `'floor'` definition's
 fingerprints, receipts and snapshots are **byte-identical** to the ones this
 module wrote before the draw existed: the open fingerprint appends the tape
@@ -455,10 +466,19 @@ there are two:
 - a **reveal**, for the reason §6.2 gives in full — a book holds no seed, so a
   fabricated step that clears the record rules is a legal input to every rule
   replayed here, and a snapshot built on one restores exactly as the live round
-  accepted it.
+  accepted it;
+- under `'stochastic'`, the **rounding tape**, for the same reason and with the
+  same shape. The open receipt's fingerprint binds a commitment to it, so a tape
+  swapped on its own dies there — but a store that can rewrite the tape can
+  rewrite that receipt too, and the credits re-derive from whatever tape the
+  snapshot presents. It is worth one credit per credit event, and only until
+  settlement: once the seed is revealed the tape is re-derived from it and a
+  substituted one is refused, which is why this residual is pre-settlement and
+  the stake's is not.
 
-Neither is closed by arithmetic: the round has no independent record of what the
-wallet debited, and no seed to check a reveal against until `settle`.
+None of the three is closed by arithmetic: the round has no independent record of
+what the wallet debited, and no seed to check a reveal or a tape against until
+`settle`.
 
 So snapshot integrity is a **deployment obligation**, not something this module
 provides: persist snapshots in storage the host trusts, or authenticate them with
@@ -573,7 +593,7 @@ against every reference:
 | `CARDS_MIN_STAKE_SUFFICIENT`         | definition | the minimum stake clears the threshold, and the threshold is tight                                                                                                   |
 | `CARDS_ROUNDING_NEVER_UNDERPAYS`     | definition | the credited integer is the whole part of the claim, or one credit above it                                                                                          |
 | `CARDS_ROUNDING_UNBIASED`            | definition | the declared rounding rule's expected credit, counted over the whole draw space                                                                                      |
-| `CARDS_ROUNDING_BOUNDED`             | definition | the extremal realised credit return equals `entryRtp` exactly under `'stochastic'`                                                                                   |
+| `CARDS_ROUNDING_BOUNDED`             | definition | the exact extremal return is `entryRtp` and the conversion moves no payout by a whole credit                                                                         |
 | `CARDS_CAP_NEVER_BINDS`              | definition | the reachable maximum is strictly below the cap                                                                                                                      |
 | `CARDS_BELIEF_EXHAUSTIVE`            | round      | belief weights equal a completion count from an independently coded enumeration                                                                                      |
 | `CARDS_BELIEF_NORMALISED`            | round      | non-negative, positive total, reduced, summing to one, zero exactly where it is zero                                                                                 |
@@ -609,6 +629,18 @@ not. Both directions were
 mutation-tested before they were published: `<` to `<=` in the draw comparison
 fails only `triad-stochastic-v1`, and a `'floor'` branch that drew and discarded
 fails only the three deterministic references.
+
+`CARDS_ROUNDING_BOUNDED` is the pair of premises rather than the conclusion, and
+it says so. The consuming specification asks for the extremal **realised credit**
+return; the walk computes the extremal **exact** return, and the conversion is
+what joins them. So the check asserts the join's two halves — the argmin and the
+argmax of the exact return coincide at `entryRtp`, and every reachable payout
+converts to within one credit of its claim — from which the realised credit
+return follows by linearity under `'stochastic'`, where
+`CARDS_ROUNDING_UNBIASED` has counted the conversion unbiased at every credit
+event. Under `'floor'` no such identity is available and none is claimed: each
+credit event loses strictly less than one credit, which is a bound and is what
+the minimum stake exists to make small.
 
 `CARDS_ROUNDING_NEVER_UNDERPAYS` has a tautological half and a real one. That
 `settlementTotal` of one claim equals `floor` of it is nearly a restatement of

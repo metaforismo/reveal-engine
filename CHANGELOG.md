@@ -25,9 +25,10 @@
   (argmin and argmax over the **whole** policy space, never a shortlist),
   `CARDS_CAP_NEVER_BINDS`, `CARDS_MIN_STAKE_SUFFICIENT`,
   `CARDS_BELIEF_EXHAUSTIVE`, which cross-checks the posterior against a second
-  enumeration that shares no code path with it, and `CARDS_ROUNDING_UNBIASED` /
-  `CARDS_ROUNDING_BOUNDED`, which count the credit conversion over the whole
-  draw space rather than recomputing its own comparison.
+  enumeration that shares no code path with it, `CARDS_ROUNDING_UNBIASED`, which
+  counts the credit conversion over the whole draw space rather than recomputing
+  its own comparison, and `CARDS_ROUNDING_BOUNDED`, which asserts the two
+  premises that carry the exact extremal return across that conversion.
 - **`pricing.rounding: 'stochastic'`, the unbiased settlement draw** the
   consuming game declares (`triad/docs/MATH.md` §13.3). A claim of `q + r/d`
   credits `q + 1` with probability exactly `r/d`, drawn from a **committed

@@ -13,11 +13,12 @@ import {
 } from '../../src/modules/sequential-cards/credits.js';
 import { cardsRoundOf } from '../../src/modules/sequential-cards/adapter.js';
 import { coverProbability, fairValue } from '../../src/modules/sequential-cards/pricing.js';
+import { cardsBelief } from '../../src/modules/sequential-cards/deck.js';
 import {
   triadMiddleReference,
   triadStochasticReference,
 } from '../../src/modules/sequential-cards/references.js';
-import { CardsBook } from '../../src/modules/sequential-cards/round-book.js';
+import { CardsBook, openFingerprint } from '../../src/modules/sequential-cards/round-book.js';
 import { deriveRevealSteps } from '../../src/modules/sequential-cards/steps.js';
 import { deriveDeal } from '../../src/modules/sequential-cards/truth.js';
 import { buildCardsTranscript } from '../../src/modules/sequential-cards/transcript.js';
@@ -417,5 +418,111 @@ describe('sequential-cards: the settlement draw', () => {
     ).toThrowError(
       expect.objectContaining({ details: expect.objectContaining({ reason: 'UNDECLARED_FIELD' }) }),
     );
+  });
+});
+
+/**
+ * The residual §6.3 names, pinned as a **checked** claim rather than a caveat.
+ *
+ * Receipt fingerprints and the snapshot checksum are unkeyed, so a store that
+ * can rewrite the rounding tape can rewrite the open receipt that commits to it
+ * and every credit that came out of it. §6.3 says so and bounds it — one credit
+ * per credit event, and only until settlement re-derives the tape from the
+ * revealed seed. A test that only demonstrated refusals would leave that
+ * sentence unchecked, and a future revision that closed the gap would leave the
+ * documentation overstating the boundary in the other direction.
+ */
+describe('sequential-cards: the rounding tape is a pre-settlement residual', () => {
+  it('a coordinated rewrite of the tape and its receipts restores, and settlement refuses it', async () => {
+    const roundId = 'tape-residual';
+    const book = new CardsBook(stochastic);
+    await book.open({
+      idempotencyKey: 'open',
+      expectedStepRevision: 0,
+      roundId,
+      selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
+      roundingSeed: tapeFor(roundId).roundingSeed,
+    });
+    const deal = deriveDeal(SEED, stochastic, roundId);
+    const step = deriveRevealSteps(stochastic, deal, book.choices)[0] as RevealStep;
+    await book.advanceReveal({ idempotencyKey: 'reveal', expectedStepRevision: 0, step });
+    if (!book.offers('MIDDLE').includes('cash')) throw new Error('the fixture needs a cash-out');
+    await book.cash({ idempotencyKey: 'cash', expectedStepRevision: 1, selectionId: 'MIDDLE' });
+
+    const snapshot = JSON.parse(book.serialize()) as Record<string, unknown>;
+    const selection = book.selections[0];
+    const value = fairValue(
+      stochastic,
+      selection?.claim as ReturnType<typeof rational>,
+      coverProbability(cardsBelief(stochastic, [step]), selection?.positions ?? []),
+    );
+    const whole = floorRational(value);
+
+    // A tape whose draw pays the extra credit on this exact claim, found by
+    // walking round ids rather than by inverting anything: the tape is a hash,
+    // and an attacker who can rewrite the store can also try 20 of them.
+    let better: string | undefined;
+    for (let index = 0; index < 64 && better === undefined; index += 1) {
+      const candidate = tapeFor(`forged-${index}`, SEED).roundingSeed;
+      const credits = convertToCredits(
+        stochastic,
+        value,
+        { selectionId: 'MIDDLE', sequence: 3 },
+        { roundingSeed: candidate, round: cardsRoundOf(stochastic, roundId) },
+      ).credits;
+      if (credits === whole + 1n) better = candidate;
+    }
+    if (better === undefined) throw new Error('no candidate tape paid the extra credit');
+
+    const rows = [{ id: 'MIDDLE', kind: 'position' as const, position: 0, stake: 25n }];
+    const openFp = openFingerprint(roundId, rows, roundingCommitment(better));
+    const receipts = (
+      snapshot.receipts as { fingerprint: string; receipt: Record<string, unknown> }[]
+    ).map((entry) =>
+      entry.receipt.action === 'open'
+        ? {
+            fingerprint: openFp,
+            receipt: { ...entry.receipt, commandFingerprint: openFp },
+          }
+        : entry.receipt.action === 'cash'
+          ? {
+              ...entry,
+              receipt: {
+                ...entry.receipt,
+                credited: String(whole + 1n),
+                balanceDelta: String(whole + 1n),
+              },
+            }
+          : entry,
+    );
+    const forged = {
+      ...snapshot,
+      roundingSeed: better,
+      receipts,
+      liquidBalance: String(whole + 1n),
+      selections: (snapshot.selections as Record<string, unknown>[]).map((row) => ({
+        ...row,
+        credited: String(whole + 1n),
+      })),
+    };
+    const sealed = JSON.stringify({
+      ...forged,
+      snapshotHash: snapshotHash({ ...forged, snapshotHash: undefined }),
+    });
+
+    // It restores. That is the residual, and it is worth exactly one credit.
+    const restored = CardsBook.restore(stochastic, sealed);
+    expect(restored.liquidBalance).toBe(whole + 1n);
+    expect(restored.liquidBalance - book.liquidBalance).toBe(1n);
+
+    // And it dies at settlement, because the tape does not derive from the seed.
+    await expect(
+      restored.settle({
+        idempotencyKey: 'settle',
+        expectedStepRevision: 1,
+        revealedSeed: SEED,
+        transcript: buildCardsTranscript(SEED, stochastic, roundId, restored.choices),
+      }),
+    ).rejects.toThrowError(expect.objectContaining({ code: 'TRANSCRIPT_MISMATCH' }));
   });
 });

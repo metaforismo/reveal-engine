@@ -11,7 +11,10 @@ import {
   fairValue,
   transformedClaim,
 } from '../../src/modules/sequential-cards/pricing.js';
-import { triadMiddleReference } from '../../src/modules/sequential-cards/references.js';
+import {
+  cascadeMiddleReference,
+  triadMiddleReference,
+} from '../../src/modules/sequential-cards/references.js';
 import {
   CardsBook,
   openFingerprint,
@@ -568,5 +571,110 @@ describe('sequential-cards: restore() replays the rules of a liquidation too', (
     const restored = CardsBook.restore(definition, book.serialize());
     expect(restored.snapshot()).toEqual(book.snapshot());
     expect(restored.liquidBalance).toBe(book.liquidBalance);
+  });
+});
+
+/**
+ * The same rules on a **multi-reveal** definition, where the frame really has
+ * more than two values to be wrong about.
+ *
+ * `triad-middle-v1` has one reveal, so "the frame is 0 or 1" is nearly a
+ * boolean and a guard could pass by accident. `cascade-middle-v1` reveals twice,
+ * so a receipt can be fenced to a middle revision the round has already left —
+ * and that is where a claim grown at the second belief and priced at the first
+ * would live.
+ */
+describe('sequential-cards: the frame rule on a two-reveal round', () => {
+  const cascade = cascadeMiddleReference;
+
+  it('refuses a liquidation fenced to a revision the round has already left', async () => {
+    // Swept rather than fixed: a two-reveal round can decide the backed cover
+    // on the way, and a state that offers nothing has no positive control in it.
+    let base: Mutable | undefined;
+    for (let index = 0; index < 48 && base === undefined; index += 1) {
+      const roundId = `cascade-frames-${index}`;
+      const book = new CardsBook(cascade);
+      await book.open({
+        idempotencyKey: 'open',
+        expectedStepRevision: 0,
+        roundId,
+        selections: [{ id: 'a', kind: 'position', position: 0, stake: 10n }],
+      });
+      const deal = deriveDeal(seed(index), cascade, roundId);
+      const steps = deriveRevealSteps(cascade, deal, book.choices);
+      await book.advanceReveal({
+        idempotencyKey: 'reveal-0',
+        expectedStepRevision: 0,
+        step: steps[0] as RevealStep,
+      });
+      await book.advanceReveal({
+        idempotencyKey: 'reveal-1',
+        expectedStepRevision: 1,
+        step: steps[1] as RevealStep,
+      });
+      if (book.offers('a').includes('cash')) base = JSON.parse(book.serialize()) as Mutable;
+    }
+    if (base === undefined) throw new Error('no cascade seed left a cash-out offered');
+    expect(base.stepRevision).toBe(2);
+
+    const fixture = base;
+    const forge = (frame: number): string => {
+      const row = (fixture.selections as Mutable[])[0] as Mutable;
+      const wire = row.claim as { numerator: string; denominator: string };
+      const belief = cardsBelief(cascade, (fixture.steps as RevealStep[]).slice(0, frame));
+      const value = fairValue(
+        cascade,
+        rational(BigInt(wire.numerator), BigInt(wire.denominator)),
+        coverProbability(belief, row.positions as number[]),
+      );
+      const payable = payableWithinCap(value, 10n, cascade.risk.maxWinMultiple, 0n);
+      const fingerprint = commandFingerprint('cash', [
+        stepDigest((fixture.steps as RevealStep[]).slice(0, frame)),
+        'a',
+      ]);
+      const receipts = [
+        ...(fixture.receipts as WireEntry[]),
+        {
+          fingerprint,
+          receipt: {
+            schema: 'reveal-engine/receipt-v1',
+            idempotencyKey: 'forged-cash',
+            commandFingerprint: fingerprint,
+            action: 'cash',
+            ledgerRevision: (fixture.receipts as WireEntry[]).length + 1,
+            frameRevision: frame,
+            debited: '0',
+            credited: String(payable.credited),
+            balanceDelta: String(payable.credited),
+            capped: payable.capped,
+          },
+        },
+      ];
+      return reseal({
+        ...fixture,
+        receipts,
+        ledgerRevision: receipts.length,
+        liquidBalance: String(payable.credited),
+        selections: (fixture.selections as Mutable[]).map((entry) => ({
+          ...entry,
+          status: 'cashed',
+          credited: String(payable.credited),
+          decidedAtStepRevision: frame,
+        })),
+      });
+    };
+
+    for (const frame of [0, 1]) {
+      const restore = (): CardsBook => CardsBook.restore(cascade, forge(frame));
+      expect(restore, `a cash fenced to revision ${frame}`).toThrowError(
+        expect.objectContaining({
+          code: 'INVALID_SNAPSHOT',
+          message: 'Receipt is fenced to a step revision the round was not standing at',
+        }) as unknown as Error,
+      );
+    }
+    // The frame the round really is standing at restores, so the rule refuses a
+    // pairing rather than refusing liquidations.
+    expect(() => CardsBook.restore(cascade, forge(2))).not.toThrow();
   });
 });
