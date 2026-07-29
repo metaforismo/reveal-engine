@@ -32,7 +32,9 @@ import { seed } from './helpers.js';
 
 describe('lifecycle module contract', () => {
   it('registers progressive-market as a module, not as the engine spine', () => {
-    expect(listModules().map((module) => module.id)).toEqual(['progressive-market']);
+    // The registry holds more than one module now, which is the point: the
+    // progressive market is one lifecycle among several, not the engine.
+    expect(listModules().map((module) => module.id)).toEqual(['progressive-market', 'permutation']);
     expect(findModule('progressive-market')).toBe(progressiveMarket);
     expect(requireModule('progressive-market').moduleApiVersion).toBe(MODULE_API_VERSION);
     expect(progressiveMarket.truth.kind).toBe('scalar-index');

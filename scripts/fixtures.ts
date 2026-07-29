@@ -9,8 +9,14 @@
  */
 import { writeFileSync } from 'node:fs';
 import { buildFrozenRound, FROZEN_ROUND_ID, FROZEN_SEED } from '../tests/support/frozen-round.js';
+import {
+  buildFrozenPermutationRound,
+  FROZEN_PERMUTATION_ROUND_ID,
+  FROZEN_PERMUTATION_SEED,
+} from '../tests/support/frozen-permutation-round.js';
 
 const round = await buildFrozenRound();
+const permutationRound = await buildFrozenPermutationRound();
 
 const files: readonly [string, unknown][] = [
   [
@@ -29,6 +35,25 @@ const files: readonly [string, unknown][] = [
       seed: FROZEN_SEED,
       roundId: FROZEN_ROUND_ID,
       receipts: round.receipts,
+    },
+  ],
+  [
+    'tests/fixtures/permutation-transcript-v1.json',
+    {
+      note: 'Frozen reveal-engine/permutation-transcript-v1 wire form. Regenerate with npm run fixtures:update.',
+      seed: FROZEN_PERMUTATION_SEED,
+      roundId: FROZEN_PERMUTATION_ROUND_ID,
+      transcript: permutationRound.wire,
+    },
+  ],
+  [
+    'tests/fixtures/permutation-book-v1.json',
+    {
+      note: 'Frozen reveal-engine/permutation-book-v1 snapshot for a settled three-line ticket.',
+      seed: FROZEN_PERMUTATION_SEED,
+      roundId: FROZEN_PERMUTATION_ROUND_ID,
+      credited: String(permutationRound.credited),
+      snapshot: permutationRound.snapshot,
     },
   ],
 ];

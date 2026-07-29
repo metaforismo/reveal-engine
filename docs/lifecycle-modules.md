@@ -486,8 +486,12 @@ The contract was designed against four shapes, not one.
 | `staged-survival`    | `composite` (a random tape) | stage resolutions              | before-step | `marginal`; `price()` over surviving entities            | multi claim, partial banking                   |
 | `permutation`        | `permutation` of n items    | ordering reveals               | none        | `marginal`; `price()` by exact counting                  | multi bet, paytable settlement                 |
 
-Only `progressive-market` ships today. The other three are the immediate next
-modules and are named here so the contract is judged against them.
+`progressive-market` and `permutation` ship today; `docs/modules/permutation.md`
+is the second one's math and its record of what the contract expressed. It
+required no core change, which is the load-bearing fact about this table: the
+contract was designed against four shapes and the second one landed inside it.
+`sequential-cards` and `staged-survival` are the immediate next modules and are
+named here so the contract stays judged against them too.
 
 Two **test-only** modules under `tests/support/` — not registered, not games —
 exercise the parts of the contract the progressive market does not use, so the

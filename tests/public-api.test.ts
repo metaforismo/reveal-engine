@@ -4,6 +4,7 @@ import * as api from '../src/api/index.js';
 import * as core from '../src/core/index.js';
 import * as modules from '../src/modules/index.js';
 import * as progressiveMarket from '../src/modules/progressive-market/index.js';
+import * as permutation from '../src/modules/permutation/index.js';
 import * as conformance from '../src/conformance/index.js';
 import * as integration from '../src/integration/index.js';
 import * as protocol from '../src/protocol/index.js';
@@ -172,11 +173,16 @@ describe('stable public API snapshot', () => {
     expect(Object.keys(modules).sort()).toEqual([
       'findModule',
       'listModules',
+      'permutation',
       'progressiveMarket',
       'requireModule',
     ]);
-    expect(modules.listModules().map((module) => module.id)).toEqual(['progressive-market']);
+    expect(modules.listModules().map((module) => module.id)).toEqual([
+      'progressive-market',
+      'permutation',
+    ]);
     expect(modules.requireModule('progressive-market').version).toBe('1.0.0');
+    expect(modules.requireModule('permutation').version).toBe('1.0.0');
     expect(() => modules.requireModule('sequential-cards')).toThrowError(
       expect.objectContaining({ code: 'UNKNOWN_MODULE' }),
     );
@@ -233,6 +239,79 @@ describe('stable public API snapshot', () => {
     ]);
     for (const banned of ['commitment', 'canonicalTranscriptBytes', 'legacyCommitment'])
       expect(banned in progressiveMarket).toBe(false);
+  });
+
+  /**
+   * A second module's surface is a contract too, and it must stay off the root.
+   *
+   * The root barrel re-exports the progressive market only because hosts written
+   * against 0.2 import it from there, and every one of those symbols is marked
+   * deprecated for exactly that reason. A module landing today has no such debt,
+   * so it is reachable through `requireModule('permutation')` and its own
+   * subpath and nowhere else — otherwise the engine/module boundary the 0.3
+   * split established would erode one module at a time.
+   */
+  it('exposes the permutation module on its own subpath and never on the root', () => {
+    expect(Object.keys(permutation).sort()).toEqual([
+      'ACCEPTED_TRANSCRIPT_SCHEMAS',
+      'MAX_ITEMS',
+      'MAX_OPEN_BETS',
+      'MIN_ITEMS',
+      'PERMUTATION_ACTIONS',
+      'PERMUTATION_BET_CODES',
+      'PERMUTATION_BOOK_SCHEMA',
+      'PERMUTATION_CHECKS',
+      'PERMUTATION_MODULE_ID',
+      'PERMUTATION_MODULE_VERSION',
+      'PERMUTATION_TRANSCRIPT_SCHEMA',
+      'PermutationBook',
+      'aetherOrderClassicReference',
+      'aetherOrderSevenReference',
+      'assertBet',
+      'assertPermutationDefinition',
+      'betAssignments',
+      'betFromParameters',
+      'betParameters',
+      'betWins',
+      'claimSignature',
+      'definePermutationGame',
+      'derivePermutationOrder',
+      'derivePermutationSteps',
+      'deserializePermutationTranscript',
+      'encodeOrder',
+      'encodeStep',
+      'enumerateInstances',
+      'enumerateOrders',
+      'fairMultiplier',
+      'freshProbability',
+      'itemBelief',
+      'linePayout',
+      'makePermutationTranscript',
+      'ordersEqual',
+      'permutation',
+      'permutationCommitmentBody',
+      'permutationFingerprint',
+      'permutationIdentity',
+      'permutationRound',
+      'permutationTranscriptToWire',
+      'price',
+      'serializePermutationTranscript',
+      'stakedSnapshotFor',
+      'stepsEqual',
+      'triadReference',
+      'verifyPermutationTranscript',
+    ]);
+    for (const leaked of [
+      'permutation',
+      'definePermutationGame',
+      'PermutationBook',
+      'aetherOrderClassicReference',
+      'makePermutationTranscript',
+    ])
+      expect(leaked in root, `${leaked} must not reach the root barrel`).toBe(false);
+    // Core stays game-agnostic: nothing about permutations, bets, or paytables.
+    for (const leaked of ['price', 'claimSignature', 'betWins', 'PermutationBook'])
+      expect(leaked in core).toBe(false);
   });
 
   it('keeps every remaining package subpath explicit', () => {

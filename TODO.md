@@ -15,7 +15,8 @@
 
 - [ ] `sequential-cards`: committed deck shuffle, reveals that eliminate outcomes to exactly zero, multi-position book with independent fair-value sells and switches.
 - [ ] `staged-survival`: N entities through S stages, a contract chosen per stage before it resolves, per-entity partial claims, banking subsets between stages.
-- [ ] `permutation`: structured permutation truth with multi-bet paytable settlement.
+- [x] `permutation`: structured permutation truth with multi-bet paytable settlement. Shipped on `platform/permutation` with no core change; see `docs/modules/permutation.md`.
+- [ ] `permutation`: the six AETHER ORDER families this version does not price (`before`, `early`, `late`, `neighbours`, `opening`, `podium`). Each needs a counting argument the pairwise-exclusive assignment model does not supply; see `docs/modules/permutation.md` §11.
 
 ## Deferred
 

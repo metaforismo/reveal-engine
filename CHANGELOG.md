@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The `permutation` lifecycle module** (`src/modules/permutation/`,
+  documented in `docs/modules/permutation.md`): a committed permutation of
+  `n` labeled items (`3 <= n <= 8`) drawn by core's seeded Fisher-Yates, settled
+  as a multi-bet ticket against a published paytable. Five bet families —
+  `full`, `slot`, `first`, `last`, `stack` — priced by **exact factorial
+  enumeration** over the orders still consistent with the revealed prefix. No
+  float, no simulation, and no core file changed: the second module landed
+  inside the `reveal-engine/module-v1` contract exactly as it stands, and §10 of
+  the module doc records the two places it came closest not to.
+- Reference adapters: `aether-order-classic` (`n = 5`) and `aether-order-seven`
+  (`n = 7`), reproducing the AETHER ORDER paytable from
+  `aether-order/docs/MATH.md` at `rho = 24/25` exactly, plus `triad` (`n = 3`)
+  at the supported floor. All three are declared as
+  `conformance.references`, so they run in `reveal-conformance` and in CI.
+- Eleven conformance checks for the module, six of them exhaustive rather than
+  sampled: `SHUFFLE_NOT_BIJECTIVE` walks every one of the `n!` Fisher-Yates draw
+  vectors, `STEP_STRUCTURE_LEAKS_TRUTH` sweeps every `n!` truth, and
+  `CLAIM_IDENTITY_NOT_BEHAVIOURAL` proves the `O(n)` claim signature groups
+  instances exactly as the `O(n!)` win set does.
+- An independent oracle suite (`tests/permutation-oracle.test.ts`): closed-form
+  factorial probabilities for every instance at `n = 5` and `n = 7`, exhaustive
+  win-counting over the whole order space, an exhaustive conditional sweep over
+  all 206 reachable prefixes at `n = 5`, and realised RTP measured by brute force
+  over every outcome. It shares no code with the module — different permutation
+  generator, its own factorials, resolve predicates written from the rules in
+  prose.
+- Frozen wire fixtures for the two new formats,
+  `permutation-transcript-v1` and `permutation-book-v1`
+  (`tests/fixtures/`, regenerated with `npm run fixtures:update`), covering a
+  settled three-line ticket with a deliberate loser.
+- Package export `./modules/permutation`, wired into `scripts/package-smoke.mjs`
+  and the public-API snapshot. The module is deliberately **not** re-exported
+  from the package root: the root's progressive-market symbols exist only as
+  deprecated 0.2 compatibility, and a module landing today has no such debt.
+
+### Changed
+
+- The module registry now lists two lifecycle modules. `listModules()` returns
+  `['progressive-market', 'permutation']`, and the snapshot tests that pin that
+  surface were extended rather than relaxed.
+
 ## 0.3.0 — 2026-07-29
 
 Platform restructuring: a game-agnostic core plus lifecycle modules as siblings.

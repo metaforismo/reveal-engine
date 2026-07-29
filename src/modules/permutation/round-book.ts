@@ -1,0 +1,616 @@
+import { fail } from '../../api/errors.js';
+import { ENGINE_LIMITS } from '../../api/limits.js';
+import { constantTimeHexEqual } from '../../core/commitment.js';
+import {
+  CommandLedger,
+  RECEIPT_WIRE_KEYS,
+  commandFingerprint,
+  fromWireReceipt,
+  toWireReceipt,
+  type Receipt,
+  type StoredReceipt,
+  type WireReceipt,
+} from '../../core/ledger.js';
+import { assertClaimBudget } from '../../core/module.js';
+import { payableWithinCap, type Payable } from '../../core/payments.js';
+import { normalizeSeed } from '../../core/random.js';
+import { add, rational, type Rational } from '../../core/rational.js';
+import {
+  assertSnapshotKeys,
+  assertSnapshotRecord,
+  assertSnapshotRevision,
+  assertSnapshotSize,
+  assertWireHex,
+  assertWireString,
+  parseSnapshotJson,
+  parseWireBigInt,
+  snapshotHash,
+} from '../../core/snapshot.js';
+import { assertBet, betFromParameters, betParameters, betWins, claimSignature } from './bets.js';
+import {
+  PERMUTATION_ACTIONS,
+  PERMUTATION_BOOK_SCHEMA,
+  type PermutationAction,
+  type PermutationBet,
+  type PermutationClaim,
+  type PermutationDefinition,
+  type PermutationOrder,
+} from './contracts.js';
+import { permutationFingerprint } from './definition.js';
+import { verifyPermutationTranscript } from './derivation.js';
+import { deserializePermutationTranscript, serializePermutationTranscript } from './transcript.js';
+import { linePayout } from './pricing.js';
+import { assertPermutationDefinition } from './validation.js';
+
+export interface PlaceRequest {
+  readonly idempotencyKey: string;
+  readonly bet: PermutationBet;
+  readonly stake: bigint;
+}
+
+export interface SettleRequest {
+  readonly idempotencyKey: string;
+  readonly revealedSeed: string;
+  readonly transcript: unknown;
+}
+
+export interface WirePermutationClaim {
+  readonly key: string;
+  readonly code: string;
+  readonly parameters: readonly number[];
+  readonly stake: string;
+}
+
+export interface PermutationBookSnapshot {
+  readonly schema: typeof PERMUTATION_BOOK_SCHEMA;
+  readonly definition: {
+    readonly id: string;
+    readonly version: string;
+    readonly fingerprint: string;
+  };
+  readonly terminal: boolean;
+  readonly ledgerRevision: number;
+  readonly stepRevision: number;
+  readonly liquidBalance: string;
+  readonly capBasisStake: string | null;
+  readonly claims: readonly WirePermutationClaim[];
+  /** Present exactly when the round is terminal; `null` otherwise. */
+  readonly settlement: { readonly order: readonly number[]; readonly commitment: string } | null;
+  readonly receipts: readonly { readonly fingerprint: string; readonly receipt: WireReceipt }[];
+  readonly snapshotHash: string;
+}
+
+function assertRequest(value: unknown, path = '$'): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    fail('CLAIM_REJECTED', 'Request must be an object', path);
+}
+
+function assertIdempotencyKey(value: unknown): asserts value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    Buffer.byteLength(value, 'utf8') > ENGINE_LIMITS.maxIdempotencyKeyBytes
+  )
+    fail('IDEMPOTENCY_CONFLICT', 'Invalid idempotency key', '$.idempotencyKey');
+}
+
+/**
+ * Per-line stake admissibility, applied identically on the live path and on
+ * restore.
+ *
+ * The quantum check is not housekeeping: `docs/modules/permutation.md` proves
+ * that `stake x multiplier` is an exact integer for every legal stake, and that
+ * proof is what makes the floor at the credit boundary a no-op rather than a
+ * truncation the player silently pays for. A stake off the quantum breaks the
+ * theorem, so it is refused rather than rounded.
+ */
+function assertLineStake(
+  definition: PermutationDefinition,
+  stake: unknown,
+  path = '$.stake',
+): asserts stake is bigint {
+  // Reported as a refused claim rather than as `INVALID_RATIONAL`: a stake that
+  // is not a positive bounded integer is a bad bet, and every other rejection
+  // on this path says so with the same code.
+  if (
+    typeof stake !== 'bigint' ||
+    stake <= 0n ||
+    stake.toString(2).length > ENGINE_LIMITS.maxBigIntBits
+  )
+    fail('CLAIM_REJECTED', 'Stake must be a positive bounded integer', path);
+  const amount = stake;
+  if (amount % definition.stakeQuantum !== 0n)
+    fail('CLAIM_REJECTED', 'Stake is not a multiple of the stake quantum', path);
+  if (amount < definition.minLineStake || amount > definition.maxLineStake)
+    fail('CLAIM_REJECTED', 'Stake is outside the per-line bounds', path);
+}
+
+/**
+ * The ticket ceiling, kept **separate** from the per-line bounds on purpose.
+ *
+ * A running total is state, and an idempotent retry must not be measured
+ * against a total that already contains the original. Splitting the two lets
+ * the per-line checks run before the ledger gate — where a malformed request
+ * should be refused whether or not it is a replay — while the cumulative one
+ * runs inside it, on the path the ledger only takes for a genuinely new
+ * command.
+ */
+function assertTicketCeiling(
+  definition: PermutationDefinition,
+  total: bigint,
+  path = '$.stake',
+): void {
+  if (total > definition.maxTicketStake)
+    fail('CLAIM_REJECTED', 'Ticket stake exceeds the round ceiling', path);
+}
+
+function placeFingerprint(bet: PermutationBet, stake: bigint): string {
+  return commandFingerprint('place', [bet.code, ...betParameters(bet), stake]);
+}
+
+/**
+ * A multi-bet round book: several independent claims on one permutation draw,
+ * settled together against the published paytable.
+ *
+ * Three properties are worth stating up front, because each one is a place where
+ * a plausible implementation would be wrong:
+ *
+ * 1. **One ledger, many positions.** Every bet is separately funded and each one
+ *    therefore raises the round's cap basis. Pinning the ceiling to the first
+ *    stake would crush a legitimate ticket: at a 10x cap, 1 chip on a loser
+ *    followed by 10,000 on a winner would pay 10 against a real claim of tens of
+ *    thousands.
+ * 2. **Claims are distinct behaviourally, not nominally.** `first {item}` and
+ *    `slot {item, 0}` win on the identical set of orders, so a ticket may carry
+ *    one of them, never both. Without that rule the per-line ceiling means
+ *    nothing — the whole budget goes onto copies of the best line, spelled
+ *    differently — and the round's maximum credit stops being a maximum.
+ * 3. **Settlement needs a proof, not an assertion.** `settle()` takes the
+ *    revealed seed and re-verifies the transcript through the module's own
+ *    verifier before a single claim is scored. A book that settled against an
+ *    unverified order would pay out whatever it was handed.
+ */
+export class PermutationBook {
+  readonly #ledger: CommandLedger;
+  readonly #claims = new Map<string, PermutationClaim>();
+  readonly #signatures = new Map<string, string>();
+  #stakedTotal = 0n;
+  #stepRevision = 0;
+  #terminal = false;
+  #settlement: { readonly order: PermutationOrder; readonly commitment: string } | undefined;
+
+  constructor(readonly definition: PermutationDefinition) {
+    assertPermutationDefinition(definition);
+    this.#ledger = new CommandLedger({ maxWinMultiple: definition.maxWinMultiple });
+  }
+
+  get claims(): readonly PermutationClaim[] {
+    return Object.freeze([...this.#claims.values()]);
+  }
+  get stakedTotal(): bigint {
+    return this.#stakedTotal;
+  }
+  get liquidBalance(): bigint {
+    return this.#ledger.liquidBalance;
+  }
+  get capBasisStake(): bigint | undefined {
+    return this.#ledger.capBasisStake;
+  }
+  get ledgerRevision(): number {
+    return this.#ledger.ledgerRevision;
+  }
+  get terminal(): boolean {
+    return this.#terminal;
+  }
+  get settledOrder(): PermutationOrder | undefined {
+    return this.#settlement?.order;
+  }
+
+  /** The exact total return if the settled order were `order`. */
+  grossFor(order: PermutationOrder): Rational {
+    return this.claims
+      .filter((claim) => betWins(this.definition, claim.bet, order))
+      .reduce((total, claim) => add(total, claim.payout), rational(0n));
+  }
+
+  async place(request: PlaceRequest): Promise<Receipt<PermutationAction>> {
+    assertRequest(request);
+    assertIdempotencyKey(request.idempotencyKey);
+    assertBet(request.bet, this.definition);
+    assertLineStake(this.definition, request.stake);
+    const bet = request.bet;
+    const payout = linePayout(this.definition, bet.code, request.stake);
+    const signature = claimSignature(this.definition, bet);
+    const fingerprint = placeFingerprint(bet, request.stake);
+    return this.#ledger.execute<PermutationAction>(request.idempotencyKey, fingerprint, () => {
+      if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
+      assertClaimBudget(this.#claims.size, this.definition.maxOpenBets);
+      // Inside the serialized section, and only for a new command: two
+      // concurrent places must not both clear a ceiling taken outside it, and a
+      // replayed one must not be charged twice against it.
+      assertTicketCeiling(this.definition, this.#stakedTotal + request.stake);
+      if (this.#signatures.has(signature))
+        fail('CLAIM_REJECTED', 'Ticket already carries this claim; raise its stake', '$.bet');
+      const receipt = this.#ledger.mint(
+        request.idempotencyKey,
+        fingerprint,
+        'place',
+        this.#stepRevision,
+        request.stake,
+        0n,
+        false,
+      );
+      // Independently funded: each bet raises the ceiling by what it risked.
+      this.#ledger.fundStake(request.stake, 'external');
+      this.#stakedTotal += request.stake;
+      this.#signatures.set(signature, request.idempotencyKey);
+      this.#claims.set(
+        request.idempotencyKey,
+        Object.freeze({
+          key: request.idempotencyKey,
+          bet: Object.freeze({ ...bet }) as PermutationBet,
+          stake: request.stake,
+          payout,
+          signature,
+        }),
+      );
+      return receipt;
+    });
+  }
+
+  async settle(request: SettleRequest): Promise<Receipt<PermutationAction>> {
+    assertRequest(request);
+    assertIdempotencyKey(request.idempotencyKey);
+    const revealedSeed = normalizeSeed(request.revealedSeed);
+    const transcript = deserializePermutationTranscript(request.transcript);
+    const fingerprint = commandFingerprint('settle', [
+      revealedSeed,
+      serializePermutationTranscript(transcript),
+    ]);
+    return this.#ledger.execute<PermutationAction>(request.idempotencyKey, fingerprint, () => {
+      if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
+      const verification = verifyPermutationTranscript(revealedSeed, this.definition, transcript);
+      if (!verification.ok)
+        fail('INVALID_TRANSCRIPT', verification.message, verification.path, {
+          verificationCode: verification.code,
+        });
+      const theoretical = this.grossFor(transcript.order);
+      const close = (result: Payable): Receipt<PermutationAction> => {
+        const receipt = this.#ledger.mint(
+          request.idempotencyKey,
+          fingerprint,
+          'settle',
+          transcript.reveals.length,
+          0n,
+          result.credited,
+          result.capped,
+        );
+        this.#terminal = true;
+        this.#stepRevision = transcript.reveals.length;
+        this.#settlement = Object.freeze({
+          order: transcript.order,
+          commitment: transcript.commitment,
+        });
+        return receipt;
+      };
+      // A round that took no stake has no ceiling to credit against, so there is
+      // nothing to pay and nothing to measure. `creditClaim` would (correctly)
+      // reject it as a state-machine bug, so the empty ticket is closed here.
+      return this.#ledger.capBasisStake === undefined
+        ? close(Object.freeze({ theoretical, credited: 0n, capped: false }))
+        : this.#ledger.creditClaim(theoretical, close);
+    });
+  }
+
+  serialize(): string {
+    return JSON.stringify(this.snapshot());
+  }
+
+  snapshot(): PermutationBookSnapshot {
+    const capBasisStake = this.#ledger.capBasisStake;
+    const base = {
+      schema: PERMUTATION_BOOK_SCHEMA,
+      definition: Object.freeze({
+        id: this.definition.id,
+        version: this.definition.version,
+        fingerprint: permutationFingerprint(this.definition),
+      }),
+      terminal: this.#terminal,
+      ledgerRevision: this.#ledger.ledgerRevision,
+      stepRevision: this.#stepRevision,
+      liquidBalance: String(this.#ledger.liquidBalance),
+      capBasisStake: capBasisStake === undefined ? null : String(capBasisStake),
+      // The claim's payout is deliberately absent: it is `stake x paytable[code]`
+      // and therefore derivable, and a money-bearing field a snapshot does not
+      // carry is a money-bearing field nobody can rewrite.
+      claims: Object.freeze(
+        this.claims.map((claim) =>
+          Object.freeze({
+            key: claim.key,
+            code: claim.bet.code,
+            parameters: Object.freeze([...betParameters(claim.bet)]),
+            stake: String(claim.stake),
+          }),
+        ),
+      ),
+      settlement:
+        this.#settlement === undefined
+          ? null
+          : Object.freeze({
+              order: Object.freeze([...this.#settlement.order]),
+              commitment: this.#settlement.commitment,
+            }),
+      receipts: Object.freeze(
+        this.#ledger.entries().map((stored) =>
+          Object.freeze({
+            fingerprint: stored.fingerprint,
+            receipt: toWireReceipt(stored.receipt),
+          }),
+        ),
+      ),
+    };
+    return Object.freeze({ ...base, snapshotHash: snapshotHash(base) });
+  }
+
+  /**
+   * Re-validates a snapshot rather than trusting it.
+   *
+   * Everything money-bearing is re-derived and reconciled, never read:
+   *
+   * - each claim's **bet and stake** are pinned by the `place` receipt's own
+   *   command fingerprint, so a rewritten ticket cannot survive its own log;
+   * - each claim's **payout** is recomputed from `(code, stake)` and the
+   *   published paytable, and is not in the snapshot at all;
+   * - the **settled credit** is recomputed by scoring the restored claims
+   *   against the recorded settled order and re-applying the cap, then compared
+   *   against the settle receipt — so rewriting the order, or the credit, or
+   *   both inconsistently, is rejected;
+   * - the **balances** are reconstructed from the receipt log and reconciled
+   *   before `restoreBalances` installs them.
+   *
+   * The checksum is not the control. Anyone able to rewrite a field can
+   * recompute the hash over it, so every tamper case in this module's tests
+   * re-seals its mutation and is judged on the validation underneath.
+   *
+   * One field is an honest exception and is documented as one: the settlement's
+   * `commitment` is a *label* naming which published proof settled this round.
+   * A snapshot cannot re-derive it — that needs the revealed seed — so restore
+   * checks its shape and nothing more. The proof of a settlement is the
+   * transcript, verified against the seed; the snapshot is reconnect state.
+   */
+  static restore(definition: PermutationDefinition, input: string | object): PermutationBook {
+    assertPermutationDefinition(definition);
+    const raw = parseSnapshotInput(input);
+    if (raw.snapshotHash !== snapshotHash({ ...raw, snapshotHash: undefined }))
+      fail('INVALID_SNAPSHOT', 'Snapshot hash is invalid', '$.snapshotHash');
+    if (
+      raw.definition.id !== definition.id ||
+      raw.definition.version !== definition.version ||
+      !constantTimeHexEqual(raw.definition.fingerprint, permutationFingerprint(definition))
+    )
+      fail('DEFINITION_MISMATCH', 'Snapshot belongs to another definition', '$.definition');
+
+    const book = new PermutationBook(definition);
+    book.#terminal = raw.terminal;
+    book.#stepRevision = assertSnapshotRevision(raw.stepRevision, '$.stepRevision');
+
+    raw.claims.forEach((entry, index) => {
+      const path = `$.claims[${index}]`;
+      const bet = betFromParameters(definition, entry.code, entry.parameters, path);
+      const stake = parseWireBigInt(entry.stake, `${path}.stake`);
+      assertLineStake(definition, stake, `${path}.stake`);
+      assertTicketCeiling(definition, book.#stakedTotal + stake, `${path}.stake`);
+      const signature = claimSignature(definition, bet);
+      if (book.#signatures.has(signature))
+        fail('INVALID_SNAPSHOT', 'Snapshot repeats a behavioural claim', `${path}.code`);
+      if (book.#claims.has(entry.key))
+        fail('INVALID_SNAPSHOT', 'Snapshot claim keys are not unique', `${path}.key`);
+      book.#signatures.set(signature, entry.key);
+      book.#stakedTotal += stake;
+      book.#claims.set(
+        entry.key,
+        Object.freeze({
+          key: entry.key,
+          bet,
+          stake,
+          payout: linePayout(definition, bet.code, stake),
+          signature,
+        }),
+      );
+    });
+    if (book.#claims.size > definition.maxOpenBets)
+      fail('INVALID_SNAPSHOT', 'Snapshot exceeds the declared claim budget', '$.claims');
+
+    const settledOrder = parseSettlementOrder(raw, definition.items.length);
+    let reconstructedLiquid = 0n;
+    let stakedTotal = 0n;
+    let placements = 0;
+    let settled = false;
+    let settleReceipt: Receipt<PermutationAction> | undefined;
+    const stored: StoredReceipt<PermutationAction>[] = raw.receipts.map((entry) => ({
+      fingerprint: entry.fingerprint,
+      receipt: fromWireReceipt<PermutationAction>(entry.receipt, PERMUTATION_ACTIONS),
+    }));
+    book.#ledger.install(stored, book.#stepRevision, (receipt) => {
+      if (receipt.action === 'place') {
+        // A permutation round has exactly one frame, so every stake is fenced at
+        // revision 0 and only the settle receipt moves it. The field carries no
+        // semantics here, which is precisely why it would otherwise be the one
+        // receipt field a snapshot could rewrite unchallenged.
+        if (
+          settled ||
+          receipt.debited <= 0n ||
+          receipt.credited !== 0n ||
+          receipt.frameRevision !== 0
+        )
+          fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
+        const claim = raw.claims[placements];
+        const restored = claim === undefined ? undefined : book.#claims.get(claim.key);
+        if (
+          claim === undefined ||
+          restored === undefined ||
+          receipt.idempotencyKey !== claim.key ||
+          receipt.debited !== restored.stake ||
+          receipt.commandFingerprint !== placeFingerprint(restored.bet, restored.stake)
+        )
+          fail('INVALID_SNAPSHOT', 'Receipt does not match the restored claim', '$.claims');
+        stakedTotal += receipt.debited;
+        placements += 1;
+      } else {
+        if (
+          settled ||
+          receipt.debited !== 0n ||
+          receipt.frameRevision !== definition.items.length - 1
+        )
+          fail('INVALID_SNAPSHOT', 'Receipt sequence violates the round state machine');
+        reconstructedLiquid += receipt.credited;
+        settleReceipt = receipt;
+        settled = true;
+      }
+    });
+
+    const capBasisStake =
+      raw.capBasisStake === null
+        ? undefined
+        : parseWireBigInt(raw.capBasisStake, '$.capBasisStake');
+    const expectedStepRevision = settled ? definition.items.length - 1 : 0;
+    if (
+      placements !== book.#claims.size ||
+      settled !== book.#terminal ||
+      settled !== (settledOrder !== undefined) ||
+      book.#stepRevision !== expectedStepRevision ||
+      (placements === 0) !== (capBasisStake === undefined) ||
+      (capBasisStake !== undefined && capBasisStake !== stakedTotal) ||
+      stakedTotal !== book.#stakedTotal
+    )
+      fail('INVALID_SNAPSHOT', 'Snapshot state invariants failed');
+    if (reconstructedLiquid !== parseWireBigInt(raw.liquidBalance, '$.liquidBalance', true))
+      fail('INVALID_SNAPSHOT', 'Snapshot accounting does not conserve liquid value');
+
+    if (settledOrder !== undefined && settleReceipt !== undefined) {
+      // The settled credit is recomputed from the restored claims and the
+      // recorded order, then capped exactly as the live path capped it: before
+      // the settle credit the round has withdrawn nothing, so the already-liquid
+      // term is zero.
+      const theoretical = book.grossFor(settledOrder);
+      const expected =
+        capBasisStake === undefined
+          ? { credited: 0n, capped: false }
+          : payableWithinCap(theoretical, capBasisStake, definition.maxWinMultiple, 0n);
+      if (settleReceipt.credited !== expected.credited || settleReceipt.capped !== expected.capped)
+        fail(
+          'INVALID_SNAPSHOT',
+          'Settled credit does not re-derive from the restored ticket and order',
+          '$.settlement.order',
+        );
+      book.#settlement = Object.freeze({
+        order: settledOrder,
+        commitment: raw.settlement?.commitment as string,
+      });
+    }
+
+    book.#ledger.restoreBalances({
+      ledgerRevision: assertSnapshotRevision(raw.ledgerRevision, '$.ledgerRevision'),
+      liquidBalance: reconstructedLiquid,
+      capBasisStake,
+    });
+    return book;
+  }
+}
+
+/** Validates the settled order without deciding whether it is *the* order. */
+function parseSettlementOrder(
+  raw: PermutationBookSnapshot,
+  size: number,
+): PermutationOrder | undefined {
+  if (raw.settlement === null) return undefined;
+  const order = raw.settlement.order;
+  if (!Array.isArray(order) || order.length !== size)
+    fail('INVALID_SNAPSHOT', 'Settled order does not match the draw size', '$.settlement.order');
+  const seen = new Set<number>();
+  order.forEach((item, index) => {
+    if (!Number.isSafeInteger(item) || item < 0 || item >= size || seen.has(item))
+      fail(
+        'INVALID_SNAPSHOT',
+        'Settled order is not a permutation',
+        `$.settlement.order[${index}]`,
+      );
+    seen.add(item);
+  });
+  return Object.freeze([...order]);
+}
+
+function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
+  const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
+  const candidate = assertSnapshotRecord(value, '$');
+  assertSnapshotKeys(
+    candidate,
+    [
+      'schema',
+      'definition',
+      'terminal',
+      'ledgerRevision',
+      'stepRevision',
+      'liquidBalance',
+      'capBasisStake',
+      'claims',
+      'settlement',
+      'receipts',
+      'snapshotHash',
+    ],
+    '$',
+  );
+  if (
+    candidate.schema !== PERMUTATION_BOOK_SCHEMA ||
+    typeof candidate.terminal !== 'boolean' ||
+    !Number.isSafeInteger(candidate.ledgerRevision) ||
+    !Number.isSafeInteger(candidate.stepRevision) ||
+    !Array.isArray(candidate.claims) ||
+    !Array.isArray(candidate.receipts)
+  )
+    fail('INVALID_SNAPSHOT', 'Snapshot scalar fields are invalid', '$');
+
+  const definition = assertSnapshotRecord(candidate.definition, '$.definition');
+  assertSnapshotKeys(definition, ['id', 'version', 'fingerprint'], '$.definition');
+  assertWireString(definition.id, '$.definition.id');
+  assertWireString(definition.version, '$.definition.version');
+  assertWireHex(definition.fingerprint, '$.definition.fingerprint');
+
+  assertWireString(candidate.liquidBalance, '$.liquidBalance');
+  if (candidate.capBasisStake !== null)
+    assertWireString(candidate.capBasisStake, '$.capBasisStake');
+
+  if (candidate.claims.length > ENGINE_LIMITS.maxRoundClaims)
+    fail('INVALID_SNAPSHOT', 'Claims must be a bounded array', '$.claims');
+  candidate.claims.forEach((item, index) => {
+    const claim = assertSnapshotRecord(item, `$.claims[${index}]`);
+    assertSnapshotKeys(claim, ['key', 'code', 'parameters', 'stake'], `$.claims[${index}]`);
+    assertWireString(claim.key, `$.claims[${index}].key`);
+    assertWireString(claim.code, `$.claims[${index}].code`);
+    assertWireString(claim.stake, `$.claims[${index}].stake`);
+    if (!Array.isArray(claim.parameters))
+      fail('INVALID_SNAPSHOT', 'Bet parameters must be an array', `$.claims[${index}].parameters`);
+  });
+
+  if (candidate.settlement !== null) {
+    const settlement = assertSnapshotRecord(candidate.settlement, '$.settlement');
+    assertSnapshotKeys(settlement, ['order', 'commitment'], '$.settlement');
+    if (!Array.isArray(settlement.order))
+      fail('INVALID_SNAPSHOT', 'Settled order must be an array', '$.settlement.order');
+    assertWireHex(settlement.commitment, '$.settlement.commitment');
+  }
+
+  if (candidate.receipts.length > ENGINE_LIMITS.maxReceipts)
+    fail('INVALID_SNAPSHOT', 'Receipts must be a bounded array', '$.receipts');
+  candidate.receipts.forEach((item, index) => {
+    const entry = assertSnapshotRecord(item, `$.receipts[${index}]`);
+    assertSnapshotKeys(entry, ['fingerprint', 'receipt'], `$.receipts[${index}]`);
+    assertWireHex(entry.fingerprint, `$.receipts[${index}].fingerprint`);
+    const receipt = assertSnapshotRecord(entry.receipt, `$.receipts[${index}].receipt`);
+    assertSnapshotKeys(receipt, RECEIPT_WIRE_KEYS, `$.receipts[${index}].receipt`);
+  });
+
+  assertWireHex(candidate.snapshotHash, '$.snapshotHash');
+  assertSnapshotSize(candidate);
+  return candidate as unknown as PermutationBookSnapshot;
+}

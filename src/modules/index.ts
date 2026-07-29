@@ -1,5 +1,6 @@
 import { fail } from '../api/errors.js';
 import type { LifecycleModule } from '../core/module.js';
+import { permutation } from './permutation/module.js';
 import { progressiveMarket } from './progressive-market/module.js';
 
 /**
@@ -11,6 +12,7 @@ import { progressiveMarket } from './progressive-market/module.js';
  */
 const REGISTRY: readonly LifecycleModule[] = Object.freeze([
   progressiveMarket as unknown as LifecycleModule,
+  permutation as unknown as LifecycleModule,
 ]);
 
 export function listModules(): readonly LifecycleModule[] {
@@ -27,5 +29,5 @@ export function requireModule(id: string): LifecycleModule {
   return module;
 }
 
-export { progressiveMarket };
+export { permutation, progressiveMarket };
 export type { LifecycleModule };

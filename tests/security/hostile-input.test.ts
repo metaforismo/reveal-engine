@@ -29,6 +29,17 @@ import {
   deserializeTranscript,
   transcriptToWire,
 } from '../../src/modules/progressive-market/transcript.js';
+import {
+  aetherOrderClassicReference,
+  derivePermutationOrder,
+  deserializePermutationTranscript,
+  makePermutationTranscript,
+  permutation,
+  permutationFingerprint,
+  permutationTranscriptToWire,
+  PermutationBook,
+  price,
+} from '../../src/modules/permutation/index.js';
 import { seed } from '../helpers.js';
 
 describe('hostile input and failure taxonomy', () => {
@@ -198,6 +209,95 @@ describe('core wire helpers fail closed on attacker-shaped input', () => {
   it.each([null, undefined, 'x', 5, [1, 'x'], [{}]])('weight helpers reject %j', (weights) => {
     expect(captureError(() => weightGcd(weights as never))).toBeInstanceOf(RevealEngineError);
     expect(captureError(() => reduceWeights(weights as never))).toBeInstanceOf(RevealEngineError);
+  });
+});
+
+/**
+ * The same posture, for the second lifecycle module.
+ *
+ * A module is only as safe as its untrusted-input boundary, and this repository
+ * has two of them now. Every entry point a hostile payload can reach —
+ * `fromWire`, `verify`, `restore`, and both book commands — must answer with a
+ * typed `RevealEngineError` and a path, never with a `TypeError` from three
+ * frames down.
+ */
+describe('permutation module fails closed on hostile input', () => {
+  const definition = aetherOrderClassicReference;
+  const transcript = makePermutationTranscript(seed(1), definition, 'security');
+  const wire = permutationTranscriptToWire(transcript) as unknown as Record<string, unknown>;
+
+  it.each([null, undefined, 0, 'x', [], {}, { schema: 'permutation/v9' }, Object.create(null)])(
+    'verifies hostile transcript %# to a typed failure rather than throwing',
+    (input) => {
+      const result = permutation.verify(seed(1), definition, input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(['INVALID_TRANSCRIPT', 'UNSUPPORTED_VERSION']).toContain(result.code);
+    },
+  );
+
+  it.each([
+    ['unknown field', { ...wire, surprise: true }],
+    ['prototype-polluting key', JSON.parse(`{"__proto__":{"polluted":true},"schema":"x"}`)],
+    ['order that is not a permutation', { ...wire, order: [0, 0, 1, 2, 3] }],
+    ['order of the wrong length', { ...wire, order: [0, 1, 2] }],
+    ['reveals out of settle order', { ...wire, reveals: [{ position: 3, item: 0 }] }],
+    ['non-integer item', { ...wire, order: [0, 1, 2, 3, 4.5] }],
+    ['commitment that is not hex', { ...wire, commitment: 'z'.repeat(64) }],
+  ])('rejects a malformed transcript body: %s', (_label, input) => {
+    const error = captureError(() => deserializePermutationTranscript(input));
+    expect(error).toBeInstanceOf(RevealEngineError);
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect({}.hasOwnProperty.call({}, 'polluted')).toBe(false);
+  });
+
+  it.each([null, undefined, 0, 'x', [], {}, '{"schema":1}'])(
+    'restores hostile snapshot %# to a typed INVALID_SNAPSHOT',
+    (input) => {
+      const error = captureError(() => PermutationBook.restore(definition, input as never));
+      expect(error).toBeInstanceOf(RevealEngineError);
+      expect((error as RevealEngineError).code).toBe('INVALID_SNAPSHOT');
+    },
+  );
+
+  it.each([null, undefined, 0, 'x', [], {}, { idempotencyKey: 'k' }, { bet: null, stake: 25n }])(
+    'refuses hostile book command %# without dereferencing it',
+    async (request) => {
+      const book = new PermutationBook(definition);
+      await expect(book.place(request as never)).rejects.toBeInstanceOf(RevealEngineError);
+      await expect(book.settle(request as never)).rejects.toBeInstanceOf(RevealEngineError);
+    },
+  );
+
+  it.each([null, undefined, 0, 'x', [], {}, { items: [] }])(
+    'refuses hostile definition %# at every entry point',
+    (candidate) => {
+      for (const operation of [
+        () => permutationFingerprint(candidate as never),
+        () => new PermutationBook(candidate as never),
+        () => derivePermutationOrder(seed(1), candidate as never, 'r'),
+        () => price(candidate as never, [], { code: 'first', item: 0 }),
+      ]) {
+        const error = captureError(operation);
+        expect(error).toBeInstanceOf(RevealEngineError);
+        expect(error).not.toBeInstanceOf(TypeError);
+      }
+    },
+  );
+
+  it('never lets a settlement run against an unverified proof', async () => {
+    const book = new PermutationBook(definition);
+    await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n });
+    const forgeries: readonly Record<string, unknown>[] = [
+      { ...wire, commitment: '0'.repeat(64) },
+      { ...wire, order: [...(wire.order as number[])].reverse() },
+      { ...wire, roundId: 'another-round' },
+    ];
+    for (const [index, forged] of forgeries.entries())
+      await expect(
+        book.settle({ idempotencyKey: `s-${index}`, revealedSeed: seed(1), transcript: forged }),
+      ).rejects.toBeInstanceOf(RevealEngineError);
+    expect(book.terminal).toBe(false);
+    expect(book.liquidBalance).toBe(0n);
   });
 });
 
