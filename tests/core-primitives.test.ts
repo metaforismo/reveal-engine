@@ -278,6 +278,15 @@ describe('shared command ledger', () => {
     expect(() =>
       book.restoreBalances({ ledgerRevision: 0, liquidBalance: 101n, capBasisStake: 10n }),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+    // No stake means no ceiling, so there is no amount of value a round with no
+    // basis may legitimately hold — an unguarded `undefined` basis would
+    // otherwise skip the cap check entirely.
+    expect(() =>
+      book.restoreBalances({ ledgerRevision: 0, liquidBalance: 1n, capBasisStake: undefined }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+    expect(() =>
+      book.restoreBalances({ ledgerRevision: 0, liquidBalance: 0n, capBasisStake: undefined }),
+    ).not.toThrow();
   });
 
   it('rejects a malformed idempotency key and an invalid cap configuration', async () => {

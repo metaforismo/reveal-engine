@@ -371,10 +371,11 @@ export class CommandLedger {
       fail('INVALID_SNAPSHOT', 'Ledger revision does not match the receipt log');
     if (state.liquidBalance < 0n)
       fail('INVALID_SNAPSHOT', 'Snapshot accounting does not conserve liquid value');
-    if (
-      state.capBasisStake !== undefined &&
-      state.liquidBalance > state.capBasisStake * this.#maxWinMultiple
-    )
+    if (state.capBasisStake === undefined) {
+      // No stake, no ceiling, and therefore no value the round could have won.
+      if (state.liquidBalance > 0n)
+        fail('INVALID_SNAPSHOT', 'Snapshot holds value in a round that took no stake');
+    } else if (state.liquidBalance > state.capBasisStake * this.#maxWinMultiple)
       fail('INVALID_SNAPSHOT', 'Snapshot exceeds the chain cap');
     this.#ledgerRevision = state.ledgerRevision;
     this.#liquidBalance = state.liquidBalance;
