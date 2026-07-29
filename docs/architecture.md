@@ -34,12 +34,17 @@ existing import keeps working; new code should use
   `uniformPermutation` (seeded Fisher-Yates for deck shuffles and ordering
   truths), and `RandomTape` (a recorded, replayable expansion of one seed, for
   lifecycles whose randomness interleaves with logged player choices).
-- `commitment.ts` — `sealCommitment(seed, body)`. A module supplies canonical
-  bytes; core decides how a seed binds them.
+- `combinatorics.ts` — `factorial`, `fallingFactorial`, `countingProbability`:
+  exact counting for a truth space too large to flatten into a weight vector, so
+  a paytable over orderings is priced rather than approximated.
+- `commitment.ts` — `sealCommitment(seed, body)` and `sealSeedCommitment(seed,
+binding)`, the pre-commitment a round publishes before it has a body to seal.
+  A module supplies canonical bytes; core decides how a seed binds them.
 - `payments.ts` — floor rounding and the chain cap.
 - `ledger.ts` — `CommandLedger`: one command at a time, an idempotency key bound
   to its exact payload fingerprint, a receipt minted before state mutates, and a
-  cap basis fixed by the round's first stake.
+  cap basis that accumulates externally funded stakes while recycled winnings
+  leave it untouched. One ledger per round, however many positions it holds.
 - `snapshot.ts` — strict, fail-closed reconnect wire helpers.
 - `verification.ts` — the six-code verification taxonomy and the classifier that
   keeps incidental exceptions from leaking.
@@ -48,6 +53,13 @@ existing import keeps working; new code should use
 
 Exact values stay reduced rational BigInts. A claim holds a rational contingent
 payout; only liquidation or settlement calls payable rounding and the cap.
+
+The round-wide money invariant is `liquidBalance <= capBasisStake *
+maxWinMultiple`, maintained at every credit boundary and re-checked on restore.
+The basis is the sum of what the player actually brought in: externally funded
+stakes accumulate into it, recycled winnings never do. That is what lets one
+round hold several independently funded positions without either crushing the
+later ones or letting a win compound the ceiling.
 
 The step (frame) revision and the ledger revision are separate monotonic
 counters, so a duplicate command cannot create a stale price and a new step

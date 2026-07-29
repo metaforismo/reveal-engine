@@ -47,7 +47,14 @@ never describes payable credits as exact theoretical equality.
 
 `deriveMaxContinuations(roundRtp, rtpFloor)` returns the largest continuation
 count `n` for which `r^(n+1)` still clears the floor, computed in exact
-rationals. It is a configuration helper, not a ride ledger: continuation
-economics remain outside the theorem, and core validates continuation
-configuration without implementing a production ride state machine. An adopter
-must model and test that separately.
+rationals. A base round already below its own floor is rejected rather than
+reported as zero continuations, so "no rides permitted" and "your base game
+violates its floor" are distinguishable answers.
+
+`RoundBook.open` enforces the derived count: a re-entry beyond
+`risk.continuation.maxRides` is `OPEN_REJECTED`. What that buys is a bound on
+how many times a round may be re-entered — **not** a guarantee that a
+deployment's realised RTP clears the floor. The exponent model assumes each ride
+is independently priced at `r` and ignores the sell spread, the cap, and player
+behaviour. Continuation economics remain outside the theorem, and an adopter
+must model and test them separately.

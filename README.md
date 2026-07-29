@@ -19,11 +19,14 @@ or player-facing copy.
 ## What it is
 
 - **A shared core.** Seeded rejection sampling, commit-reveal sealing, exact
-  rational BigInt math, payable floors and win caps, a round command ledger with
-  idempotency and frame fencing, and hostile-input-safe wire codecs.
+  rational BigInt math, exact combinatorial counting, payable floors and win
+  caps, a round command ledger with idempotency and frame fencing, and
+  hostile-input-safe wire codecs.
 - **Lifecycle modules on top.** A module decides what the hidden truth is, what
   a step reveals, what a player can claim, and how a round settles. Core decides
-  nothing about the game.
+  nothing about the game. The truth can be a scalar, a permutation, or a
+  recorded random tape; steps can consume player decisions; a round can hold
+  many independently funded positions and settle them partially.
 - **Verifiable by re-derivation, not by assertion.** `reveal-verify` takes a
   transcript and a revealed seed and re-derives the round from scratch. Frozen
   wire fixtures are re-verified on every test run.
@@ -45,8 +48,10 @@ applies. Changing an adapter, a rounding rule, a cap, storage, or a callback can
 invalidate everything measured here.
 
 One limitation worth stating up front: deterministic seed-derived truth stops an
-operator from choosing the outcome _after_ the seed is committed. It does not
-stop an operator from grinding many seeds _before_ publishing one. That is a
+operator from choosing the outcome _after_ the seed is committed, and for a
+round whose steps depend on player decisions the two-phase commitment stops an
+operator from choosing the seed after seeing a decision. Neither stops an
+operator from grinding many seeds _before_ publishing one. That is a
 seed-custody and publication-ordering problem, and it lives outside this
 library. See [`docs/threat-model.md`](docs/threat-model.md).
 
@@ -66,6 +71,15 @@ library. See [`docs/threat-model.md`](docs/threat-model.md).
 The contract every module implements is documented in
 [`docs/lifecycle-modules.md`](docs/lifecycle-modules.md) and typed in
 `src/core/module.ts`.
+
+The three `next` modules are not built yet, but the properties that make them
+hard are already executable. `tests/support/ordering-fixture-module.ts` carries
+the permutation truth, the reveals that drive an outcome to posterior exactly
+zero, the combinatorial paytable, and the several simultaneous positions;
+`tests/support/staged-survival-fixture-module.ts` carries the per-stage decision
+logged before the stage resolves, the seed-committed random tape, and the
+per-entity partial claims. Both are test-only modules, not games — they exist so
+the contract is judged against shapes its first client does not have.
 
 ## Quickstart
 
@@ -120,19 +134,25 @@ const result = lifecycle.verify(seed, definition, transcript); // {ok: true, ...
 Four independent layers, all reproducible:
 
 1. **Re-derivation.** `reveal-verify <transcript.json> <seed>` re-derives truth,
-   evidence, and commitment and compares in constant time. It returns one of six
-   typed failure codes — never a parser stack trace.
-2. **Frozen wire fixtures.** `commit-v2`, `transcript-v1`, `transcript-v2`,
-   `receipt-v1`, and `round-book-v1` are pinned. A known-answer commitment
-   vector and both transcript fixtures are re-verified on every run; changing an
-   encoding without changing a version breaks the build.
+   evidence, and commitment and compares in constant time. It returns a typed
+   failure code — never a parser stack trace.
+2. **Frozen wire fixtures.** `transcript-v1`, `transcript-v2`, `receipt-v1`, and
+   `round-book-v1` are committed files under `tests/fixtures/`, and a
+   known-answer `commit-v2` vector is pinned in the proof-vector tests. Each one
+   is rebuilt from its seed on every run and compared field for field against
+   the committed bytes, so changing an encoding without changing a version
+   breaks the build. (This is a real freeze, not a runtime round trip: a round
+   trip moves both sides of the comparison together and would accept the
+   change.) The seeded stress workload's `correctnessDigest` is likewise
+   compared against its committed baseline rather than merely printed.
 3. **Oracles, not simulations.** Posterior and pricing are cross-checked against
    an independent raw-weight fraction oracle, and the within-round strategy
    theorem is proved by exhaustive enumeration over every two-tick binary path
    for hold, sell, and adaptive switch policies. Monte Carlo is only ever a
    sanity cross-check.
-4. **Mechanical conformance.** `reveal-conformance` sweeps every truth for
-   deterministic seeds and rejects definitions that are non-deterministic,
+4. **Mechanical conformance.** `reveal-conformance` runs every registered
+   module against every reference definition it declares, sweeping every truth
+   for deterministic seeds, and rejects definitions that are non-deterministic,
    mutable, unfrozen, non-normalised, or that leak the truth through the
    _structure_ of their reveal schedule.
 
@@ -140,6 +160,12 @@ Plus hostile-input tests (malformed seeds, oversized payloads, non-canonical
 BigInts, unknown fields, tampered commitments, cross-adapter confusion), race
 tests (concurrent duplicate commands, sell versus settle), and snapshot-tamper
 tests.
+
+The contract itself is held to the same standard. Two test-only modules under
+`tests/support/` — a permutation/paytable one and a choice-timed survival one —
+implement the contract without being games, so it is proved by something other
+than its first client. They are what keeps claims like "the truth can be an
+ordering" or "steps can depend on decisions" executable rather than aspirational.
 
 Latest local evidence, including test counts and synthetic throughput, is in
 [`docs/evidence-ledger.md`](docs/evidence-ledger.md).

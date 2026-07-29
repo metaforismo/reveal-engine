@@ -15,6 +15,24 @@ Protected assets are the unrevealed seed, one precommitted truth/step transcript
 
 The library assumes a cryptographically random 32-byte seed committed before actionable player information. Deterministic weighted truth derivation prevents post-seed truth selection but does **not** prevent an operator from grinding many seeds before publishing one. Production designs need auditable seed generation, publication ordering, retention, and preferably external/client entropy or an independently verifiable RNG source.
 
+### Rounds whose transcript depends on player decisions
+
+A module with `choiceTiming: 'before-step'` cannot publish a body commitment up front: its transcript does not exist until the round ends, because the steps are a function of the decisions. The commitment scheme is therefore two-phase, and `defineLifecycleModule()` refuses to build such a module without it.
+
+1. **Seed pre-commitment**, published before the round accepts its first decision: `sealSeedCommitment(seed, {moduleId, definitionId, definitionFingerprint, roundId, proofVersion})`. It binds the seed and the frozen economics and discloses nothing.
+2. **Body commitment**, published at settlement over truth, steps, **and the logged choice log**, and re-derived by the verifier from the revealed seed.
+
+Each phase closes a distinct attack, and neither substitutes for the other:
+
+| Attack story                                                                | Closed by                                                                                                      |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Operator picks the seed after seeing the player's decision                  | phase 1: the seed hash was published when no decision existed                                                  |
+| Operator re-settles one published commitment under a different decision log | phase 2: the body binds every logged choice, so the second settlement's commitment differs                     |
+| Operator claims a draw the tape never produced                              | `RandomTape` records every draw by `(label, counter, modulus)` and digests them into the body                  |
+| Operator grinds many seeds and publishes the convenient one                 | **not closed here.** Same residual risk as every other round; it is a custody and publication-ordering control |
+
+`RandomTape` proves the draws are one seed's expansion, in order. It says nothing about _when_ that seed was chosen, which is exactly why phase 1 exists.
+
 ## Attack Surface, Mitigations, and Attacker Stories
 
 | Attack story                                                         | Control / residual boundary                                                                                                         |
@@ -28,7 +46,9 @@ The library assumes a cryptographically random 32-byte seed committed before act
 | Oversized transcript/BigInt/event/key denial of service              | public byte/count/bit limits and validation before derivation/hashing where possible                                                |
 | Stale or out-of-order price/callback                                 | monotonic frame fence and proof-bound settlement                                                                                    |
 | Duplicate, re-entrant, or cross-action retry                         | serialized action queue plus command-bound idempotency fingerprint                                                                  |
-| Sell/re-entry cap bypass                                             | first-entry cap basis persists; self-financing re-entry; already-liquid value reduces remaining credit cap                          |
+| Sell/re-entry cap bypass                                             | recycled stakes never grow the cap basis; re-entry must be self-financing; already-liquid value reduces the remaining credit cap    |
+| Multi-position round paying above its ceiling                        | only externally funded stakes grow the basis, and `liquidBalance <= capBasisStake * maxWinMultiple` holds across every claim        |
+| Settlement proof from a different decision sequence                  | the commitment body binds the choice log, and a book refuses a proof whose choices are not the ones it played                       |
 | Exception opens an FSM terminal hole                                 | validate and compute receipt before state mutation; atomicity regressions                                                           |
 | Reconnect state or receipt tampering                                 | snapshot checksum, definition binding, step replay, receipt/accounting/cap validation; production still needs authenticated storage |
 | Tone/compliance logic changes math                                   | no presentation, content, jurisdiction, or compliance API exists in core                                                            |

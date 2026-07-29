@@ -59,9 +59,17 @@ exceptions. It returns either `{ok: true}` or a failure code:
 
 - `INVALID_TRANSCRIPT`
 - `UNSUPPORTED_VERSION`
-- `ADAPTER_MISMATCH`
+- `DEFINITION_MISMATCH` — the game-agnostic code for "this proof belongs to
+  another definition"
+- `ADAPTER_MISMATCH` — the progressive market's older spelling of the same
+  thing, retained because hosts branch on it
 - `DERIVATION_FAILED`
 - `TRANSCRIPT_MISMATCH`
 - `COMMITMENT_MISMATCH`
 
 `verifyTranscript()` is the boolean compatibility wrapper.
+
+A module with `choiceTiming` other than `none` additionally publishes a seed
+pre-commitment (`transcript.seedCommitment`) before the round accepts a
+decision, and its verifier re-derives that first. See
+[`lifecycle-modules.md`](lifecycle-modules.md).
