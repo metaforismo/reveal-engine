@@ -90,12 +90,17 @@ export function assertBet(
       if (!Array.isArray(bet.order) || bet.order.length !== n)
         fail('CLAIM_REJECTED', 'A full-order bet must name every position', `${path}.order`);
       const seen = new Set<number>();
-      bet.order.forEach((item, index) => {
+      // Indexed rather than `forEach`, which skips holes: `new Array(n)` has the
+      // right length and no own indices, so a sparse order would sail through
+      // every element check and only surface later as a `TypeError` from inside
+      // the counting loop.
+      for (let index = 0; index < bet.order.length; index += 1) {
+        const item = bet.order[index];
         assertItem(definition, item, `${path}.order[${index}]`);
-        if (seen.has(item))
+        if (seen.has(item as number))
           fail('CLAIM_REJECTED', 'A full-order bet repeats an item', `${path}.order[${index}]`);
-        seen.add(item);
-      });
+        seen.add(item as number);
+      }
       return;
     }
     case 'slot':
@@ -241,16 +246,20 @@ export function betParameters(bet: PermutationBet): readonly number[] {
 export function betFromParameters(
   definition: PermutationDefinition,
   code: unknown,
-  parameters: readonly unknown[],
+  parameters: unknown,
   path = '$.bet',
 ): PermutationBet {
   assertDrawShape(definition, '$.definition');
   const n = definition.items.length;
-  const numbers = parameters.map((value, index) => {
+  if (!Array.isArray(parameters)) fail('CLAIM_REJECTED', 'Bet parameters must be an array', path);
+  // Indexed, so a hole is read as `undefined` and refused rather than skipped.
+  const numbers: number[] = [];
+  for (let index = 0; index < parameters.length; index += 1) {
+    const value = parameters[index];
     if (!Number.isSafeInteger(value))
       fail('CLAIM_REJECTED', 'Bet parameter is not an integer', `${path}[${index}]`);
-    return value as number;
-  });
+    numbers.push(value as number);
+  }
   const arity = (expected: number): void => {
     if (numbers.length !== expected)
       fail('CLAIM_REJECTED', 'Bet parameter count does not match its code', path);

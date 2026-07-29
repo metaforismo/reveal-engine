@@ -153,6 +153,24 @@ export const ACCEPTED_TRANSCRIPT_SCHEMAS: readonly string[] = Object.freeze([
   PERMUTATION_TRANSCRIPT_SCHEMA,
 ]);
 
+/**
+ * What a settled round records about the proof that closed it.
+ *
+ * The revealed seed is here on purpose. Once a round is terminal the seed is
+ * public — revealing it is the whole point of commit-reveal — and carrying it
+ * turns the snapshot from something that *asserts* a settled order into
+ * something a restore can **re-derive** one. Without it, a snapshot could name
+ * any order whose ticket happened to credit the same amount, and the checksum
+ * would say nothing about it. See `PermutationBook.restore`.
+ */
+export interface PermutationSettlement {
+  readonly roundId: string;
+  /** 32 bytes of lowercase hex, published when the round settled. */
+  readonly revealedSeed: string;
+  readonly order: PermutationOrder;
+  readonly commitment: string;
+}
+
 /** One open bet on the round book. `payout` is always recomputed, never trusted. */
 export interface PermutationClaim {
   readonly key: string;

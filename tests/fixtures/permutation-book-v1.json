@@ -36,6 +36,8 @@
       }
     ],
     "settlement": {
+      "roundId": "frozen-permutation-round",
+      "revealedSeed": "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
       "order": [3, 1, 0, 4, 2],
       "commitment": "c94ede35a41dd1df4bab55d5ecb8784c8b3a9c53282564f950502d813bbff090"
     },
@@ -101,6 +103,6 @@
         }
       }
     ],
-    "snapshotHash": "d836d7932304c6d607a1c6464418946c5f51d0f15016a3a4d49f17b78e63d2cc"
+    "snapshotHash": "15dacdbcb8b632f5000b5d8052ae628406220eafc5572dd249ebb780bd719ac8"
   }
 }

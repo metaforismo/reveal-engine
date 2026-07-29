@@ -111,11 +111,19 @@ function assertOrder(
   if (!Array.isArray(order) || order.length !== size)
     fail('DERIVATION_FAILED', 'Truth must name every position exactly once', path);
   const seen = new Set<number>();
-  order.forEach((item, position) => {
-    if (!Number.isSafeInteger(item) || item < 0 || item >= size || seen.has(item as number))
+  // Indexed rather than `forEach`, which skips holes and would let `new
+  // Array(n)` through with the right length and no entries at all.
+  for (let position = 0; position < size; position += 1) {
+    const item: unknown = order[position];
+    if (
+      !Number.isSafeInteger(item) ||
+      (item as number) < 0 ||
+      (item as number) >= size ||
+      seen.has(item as number)
+    )
       fail('DERIVATION_FAILED', 'Truth is not a permutation of the items', `${path}[${position}]`);
     seen.add(item as number);
-  });
+  }
 }
 
 /**
@@ -126,35 +134,54 @@ function assertOrder(
  * description of it that could drift.
  */
 export function encodeOrder(order: PermutationOrder): readonly CanonicalField[] {
-  return Object.freeze([order.length, ...order]);
+  if (!Array.isArray(order)) fail('DERIVATION_FAILED', 'Expected an order to encode', '$.truth');
+  const fields: CanonicalField[] = [order.length];
+  for (let position = 0; position < order.length; position += 1) {
+    const item: unknown = order[position];
+    // `encodeFields` has no opinion about what a truth is and would raise a raw
+    // `TypeError` on a hole. The encoder is the last place before the bytes, so
+    // it refuses rather than hands one down.
+    if (!Number.isSafeInteger(item))
+      fail('DERIVATION_FAILED', 'Order entry is not an integer', `$.truth[${position}]`);
+    fields.push(item as number);
+  }
+  return Object.freeze(fields);
 }
 
 /** The declared step encoder; composed by `commitmentBody`, exactly as above. */
 export function encodeStep(step: PermutationStep): readonly CanonicalField[] {
+  if (
+    typeof step !== 'object' ||
+    step === null ||
+    !Number.isSafeInteger(step.position) ||
+    !Number.isSafeInteger(step.item)
+  )
+    fail('DERIVATION_FAILED', 'Expected a reveal to encode', '$.steps');
   return Object.freeze([step.position, step.item]);
 }
 
 export function ordersEqual(left: PermutationOrder, right: PermutationOrder): boolean {
-  return (
-    Array.isArray(left) &&
-    Array.isArray(right) &&
-    left.length === right.length &&
-    left.every((item, position) => item === right[position])
-  );
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  // Indexed, not `every`: a sparse array skips its holes, so two arrays that
+  // agree only on the entries that exist would compare equal — and this
+  // comparison is a verification phase.
+  for (let position = 0; position < left.length; position += 1)
+    if (left[position] !== right[position]) return false;
+  return true;
 }
 
 export function stepsEqual(
   left: readonly PermutationStep[],
   right: readonly PermutationStep[],
 ): boolean {
-  return (
-    Array.isArray(left) &&
-    Array.isArray(right) &&
-    left.length === right.length &&
-    left.every(
-      (step, index) => step.position === right[index]?.position && step.item === right[index]?.item,
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1)
+    if (
+      left[index]?.position !== right[index]?.position ||
+      left[index]?.item !== right[index]?.item
     )
-  );
+      return false;
+  return true;
 }
 
 /**
@@ -176,7 +203,8 @@ export function permutationCommitmentBody(
   assertOrder(definition, order);
   if (!Array.isArray(steps) || steps.length !== definition.items.length - 1)
     fail('DERIVATION_FAILED', 'A round seals exactly one reveal per settled position', '$.steps');
-  steps.forEach((step, index) => {
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
     if (
       typeof step !== 'object' ||
       step === null ||
@@ -186,7 +214,7 @@ export function permutationCommitmentBody(
       step.item >= definition.items.length
     )
       fail('DERIVATION_FAILED', 'Reveals must be a prefix in settle order', `$.steps[${index}]`);
-  });
+  }
   return encodeFields([
     'Axiom Games Reveal Engine permutation commitment',
     COMMITMENT_VERSION,

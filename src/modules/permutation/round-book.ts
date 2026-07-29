@@ -35,9 +35,15 @@ import {
   type PermutationClaim,
   type PermutationDefinition,
   type PermutationOrder,
+  type PermutationSettlement,
+  type PermutationTranscript,
 } from './contracts.js';
 import { permutationFingerprint } from './definition.js';
-import { verifyPermutationTranscript } from './derivation.js';
+import {
+  makePermutationTranscript,
+  ordersEqual,
+  verifyPermutationTranscript,
+} from './derivation.js';
 import { deserializePermutationTranscript, serializePermutationTranscript } from './transcript.js';
 import { linePayout } from './pricing.js';
 import { assertPermutationDefinition } from './validation.js';
@@ -75,7 +81,12 @@ export interface PermutationBookSnapshot {
   readonly capBasisStake: string | null;
   readonly claims: readonly WirePermutationClaim[];
   /** Present exactly when the round is terminal; `null` otherwise. */
-  readonly settlement: { readonly order: readonly number[]; readonly commitment: string } | null;
+  readonly settlement: {
+    readonly roundId: string;
+    readonly revealedSeed: string;
+    readonly order: readonly number[];
+    readonly commitment: string;
+  } | null;
   readonly receipts: readonly { readonly fingerprint: string; readonly receipt: WireReceipt }[];
   readonly snapshotHash: string;
 }
@@ -149,6 +160,17 @@ function placeFingerprint(bet: PermutationBet, stake: bigint): string {
 }
 
 /**
+ * The settle command's identity: the revealed seed and the whole transcript.
+ *
+ * One definition, used by `settle()` and by `restore()`, so the fingerprint a
+ * snapshot is checked against is the same function that minted it rather than a
+ * second spelling of the same idea.
+ */
+function settleFingerprint(revealedSeed: string, transcript: PermutationTranscript): string {
+  return commandFingerprint('settle', [revealedSeed, serializePermutationTranscript(transcript)]);
+}
+
+/**
  * A multi-bet round book: several independent claims on one permutation draw,
  * settled together against the published paytable.
  *
@@ -177,7 +199,7 @@ export class PermutationBook {
   #stakedTotal = 0n;
   #stepRevision = 0;
   #terminal = false;
-  #settlement: { readonly order: PermutationOrder; readonly commitment: string } | undefined;
+  #settlement: PermutationSettlement | undefined;
 
   constructor(readonly definition: PermutationDefinition) {
     assertPermutationDefinition(definition);
@@ -206,8 +228,15 @@ export class PermutationBook {
     return this.#settlement?.order;
   }
 
-  /** The exact total return if the settled order were `order`. */
+  /**
+   * The exact total return if the settled order were `order`.
+   *
+   * Public, and therefore validated: `betWins` answers `false` for anything it
+   * cannot read, so an unchecked argument would quietly price a whole ticket at
+   * zero rather than say it was handed something that is not an order.
+   */
   grossFor(order: PermutationOrder): Rational {
+    assertSettledOrder(this.definition, order, '$.order', 'CLAIM_REJECTED');
     return this.claims
       .filter((claim) => betWins(this.definition, claim.bet, order))
       .reduce((total, claim) => add(total, claim.payout), rational(0n));
@@ -263,10 +292,7 @@ export class PermutationBook {
     assertIdempotencyKey(request.idempotencyKey);
     const revealedSeed = normalizeSeed(request.revealedSeed);
     const transcript = deserializePermutationTranscript(request.transcript);
-    const fingerprint = commandFingerprint('settle', [
-      revealedSeed,
-      serializePermutationTranscript(transcript),
-    ]);
+    const fingerprint = settleFingerprint(revealedSeed, transcript);
     return this.#ledger.execute<PermutationAction>(request.idempotencyKey, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
       const verification = verifyPermutationTranscript(revealedSeed, this.definition, transcript);
@@ -288,6 +314,8 @@ export class PermutationBook {
         this.#terminal = true;
         this.#stepRevision = transcript.reveals.length;
         this.#settlement = Object.freeze({
+          roundId: transcript.roundId,
+          revealedSeed,
           order: transcript.order,
           commitment: transcript.commitment,
         });
@@ -337,6 +365,8 @@ export class PermutationBook {
         this.#settlement === undefined
           ? null
           : Object.freeze({
+              roundId: this.#settlement.roundId,
+              revealedSeed: this.#settlement.revealedSeed,
               order: Object.freeze([...this.#settlement.order]),
               commitment: this.#settlement.commitment,
             }),
@@ -394,7 +424,8 @@ export class PermutationBook {
     book.#terminal = raw.terminal;
     book.#stepRevision = assertSnapshotRevision(raw.stepRevision, '$.stepRevision');
 
-    raw.claims.forEach((entry, index) => {
+    for (let index = 0; index < raw.claims.length; index += 1) {
+      const entry = raw.claims[index] as WirePermutationClaim;
       const path = `$.claims[${index}]`;
       const bet = betFromParameters(definition, entry.code, entry.parameters, path);
       const stake = parseWireBigInt(entry.stake, `${path}.stake`);
@@ -417,20 +448,24 @@ export class PermutationBook {
           signature,
         }),
       );
-    });
+    }
     if (book.#claims.size > definition.maxOpenBets)
       fail('INVALID_SNAPSHOT', 'Snapshot exceeds the declared claim budget', '$.claims');
 
-    const settledOrder = parseSettlementOrder(raw, definition.items.length);
+    const settlement = restoredSettlement(definition, raw);
     let reconstructedLiquid = 0n;
     let stakedTotal = 0n;
     let placements = 0;
     let settled = false;
     let settleReceipt: Receipt<PermutationAction> | undefined;
-    const stored: StoredReceipt<PermutationAction>[] = raw.receipts.map((entry) => ({
-      fingerprint: entry.fingerprint,
-      receipt: fromWireReceipt<PermutationAction>(entry.receipt, PERMUTATION_ACTIONS),
-    }));
+    const stored: StoredReceipt<PermutationAction>[] = [];
+    for (let index = 0; index < raw.receipts.length; index += 1) {
+      const entry = raw.receipts[index] as PermutationBookSnapshot['receipts'][number];
+      stored.push({
+        fingerprint: entry.fingerprint,
+        receipt: fromWireReceipt<PermutationAction>(entry.receipt, PERMUTATION_ACTIONS),
+      });
+    }
     book.#ledger.install(stored, book.#stepRevision, (receipt) => {
       if (receipt.action === 'place') {
         // A permutation round has exactly one frame, so every stake is fenced at
@@ -477,7 +512,7 @@ export class PermutationBook {
     if (
       placements !== book.#claims.size ||
       settled !== book.#terminal ||
-      settled !== (settledOrder !== undefined) ||
+      settled !== (settlement !== undefined) ||
       book.#stepRevision !== expectedStepRevision ||
       (placements === 0) !== (capBasisStake === undefined) ||
       (capBasisStake !== undefined && capBasisStake !== stakedTotal) ||
@@ -487,12 +522,22 @@ export class PermutationBook {
     if (reconstructedLiquid !== parseWireBigInt(raw.liquidBalance, '$.liquidBalance', true))
       fail('INVALID_SNAPSHOT', 'Snapshot accounting does not conserve liquid value');
 
-    if (settledOrder !== undefined && settleReceipt !== undefined) {
-      // The settled credit is recomputed from the restored claims and the
-      // recorded order, then capped exactly as the live path capped it: before
-      // the settle credit the round has withdrawn nothing, so the already-liquid
-      // term is zero.
-      const theoretical = book.grossFor(settledOrder);
+    if (settlement !== undefined && settleReceipt !== undefined) {
+      // The settle receipt's own fingerprint is `('settle', [seed, serialized
+      // transcript])`, and the transcript above was rebuilt from the seed rather
+      // than read — so this binds the receipt to a proof, not to a claim about
+      // one.
+      if (settleReceipt.commandFingerprint !== settlement.fingerprint)
+        fail(
+          'INVALID_SNAPSHOT',
+          'Settle receipt does not match the re-derived proof',
+          '$.settlement',
+        );
+      // The credit is recomputed from the restored claims and the re-derived
+      // order, then capped exactly as the live path capped it: before the settle
+      // credit the round has withdrawn nothing, so the already-liquid term is
+      // zero.
+      const theoretical = book.grossFor(settlement.proof.order);
       const expected =
         capBasisStake === undefined
           ? { credited: 0n, capped: false }
@@ -503,10 +548,7 @@ export class PermutationBook {
           'Settled credit does not re-derive from the restored ticket and order',
           '$.settlement.order',
         );
-      book.#settlement = Object.freeze({
-        order: settledOrder,
-        commitment: raw.settlement?.commitment as string,
-      });
+      book.#settlement = settlement.record;
     }
 
     book.#ledger.restoreBalances({
@@ -518,26 +560,93 @@ export class PermutationBook {
   }
 }
 
-/** Validates the settled order without deciding whether it is *the* order. */
-function parseSettlementOrder(
+/**
+ * Rebuilds a settled round's proof from the seed the snapshot carries.
+ *
+ * This is the difference between a snapshot that *asserts* how a round settled
+ * and one that can be **checked**. Reconciling the credit alone is not enough:
+ * two different orders can pay a ticket the same amount — trivially, any two
+ * orders under which every line loses — so a snapshot naming the wrong order
+ * would restore cleanly under a recomputed checksum, and a host would then show
+ * a settled column that never happened.
+ *
+ * So the seed is re-expanded through the module's own derivation and the result
+ * is required to match the recorded order and commitment exactly, with the
+ * commitment compared in constant time. The settle receipt's command
+ * fingerprint is then recomputed from that rebuilt transcript, which binds the
+ * money-bearing receipt to a proof rather than to a claim about one.
+ *
+ * Publishing the seed inside a *terminal* snapshot costs nothing: revealing it
+ * is what closes the round, and a snapshot that carries it is exactly as
+ * disclosing as the transcript the player already holds.
+ */
+function restoredSettlement(
+  definition: PermutationDefinition,
   raw: PermutationBookSnapshot,
-  size: number,
-): PermutationOrder | undefined {
+):
+  | {
+      readonly record: PermutationSettlement;
+      readonly proof: PermutationTranscript;
+      readonly fingerprint: string;
+    }
+  | undefined {
   if (raw.settlement === null) return undefined;
-  const order = raw.settlement.order;
-  if (!Array.isArray(order) || order.length !== size)
-    fail('INVALID_SNAPSHOT', 'Settled order does not match the draw size', '$.settlement.order');
-  const seen = new Set<number>();
-  order.forEach((item, index) => {
-    if (!Number.isSafeInteger(item) || item < 0 || item >= size || seen.has(item))
-      fail(
-        'INVALID_SNAPSHOT',
-        'Settled order is not a permutation',
-        `$.settlement.order[${index}]`,
-      );
-    seen.add(item);
+  const { roundId, revealedSeed, order, commitment } = raw.settlement;
+  assertSettledOrder(definition, order, '$.settlement.order', 'INVALID_SNAPSHOT');
+  let proof: PermutationTranscript;
+  try {
+    proof = makePermutationTranscript(revealedSeed, definition, roundId);
+  } catch {
+    // A seed or round id the derivation refuses is a bad snapshot, not a bad
+    // seed: the caller handed us reconnect state, so it fails in that taxonomy.
+    fail('INVALID_SNAPSHOT', 'Snapshot settlement does not re-derive', '$.settlement');
+  }
+  if (!ordersEqual(proof.order, order) || !constantTimeHexEqual(proof.commitment, commitment))
+    fail(
+      'INVALID_SNAPSHOT',
+      'Recorded settlement does not match the order the revealed seed derives',
+      '$.settlement.order',
+    );
+  return Object.freeze({
+    record: Object.freeze({
+      roundId,
+      revealedSeed,
+      order: proof.order,
+      commitment: proof.commitment,
+    }),
+    proof,
+    fingerprint: settleFingerprint(revealedSeed, proof),
   });
-  return Object.freeze([...order]);
+}
+
+/**
+ * A settled order is a genuine permutation of the draw.
+ *
+ * Indexed rather than `forEach`, which skips holes: a sparse array has the right
+ * length and no own entries, so every element check would pass without running
+ * once.
+ */
+function assertSettledOrder(
+  definition: PermutationDefinition,
+  order: unknown,
+  path: string,
+  code: 'INVALID_SNAPSHOT' | 'CLAIM_REJECTED',
+): asserts order is PermutationOrder {
+  const size = definition.items.length;
+  if (!Array.isArray(order) || order.length !== size)
+    fail(code, 'Settled order does not match the draw size', path);
+  const seen = new Set<number>();
+  for (let index = 0; index < size; index += 1) {
+    const item: unknown = order[index];
+    if (
+      !Number.isSafeInteger(item) ||
+      (item as number) < 0 ||
+      (item as number) >= size ||
+      seen.has(item as number)
+    )
+      fail(code, 'Settled order is not a permutation', `${path}[${index}]`);
+    seen.add(item as number);
+  }
 }
 
 function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
@@ -582,19 +691,25 @@ function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
 
   if (candidate.claims.length > ENGINE_LIMITS.maxRoundClaims)
     fail('INVALID_SNAPSHOT', 'Claims must be a bounded array', '$.claims');
-  candidate.claims.forEach((item, index) => {
-    const claim = assertSnapshotRecord(item, `$.claims[${index}]`);
+  for (let index = 0; index < candidate.claims.length; index += 1) {
+    const claim = assertSnapshotRecord(candidate.claims[index], `$.claims[${index}]`);
     assertSnapshotKeys(claim, ['key', 'code', 'parameters', 'stake'], `$.claims[${index}]`);
     assertWireString(claim.key, `$.claims[${index}].key`);
     assertWireString(claim.code, `$.claims[${index}].code`);
     assertWireString(claim.stake, `$.claims[${index}].stake`);
     if (!Array.isArray(claim.parameters))
       fail('INVALID_SNAPSHOT', 'Bet parameters must be an array', `$.claims[${index}].parameters`);
-  });
+  }
 
   if (candidate.settlement !== null) {
     const settlement = assertSnapshotRecord(candidate.settlement, '$.settlement');
-    assertSnapshotKeys(settlement, ['order', 'commitment'], '$.settlement');
+    assertSnapshotKeys(
+      settlement,
+      ['roundId', 'revealedSeed', 'order', 'commitment'],
+      '$.settlement',
+    );
+    assertWireString(settlement.roundId, '$.settlement.roundId');
+    assertWireHex(settlement.revealedSeed, '$.settlement.revealedSeed');
     if (!Array.isArray(settlement.order))
       fail('INVALID_SNAPSHOT', 'Settled order must be an array', '$.settlement.order');
     assertWireHex(settlement.commitment, '$.settlement.commitment');
@@ -602,13 +717,15 @@ function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
 
   if (candidate.receipts.length > ENGINE_LIMITS.maxReceipts)
     fail('INVALID_SNAPSHOT', 'Receipts must be a bounded array', '$.receipts');
-  candidate.receipts.forEach((item, index) => {
-    const entry = assertSnapshotRecord(item, `$.receipts[${index}]`);
+  // Indexed rather than `forEach`: a hole would otherwise be skipped here and
+  // then spread into the ledger's install list as `undefined`.
+  for (let index = 0; index < candidate.receipts.length; index += 1) {
+    const entry = assertSnapshotRecord(candidate.receipts[index], `$.receipts[${index}]`);
     assertSnapshotKeys(entry, ['fingerprint', 'receipt'], `$.receipts[${index}]`);
     assertWireHex(entry.fingerprint, `$.receipts[${index}].fingerprint`);
     const receipt = assertSnapshotRecord(entry.receipt, `$.receipts[${index}].receipt`);
     assertSnapshotKeys(receipt, RECEIPT_WIRE_KEYS, `$.receipts[${index}].receipt`);
-  });
+  }
 
   assertWireHex(candidate.snapshotHash, '$.snapshotHash');
   assertSnapshotSize(candidate);

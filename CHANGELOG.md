@@ -38,6 +38,14 @@
   and the public-API snapshot. The module is deliberately **not** re-exported
   from the package root: the root's progressive-market symbols exist only as
   deprecated 0.2 compatibility, and a module landing today has no such debt.
+- A terminal `permutation-book-v1` snapshot carries the round id and the
+  **revealed seed**, so `restore()` re-derives the settled order and commitment
+  from the proof rather than reconciling them against the credit. Reconciling
+  the credit alone is not sufficient — two different orders can pay a ticket the
+  same amount, trivially any two under which every line loses — so a snapshot
+  naming the wrong order would have restored cleanly under a recomputed
+  checksum. Publishing the seed in a _settled_ snapshot discloses nothing: the
+  reveal is what closes the round.
 
 ### Changed
 

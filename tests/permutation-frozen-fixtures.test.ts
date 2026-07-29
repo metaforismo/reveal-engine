@@ -97,6 +97,17 @@ describe('frozen permutation wire fixtures', () => {
     expect((snapshot.claims as unknown[]).length).toBe(3);
     expect(fixture.credited).toBe('3360');
     expect(snapshot.liquidBalance).toBe('3360');
+    // A settled snapshot carries the whole proof, seed included, so restore can
+    // re-derive the order rather than take the snapshot's word for it.
+    expect(Object.keys(snapshot.settlement as object).sort()).toEqual([
+      'commitment',
+      'order',
+      'revealedSeed',
+      'roundId',
+    ]);
+    expect((snapshot.settlement as Record<string, unknown>).revealedSeed).toBe(
+      FROZEN_PERMUTATION_SEED,
+    );
   });
 
   it('decodes the committed receipts through the strict codec', () => {
@@ -164,6 +175,19 @@ describe('frozen permutation wire fixtures', () => {
       {
         ...snapshot,
         claims: claims.map((claim, index) => (index === 0 ? { ...claim, stake: '5000' } : claim)),
+      },
+      // A rewritten settled order no longer re-derives from the revealed seed,
+      // and neither does a rewritten seed.
+      {
+        ...snapshot,
+        settlement: {
+          ...(snapshot.settlement as object),
+          order: [...((snapshot.settlement as { order: number[] }).order as number[])].reverse(),
+        },
+      },
+      {
+        ...snapshot,
+        settlement: { ...(snapshot.settlement as object), revealedSeed: '0'.repeat(64) },
       },
     ])
       expect(

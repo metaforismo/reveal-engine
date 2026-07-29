@@ -1002,6 +1002,57 @@ describe('permutation module: snapshot and restore', () => {
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
+  /**
+   * A settled snapshot has to be **re-derivable**, not merely self-consistent.
+   *
+   * Reconciling the credit alone is not enough: two different orders can pay a
+   * ticket the same amount — trivially, any two under which every line loses —
+   * so a snapshot naming the wrong order would restore cleanly under a
+   * recomputed checksum and a host would then show a settled column that never
+   * happened. The snapshot therefore carries the revealed seed (public the
+   * moment the round closed) and restore re-expands it.
+   */
+  it('rejects a forged settled order even when the credit still reconciles', async () => {
+    const seedHex = seed(41);
+    const transcript = makePermutationTranscript(seedHex, CLASSIC, 'forgery');
+    const book = new PermutationBook(CLASSIC);
+    // A line that loses under the real order, chosen so the forged order below
+    // makes it lose too: both settle at zero, so the credit tells them apart not
+    // at all.
+    const loser = transcript.order[3] as number;
+    await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: loser }, stake: 100n });
+    const receipt = await book.settle({ idempotencyKey: 's', revealedSeed: seedHex, transcript });
+    expect(receipt.credited).toBe(0n);
+
+    const snapshot = book.snapshot() as unknown as Record<string, unknown>;
+    const settlement = snapshot.settlement as Record<string, unknown>;
+    const real = settlement.order as number[];
+    // Swap two positions that are not position 0, so `first {loser}` still loses.
+    const forged = [...real];
+    [forged[1], forged[2]] = [forged[2] as number, forged[1] as number];
+    expect(forged.join()).not.toBe(real.join());
+
+    const reseal = (value: Record<string, unknown>): string =>
+      JSON.stringify({
+        ...value,
+        snapshotHash: snapshotHash({ ...value, snapshotHash: undefined }),
+      });
+    for (const mutation of [
+      { ...settlement, order: forged },
+      { ...settlement, revealedSeed: seed(42) },
+      { ...settlement, roundId: 'another-round' },
+      { ...settlement, commitment: '0'.repeat(64) },
+    ])
+      expect(
+        () => PermutationBook.restore(CLASSIC, reseal({ ...snapshot, settlement: mutation })),
+        JSON.stringify(mutation).slice(0, 70),
+      ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+
+    // The honest one still restores, and comes back carrying the same proof.
+    const restored = PermutationBook.restore(CLASSIC, reseal(snapshot));
+    expect(restored.settledOrder).toEqual([...transcript.order]);
+  });
+
   it.each([
     ['not an object', '4'],
     ['unknown key', JSON.stringify({ schema: 'reveal-engine/permutation-book-v1', extra: 1 })],

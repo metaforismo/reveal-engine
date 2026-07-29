@@ -398,18 +398,27 @@ re-derived:
 - each claim's **payout** is recomputed from `(code, stake)` and the published
   paytable, and is not in the snapshot at all — a money-bearing field a snapshot
   does not carry is one nobody can rewrite;
-- the **settled credit** is recomputed by scoring the restored claims against the
-  recorded settled order and re-applying the cap, then compared against the
-  settle receipt, so rewriting the order, or the credit, or both inconsistently,
-  is rejected;
+- the **settled order** is re-derived. A terminal snapshot carries the round id
+  and the **revealed seed**, restore re-expands them through the module's own
+  derivation, and the result must match the recorded order and commitment
+  exactly — the commitment in constant time. The settle receipt's command
+  fingerprint is then recomputed from that rebuilt transcript, so the
+  money-bearing receipt is bound to a proof rather than to a claim about one;
+- the **settled credit** is recomputed by scoring the restored claims against
+  that re-derived order and re-applying the cap, then compared against the settle
+  receipt;
 - the **balances** are reconstructed from the receipt log and reconciled before
   `restoreBalances()` installs them.
 
-One field is an honest exception and is documented as one: the settlement's
-`commitment` is a _label_ naming which published proof settled the round. A
-snapshot cannot re-derive it — that needs the revealed seed — so restore checks
-its shape and nothing more. The proof of a settlement is the transcript, verified
-against the seed; a snapshot is reconnect state.
+Carrying the seed is what turns the snapshot from an assertion into something
+checkable, and it costs nothing: revealing the seed is what closes the round, so
+a terminal snapshot that carries it is exactly as disclosing as the transcript
+the player already holds. **Reconciling the credit alone would not have been
+enough.** Two different orders can pay a ticket the same amount — trivially, any
+two under which every line loses — so a snapshot naming the wrong order would
+have restored cleanly under a recomputed checksum, and a host would then have
+shown a settled column that never happened. That gap is closed by re-derivation,
+not by the hash.
 
 The checksum is not the control. Anyone able to rewrite a field can recompute a
 hash over it, so every tamper case in this module's tests and conformance

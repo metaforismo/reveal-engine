@@ -31,7 +31,9 @@ import {
 } from '../../src/modules/progressive-market/transcript.js';
 import {
   aetherOrderClassicReference,
+  betFromParameters,
   derivePermutationOrder,
+  derivePermutationSteps,
   deserializePermutationTranscript,
   makePermutationTranscript,
   permutation,
@@ -283,6 +285,53 @@ describe('permutation module fails closed on hostile input', () => {
       }
     },
   );
+
+  /**
+   * Sparse arrays, which `forEach`, `map` and `every` all silently skip.
+   *
+   * `new Array(n)` has the declared length and no own indices, so an element
+   * validator written with `forEach` never runs once and passes everything. For
+   * a step prefix that is worse than a crash: each skipped hole shifts the
+   * remaining reveals down a position, so a malformed prefix would be re-read as
+   * a different, well-formed one and priced confidently at the wrong number.
+   * Every validator on these paths iterates by index for that reason.
+   */
+  it('rejects sparse arrays wherever an array crosses a boundary', () => {
+    const sparse = <T>(length: number): T[] => new Array<T>(length);
+    const holed = <T>(length: number, at: number, value: T): T[] => {
+      const array = new Array<T>(length);
+      array[at] = value;
+      return array;
+    };
+    const cases: readonly (readonly [string, () => unknown])[] = [
+      ['full-order bet', () => price(definition, [], { code: 'full', order: sparse(5) })],
+      [
+        'step prefix',
+        () => price(definition, holed(2, 1, { position: 1, item: 1 }), { code: 'first', item: 1 }),
+      ],
+      ['bet parameters', () => betFromParameters(definition, 'full', sparse(5))],
+      ['non-array bet parameters', () => betFromParameters(definition, 'first', null)],
+      ['derived truth', () => derivePermutationSteps(definition, sparse(5))],
+      ['encoded truth', () => permutation.truth.encode(sparse(5))],
+      ['wire order', () => deserializePermutationTranscript({ ...wire, order: sparse(5) })],
+      ['wire reveals', () => deserializePermutationTranscript({ ...wire, reveals: sparse(4) })],
+    ];
+    for (const [label, operation] of cases) {
+      const error = captureError(operation);
+      expect(error, label).toBeInstanceOf(RevealEngineError);
+      expect(error, label).not.toBeInstanceOf(TypeError);
+    }
+  });
+
+  it('refuses to score a ticket against something that is not an order', async () => {
+    const book = new PermutationBook(definition);
+    await book.place({ idempotencyKey: 'a', bet: { code: 'first', item: 0 }, stake: 25n });
+    for (const order of [null, undefined, 'abcde', [0, 1, 2], [0, 0, 1, 2, 3], new Array(5)]) {
+      const error = captureError(() => book.grossFor(order as never));
+      expect(error).toBeInstanceOf(RevealEngineError);
+      expect((error as RevealEngineError).code).toBe('CLAIM_REJECTED');
+    }
+  });
 
   it('never lets a settlement run against an unverified proof', async () => {
     const book = new PermutationBook(definition);

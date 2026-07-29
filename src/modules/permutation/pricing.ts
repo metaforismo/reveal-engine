@@ -51,7 +51,12 @@ function revealedPrefix(
     fail('INVALID_TRANSCRIPT', 'Step prefix is longer than the round', '$.steps');
   const itemAt: Item[] = [];
   const settled = new Set<Item>();
-  steps.forEach((step, index) => {
+  // Indexed rather than `forEach`. A sparse array skips holes under `forEach`,
+  // and every skipped hole would shift the remaining reveals down a position —
+  // a malformed prefix silently re-read as a different, well-formed one, which
+  // is the worst possible failure mode for something that decides a price.
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
     if (typeof step !== 'object' || step === null)
       fail('INVALID_TRANSCRIPT', 'Expected a reveal object', `$.steps[${index}]`);
     if (step.position !== index)
@@ -66,7 +71,7 @@ function revealedPrefix(
       fail('INVALID_TRANSCRIPT', 'Reveals settle one item twice', `$.steps[${index}].item`);
     settled.add(step.item);
     itemAt.push(step.item);
-  });
+  }
   return { n, itemAt, settled };
 }
 

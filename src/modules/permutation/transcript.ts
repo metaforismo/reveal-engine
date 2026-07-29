@@ -60,14 +60,20 @@ function parseOrder(value: unknown, path: string): readonly number[] {
   if (!Array.isArray(value) || value.length < MIN_ITEMS || value.length > MAX_ITEMS)
     fail('INVALID_TRANSCRIPT', `Order must name ${MIN_ITEMS}..${MAX_ITEMS} items`, path);
   const seen = new Set<number>();
-  value.forEach((item, index) => {
-    if (!Number.isSafeInteger(item) || item < 0 || item >= value.length)
+  const order: number[] = [];
+  // Indexed rather than `forEach`: JSON cannot produce a sparse array, but this
+  // codec also accepts a decoded object straight from a caller, and a hole must
+  // be a rejection rather than an element the validator never visits.
+  for (let index = 0; index < value.length; index += 1) {
+    const item: unknown = value[index];
+    if (!Number.isSafeInteger(item) || (item as number) < 0 || (item as number) >= value.length)
       fail('INVALID_TRANSCRIPT', 'Order names an item outside the draw', `${path}[${index}]`);
     if (seen.has(item as number))
       fail('INVALID_TRANSCRIPT', 'Order repeats an item', `${path}[${index}]`);
     seen.add(item as number);
-  });
-  return Object.freeze([...(value as number[])]);
+    order.push(item as number);
+  }
+  return Object.freeze(order);
 }
 
 function parseReveals(
@@ -78,34 +84,31 @@ function parseReveals(
   if (!Array.isArray(value) || value.length !== size - 1)
     fail('INVALID_TRANSCRIPT', 'A round reveals exactly one position short of the draw', path);
   const seen = new Set<number>();
-  return Object.freeze(
-    value.map((entry, index) => {
-      const step = isRecord(entry)
-        ? entry
-        : fail('INVALID_TRANSCRIPT', 'Expected a reveal object', `${path}[${index}]`);
-      exactKeys(step, ['position', 'item'], `${path}[${index}]`);
-      if (step.position !== index)
-        fail(
-          'INVALID_TRANSCRIPT',
-          'Reveals must be a prefix in settle order',
-          `${path}[${index}].position`,
-        );
-      if (
-        !Number.isSafeInteger(step.item) ||
-        (step.item as number) < 0 ||
-        (step.item as number) >= size
-      )
-        fail(
-          'INVALID_TRANSCRIPT',
-          'Reveal names an item outside the draw',
-          `${path}[${index}].item`,
-        );
-      if (seen.has(step.item as number))
-        fail('INVALID_TRANSCRIPT', 'Reveals settle one item twice', `${path}[${index}].item`);
-      seen.add(step.item as number);
-      return Object.freeze({ position: index, item: step.item as number });
-    }),
-  );
+  const reveals: { readonly position: number; readonly item: number }[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const entry: unknown = value[index];
+    const step = isRecord(entry)
+      ? entry
+      : fail('INVALID_TRANSCRIPT', 'Expected a reveal object', `${path}[${index}]`);
+    exactKeys(step, ['position', 'item'], `${path}[${index}]`);
+    if (step.position !== index)
+      fail(
+        'INVALID_TRANSCRIPT',
+        'Reveals must be a prefix in settle order',
+        `${path}[${index}].position`,
+      );
+    if (
+      !Number.isSafeInteger(step.item) ||
+      (step.item as number) < 0 ||
+      (step.item as number) >= size
+    )
+      fail('INVALID_TRANSCRIPT', 'Reveal names an item outside the draw', `${path}[${index}].item`);
+    if (seen.has(step.item as number))
+      fail('INVALID_TRANSCRIPT', 'Reveals settle one item twice', `${path}[${index}].item`);
+    seen.add(step.item as number);
+    reveals.push(Object.freeze({ position: index, item: step.item as number }));
+  }
+  return Object.freeze(reveals);
 }
 
 export function permutationTranscriptToWire(
