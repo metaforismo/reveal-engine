@@ -66,6 +66,7 @@ export {
   type FrameState,
   type OpenRequest,
   type Position,
+  type PublishedRoundBinding,
   type Receipt,
   type RoundAction,
   type RoundBookSnapshot,

@@ -1,0 +1,175 @@
+{
+  "note": "Frozen reveal-engine/round-book-v2 snapshot. Regenerate with npm run fixtures:update.",
+  "seed": "0000000000000000000000000000000000000000000000000000000000000007",
+  "roundId": "frozen-fixture-round-1",
+  "snapshot": {
+    "schema": "reveal-engine/round-book-v2",
+    "publishedRound": {
+      "roundId": "frozen-fixture-round-1",
+      "commitment": "a5d530a989ffec687efb5ed49416fac64272fb2a34f3df8b397542f03e325210"
+    },
+    "adapter": {
+      "id": "binary-beacon-conformance-v1",
+      "version": "1.0.0",
+      "fingerprint": "52841a7202c5ce0c2fe8586ee115ff84fb4e3b3b8dca2d0a8333f35bd17257f9"
+    },
+    "frameRevision": 3,
+    "ledgerRevision": 4,
+    "posterior": {
+      "weights": ["7", "1"],
+      "total": "8"
+    },
+    "evidence": [
+      {
+        "index": 0,
+        "target": 0,
+        "favour": "7",
+        "other": "3",
+        "label": "beacon-0"
+      },
+      {
+        "index": 1,
+        "target": 0,
+        "favour": "7",
+        "other": "3",
+        "label": "beacon-1"
+      },
+      {
+        "index": 2,
+        "target": 1,
+        "favour": "7",
+        "other": "3",
+        "label": "beacon-2"
+      }
+    ],
+    "openHistory": [
+      {
+        "outcome": 0,
+        "contingentPayout": {
+          "numerator": "1320",
+          "denominator": "1"
+        },
+        "stake": "1000",
+        "capBasisStake": "1000",
+        "entryCount": 1,
+        "openedAtFrameRevision": 0
+      },
+      {
+        "outcome": 0,
+        "contingentPayout": {
+          "numerator": "1320",
+          "denominator": "1"
+        },
+        "stake": "1155",
+        "capBasisStake": "1000",
+        "entryCount": 2,
+        "openedAtFrameRevision": 1
+      }
+    ],
+    "settlementProof": {
+      "revealedSeed": "0000000000000000000000000000000000000000000000000000000000000007",
+      "transcript": {
+        "schema": "reveal-engine/transcript-v2",
+        "proofVersion": "reveal-engine/commit-v2",
+        "adapter": {
+          "id": "binary-beacon-conformance-v1",
+          "version": "1.0.0"
+        },
+        "roundId": "frozen-fixture-round-1",
+        "truth": 0,
+        "evidence": [
+          {
+            "index": 0,
+            "target": 0,
+            "favour": "7",
+            "other": "3",
+            "label": "beacon-0"
+          },
+          {
+            "index": 1,
+            "target": 0,
+            "favour": "7",
+            "other": "3",
+            "label": "beacon-1"
+          },
+          {
+            "index": 2,
+            "target": 1,
+            "favour": "7",
+            "other": "3",
+            "label": "beacon-2"
+          }
+        ],
+        "commitment": "a5d530a989ffec687efb5ed49416fac64272fb2a34f3df8b397542f03e325210"
+      }
+    },
+    "position": null,
+    "entryCount": 2,
+    "capBasisStake": "1000",
+    "liquidBalance": "1320",
+    "terminal": true,
+    "receipts": [
+      {
+        "fingerprint": "75968f5b4bd92059593c172ebc247e15534cd62562b3768fc3e02fb1c1416bc6",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-open",
+          "commandFingerprint": "75968f5b4bd92059593c172ebc247e15534cd62562b3768fc3e02fb1c1416bc6",
+          "action": "open",
+          "ledgerRevision": 1,
+          "frameRevision": 0,
+          "debited": "1000",
+          "credited": "0",
+          "balanceDelta": "-1000",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "25e93e78d6a199c471d1aaf4ce48dd9ca27e5ae727f92b1c62a50e2a3fa040e1",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-sell",
+          "commandFingerprint": "25e93e78d6a199c471d1aaf4ce48dd9ca27e5ae727f92b1c62a50e2a3fa040e1",
+          "action": "sell",
+          "ledgerRevision": 2,
+          "frameRevision": 1,
+          "debited": "0",
+          "credited": "1155",
+          "balanceDelta": "1155",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "a970151682c1f4d09ae073d2a38d317f7496584c5fce63a37147b0969b991c5b",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-reopen",
+          "commandFingerprint": "a970151682c1f4d09ae073d2a38d317f7496584c5fce63a37147b0969b991c5b",
+          "action": "open",
+          "ledgerRevision": 3,
+          "frameRevision": 1,
+          "debited": "1155",
+          "credited": "0",
+          "balanceDelta": "-1155",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "75b684fa5a1bcad0842e1c710a666a3247937f7949b762eb6e09356179316e2b",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-settle",
+          "commandFingerprint": "75b684fa5a1bcad0842e1c710a666a3247937f7949b762eb6e09356179316e2b",
+          "action": "settle",
+          "ledgerRevision": 4,
+          "frameRevision": 3,
+          "debited": "0",
+          "credited": "1320",
+          "balanceDelta": "1320",
+          "capped": false
+        }
+      }
+    ],
+    "snapshotHash": "5c154c5b1832794868d231d746b31cbb7a59cffc9736da1b39a45d316b9e3e79"
+  }
+}

@@ -15,7 +15,10 @@ const readFixture = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(`tests/fixtures/${name}`, 'utf8')) as Record<string, unknown>;
 
 /**
- * `receipt-v1` and `round-book-v1` are frozen on disk, not merely round-tripped.
+ * `receipt-v1` and the current `round-book-v2` are frozen on disk, not merely
+ * round-tripped. The retained v1 book fixture is a migration refusal vector:
+ * it predates the independently published commitment and cannot be upgraded by
+ * guessing one.
  *
  * A round trip generated at runtime moves both sides of the comparison together
  * and would happily accept a changed encoding. These tests compare a rebuilt
@@ -62,11 +65,11 @@ describe('frozen wire fixtures', () => {
     );
   });
 
-  it('matches the committed round-book-v1 snapshot field for field', () => {
-    const fixture = readFixture('round-book-v1.json');
+  it('matches the committed round-book-v2 snapshot field for field', () => {
+    const fixture = readFixture('round-book-v2.json');
     expect(fixture.snapshot).toEqual(JSON.parse(JSON.stringify(round.snapshot)));
     const snapshot = fixture.snapshot as Record<string, unknown>;
-    expect(snapshot.schema).toBe('reveal-engine/round-book-v1');
+    expect(snapshot.schema).toBe('reveal-engine/round-book-v2');
     expect(Object.keys(snapshot).sort()).toEqual([
       'adapter',
       'capBasisStake',
@@ -75,17 +78,20 @@ describe('frozen wire fixtures', () => {
       'frameRevision',
       'ledgerRevision',
       'liquidBalance',
+      'openHistory',
       'position',
       'posterior',
+      'publishedRound',
       'receipts',
       'schema',
+      'settlementProof',
       'snapshotHash',
       'terminal',
     ]);
   });
 
   it('restores a book from the committed snapshot and re-verifies its proof', () => {
-    const fixture = readFixture('round-book-v1.json');
+    const fixture = readFixture('round-book-v2.json');
     const restored = RoundBook.restore(
       frozenGame,
       JSON.stringify(fixture.snapshot as Record<string, unknown>),
@@ -116,7 +122,7 @@ describe('frozen wire fixtures', () => {
   };
 
   it('rejects a re-sealed mutation of the committed snapshot on its merits', () => {
-    const snapshot = readFixture('round-book-v1.json').snapshot as Record<string, unknown>;
+    const snapshot = readFixture('round-book-v2.json').snapshot as Record<string, unknown>;
     expect(() => RoundBook.restore(frozenGame, reseal(snapshot))).not.toThrow();
     for (const tampered of [
       { ...snapshot, liquidBalance: '999999' },
@@ -130,9 +136,16 @@ describe('frozen wire fixtures', () => {
   });
 
   it('also rejects an unsealed mutation, by the checksum', () => {
-    const snapshot = readFixture('round-book-v1.json').snapshot as Record<string, unknown>;
+    const snapshot = readFixture('round-book-v2.json').snapshot as Record<string, unknown>;
     expect(() =>
       RoundBook.restore(frozenGame, JSON.stringify({ ...snapshot, liquidBalance: '999999' })),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  it('retains the v1 book fixture as an explicit verification-only refusal vector', () => {
+    const legacy = readFixture('round-book-v1.json').snapshot as object;
+    expect(() => RoundBook.restore(frozenGame, legacy as never)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
+    );
   });
 });

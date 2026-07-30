@@ -45,6 +45,7 @@ import {
   assertSurvivalDefinition,
   contractMenu,
   maxRoundReturn,
+  parseRoundRefId,
   roundRefId,
 } from './validation.js';
 
@@ -574,6 +575,15 @@ export function stakedSnapshotFor(
   const multiplier = rational(contract.multiplier.numerator, contract.multiplier.denominator);
   const entities = Array.from({ length: definition.entities }, (_entity, index) => index);
   const basis = stake * BigInt(definition.entities);
+  const publishedRound = {
+    roundId: parseRoundRefId(canonicalRoundId).roundId,
+    seedCommitment: seedCommitment(
+      seedHex,
+      definition,
+      roundIdentityOf(definition, canonicalRoundId),
+    ),
+  };
+  const bindingFields = [publishedRound.roundId, publishedRound.seedCommitment] as const;
 
   const receipts: { fingerprint: string; receipt: Receipt<string> }[] = [];
   let ledgerRevision = 0;
@@ -607,7 +617,7 @@ export function stakedSnapshotFor(
   for (const entity of entities)
     push(
       `staked-enter-${entity}`,
-      commandFingerprint('enter', [entity, stake]),
+      commandFingerprint('enter', [...bindingFields, entity, stake]),
       'enter',
       0,
       stake,
@@ -616,7 +626,7 @@ export function stakedSnapshotFor(
     );
   push(
     'staked-choose-0',
-    commandFingerprint('choose', [0, step.contractId, 0]),
+    commandFingerprint('choose', [...bindingFields, 0, step.contractId, 0]),
     'choose',
     0,
     0n,
@@ -633,7 +643,7 @@ export function stakedSnapshotFor(
     credited = result.credited;
     push(
       'staked-bank-0',
-      commandFingerprint('bank', [1, 1, banked]),
+      commandFingerprint('bank', [...bindingFields, 1, 1, banked]),
       'bank',
       1,
       0n,
@@ -646,6 +656,7 @@ export function stakedSnapshotFor(
   const base = {
     schema: SURVIVAL_BOOK_SCHEMA,
     definition: { id: definition.id, fingerprint: survivalFingerprint(definition) },
+    publishedRound,
     terminal: false,
     stageRevision: 1,
     ledgerRevision,
@@ -668,6 +679,7 @@ export function stakedSnapshotFor(
     entries: entities.map((entity) => ({ entity, stake: String(stake) })),
     banks,
     settlementCommitment: null,
+    settlementSeed: null,
     liquidBalance: String(credited),
     capBasisStake: String(basis),
     receipts: receipts.map((entry) => ({

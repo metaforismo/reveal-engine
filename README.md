@@ -142,8 +142,9 @@ Four independent layers, all reproducible:
    evidence, and commitment and compares in constant time. It returns a typed
    failure code — never a parser stack trace.
 2. **Frozen wire fixtures.** `transcript-v1`, `transcript-v2`, `receipt-v1`,
-   `round-book-v1`, `staged-survival/transcript-v1` and
-   `staged-survival/book-v1` are committed files under `tests/fixtures/`, and a
+   the current v2 book snapshots, `staged-survival/transcript-v1`, and the
+   AETHER v2 protocol fixtures are committed under `tests/fixtures/`. Retired v1
+   books remain negative refusal vectors, and a
    known-answer `commit-v2` vector is pinned in the proof-vector tests. Each one
    is rebuilt from its seed on every run and compared field for field against
    the committed bytes, so changing an encoding without changing a version

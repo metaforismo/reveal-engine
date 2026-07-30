@@ -63,6 +63,7 @@ import {
 import { deriveRevealSteps, eligiblePositions, encodeRevealStep, stepDigest } from './steps.js';
 import {
   buildCardsTranscript,
+  cardsSeedCommitment,
   cardsTranscriptToWire,
   deserializeCardsTranscript,
   verifyCardsTranscript,
@@ -130,23 +131,35 @@ export function stakedCardsSnapshot(
     definition.pricing.rounding === 'stochastic'
       ? deriveRoundingSeed(seedHex, cardsFingerprint(definition), roundId)
       : undefined;
+  const clientSeed = '11'.repeat(32);
+  const seedCommitment = cardsSeedCommitment(
+    seedHex,
+    definition,
+    cardsRoundOf(definition, roundId),
+  );
   const openFingerprint = openTicketFingerprint(
     roundId,
     rows,
     roundingSeed === undefined ? undefined : roundingCommitment(roundingSeed),
+    seedCommitment,
+    clientSeed,
   );
   const revealFingerprint = commandFingerprint('reveal', [
+    roundId,
+    seedCommitment,
     stepDigest([]),
     ...encodeRevealStep(steps[0] as RevealStep),
   ]);
   const base = {
-    schema: 'reveal-engine/cards-book-v1' as const,
+    schema: 'reveal-engine/cards-book-v2' as const,
     definition: {
       id: definition.id,
       version: definition.version,
       fingerprint: cardsFingerprint(definition),
     },
     roundId,
+    seedCommitment,
+    clientSeed,
     stepRevision: steps.length,
     ledgerRevision: 2,
     terminal: false,
@@ -1830,6 +1843,8 @@ function refenceReveal(staked: CardsBookSnapshot): WireEntry {
   const steps = staked.steps as unknown as RevealStep[];
   const frame = steps.length;
   const fingerprint = commandFingerprint('reveal', [
+    staked.roundId as string,
+    staked.seedCommitment as string,
     stepDigest(steps.slice(0, frame)),
     ...encodeRevealStep(steps[0] as RevealStep),
   ]);
@@ -1879,7 +1894,12 @@ function forgeCash(
     definition.risk.maxWinMultiple,
     liquid,
   );
-  const fingerprint = commandFingerprint('cash', [stepDigest(steps), selectionId]);
+  const fingerprint = commandFingerprint('cash', [
+    staked.roundId as string,
+    staked.seedCommitment as string,
+    stepDigest(steps),
+    selectionId,
+  ]);
   const receipts = [
     ...(staked.receipts as unknown as WireEntry[]),
     {
@@ -1988,7 +2008,14 @@ function forgeDormant(
     objectiveRank,
     objectivePosition,
   };
-  const fingerprint = dormantFingerprint(stepDigest(steps), { ...record, reason: options.reason });
+  const fingerprint = dormantFingerprint(
+    stepDigest(steps),
+    { ...record, reason: options.reason },
+    {
+      roundId: staked.roundId as string,
+      seedCommitment: staked.seedCommitment as string,
+    },
+  );
   const receipts = [
     ...(staked.receipts as unknown as WireEntry[]),
     {

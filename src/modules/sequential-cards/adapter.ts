@@ -93,6 +93,7 @@ export function cardsRoundOf(
   return Object.freeze({
     moduleId: SEQUENTIAL_CARDS_MODULE_ID,
     definitionId: definition.id,
+    fingerprint: cardsFingerprint(definition),
     roundId,
     proofVersion: COMMITMENT_VERSION,
   });

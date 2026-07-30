@@ -7,6 +7,7 @@ import {
   canonicalParams,
   findFamily,
   findInstance,
+  permutationAdapterFingerprint,
   permutationClaimSignature,
   snapshotParams,
   type PermutationGameDefinition,
@@ -32,6 +33,8 @@ export interface Ticket {
   readonly schema: typeof PERMUTATION_TICKET_SCHEMA;
   readonly moduleVersion: typeof PERMUTATION_MODULE_VERSION;
   readonly gameId: string;
+  readonly adapterVersion: string;
+  readonly adapterFingerprint: string;
   readonly variantId: string;
   readonly roundId: string;
   readonly nonce: number;
@@ -71,6 +74,8 @@ const OPEN_TICKET_KEYS = Object.freeze([
   'schema',
   'moduleVersion',
   'gameId',
+  'adapterVersion',
+  'adapterFingerprint',
   'variantId',
   'roundId',
   'nonce',
@@ -157,6 +162,8 @@ function digestForNormalized(
     PERMUTATION_TICKET_SCHEMA,
     PERMUTATION_MODULE_VERSION,
     game.id,
+    game.adapterVersion,
+    permutationAdapterFingerprint(game),
     game.variantId,
     context.roundId,
     context.nonce,
@@ -170,6 +177,8 @@ function digestForNormalized(
 export function ticketDigestForReceipt(
   identity: {
     gameId: string;
+    adapterVersion: string;
+    adapterFingerprint: string;
     variantId: string;
     roundId: string;
     nonce: number;
@@ -184,6 +193,8 @@ export function ticketDigestForReceipt(
     PERMUTATION_TICKET_SCHEMA,
     PERMUTATION_MODULE_VERSION,
     identity.gameId,
+    identity.adapterVersion,
+    identity.adapterFingerprint,
     identity.variantId,
     identity.roundId,
     identity.nonce,
@@ -206,6 +217,8 @@ export function ticketDigestFromTicket(ticket: Ticket): string {
   return ticketDigestForReceipt(
     {
       gameId: ticket.gameId,
+      adapterVersion: ticket.adapterVersion,
+      adapterFingerprint: ticket.adapterFingerprint,
       variantId: ticket.variantId,
       roundId: ticket.roundId,
       nonce: ticket.nonce,
@@ -255,6 +268,8 @@ export function openTicket(
     schema: PERMUTATION_TICKET_SCHEMA,
     moduleVersion: PERMUTATION_MODULE_VERSION,
     gameId: game.id,
+    adapterVersion: game.adapterVersion,
+    adapterFingerprint: permutationAdapterFingerprint(game),
     variantId: game.variantId,
     roundId: ctx.roundId,
     nonce: ctx.nonce,
@@ -282,6 +297,9 @@ function assertOpenedTicket(
     fail('UNSUPPORTED_VERSION', 'Unknown ticket schema or module version', '$.schema');
   if (
     ticket.gameId !== game.id ||
+    ticket.adapterVersion !== game.adapterVersion ||
+    !constantTimeHexEqual(ticket.adapterFingerprint, permutationAdapterFingerprint(game)) ||
+    !constantTimeHexEqual(ticket.adapterFingerprint, transcript.adapterFingerprint) ||
     ticket.variantId !== game.variantId ||
     ticket.roundId !== transcript.roundId ||
     ticket.nonce !== transcript.nonce
@@ -313,6 +331,7 @@ export function exactPayout(
   const product = multiply(rational(stake), multiplier);
   if (product.denominator !== 1n)
     fail('INEXACT_PAYOUT', 'Payout is not an integer minor-unit amount', path);
+  if (product.numerator < 0n) fail('INVALID_TICKET', 'Payout must not be negative', path);
   return product.numerator;
 }
 
@@ -326,7 +345,8 @@ export function settleTicket(
   if (
     transcript.gameId !== game.id ||
     transcript.variantId !== game.variantId ||
-    transcript.adapterVersion !== game.adapterVersion
+    transcript.adapterVersion !== game.adapterVersion ||
+    !constantTimeHexEqual(transcript.adapterFingerprint, permutationAdapterFingerprint(game))
   )
     fail('ADAPTER_MISMATCH', 'Transcript belongs to another adapter', '$.transcript');
   const permutation = assertPermutation(transcript.permutation, game.n, '$.transcript.permutation');
@@ -350,6 +370,8 @@ export function settleTicket(
   });
   const ceiling = normalized.totalStake * game.risk.maxWinMultiple;
   const credited = gross > ceiling ? ceiling : gross;
+  if (gross < 0n || credited < 0n)
+    fail('INVALID_TICKET', 'Settlement credits must not be negative', '$.credited');
   return Object.freeze({
     lines: Object.freeze(lines),
     totalStake: normalized.totalStake,
@@ -377,7 +399,18 @@ export function settlementDigestFor(
       fail('INVALID_TICKET', 'Settlement money fields must be BigInts', `$.${field}`);
   if (typeof settlement.capped !== 'boolean')
     fail('INVALID_TICKET', 'Settlement capped flag must be boolean', '$.capped');
+  if (
+    settlement.totalStake < 0n ||
+    settlement.gross < 0n ||
+    settlement.credited < 0n ||
+    settlement.credited > settlement.gross ||
+    settlement.net !== settlement.credited - settlement.totalStake ||
+    settlement.capped !== settlement.credited < settlement.gross
+  )
+    fail('INVALID_TICKET', 'Settlement money fields are inconsistent', '$.settlement');
   const ordered = canonicalLineOrder(Array.prototype.slice.call(settlement.lines));
+  let summedStake = 0n;
+  let summedGross = 0n;
   const fields: (string | Uint8Array | bigint | number)[] = [
     SETTLEMENT_DIGEST_DOMAIN,
     PERMUTATION_MODULE_VERSION,
@@ -402,7 +435,13 @@ export function settlementDigestFor(
       typeof line.gross !== 'bigint'
     )
       fail('INVALID_TICKET', 'Settlement line is malformed', `$.lines[${index}]`);
+    if (line.stake < 0n || line.gross < 0n)
+      fail('INVALID_TICKET', 'Settlement line money must not be negative', `$.lines[${index}]`);
+    summedStake += line.stake;
+    summedGross += line.gross;
     fields.push(line.code, canonicalParams(line.params), line.stake, line.won ? 1 : 0, line.gross);
   }
+  if (summedStake !== settlement.totalStake || summedGross !== settlement.gross)
+    fail('INVALID_TICKET', 'Settlement totals do not match their lines', '$.settlement');
   return sha256Hex(encodeFields(fields));
 }

@@ -20,8 +20,9 @@ const readFixture = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(`tests/fixtures/${name}`, 'utf8')) as Record<string, unknown>;
 
 /**
- * `staged-survival/transcript-v1` and `staged-survival/book-v1` are frozen on
- * disk, not round-tripped at run time.
+ * `staged-survival/transcript-v1` and the current book-v2 are frozen on disk.
+ * The retained book-v1 fixture is a refusal vector because it cannot supply the
+ * seed commitment that had to be published before the first choice.
  *
  * A round trip moves both sides of the comparison together and would accept a
  * changed encoding without noticing. These compare a freshly built round against
@@ -107,12 +108,12 @@ describe('frozen staged-survival wire fixtures', () => {
     ).toMatchObject({ ok: false, code: 'COMMITMENT_MISMATCH' });
   });
 
-  it('matches the committed book-v1 snapshots field for field', () => {
-    const fixture = readFixture('staged-survival-book-v1.json');
+  it('matches the committed book-v2 snapshots field for field', () => {
+    const fixture = readFixture('staged-survival-book-v2.json');
     expect(fixture.snapshot).toEqual(JSON.parse(JSON.stringify(round.snapshot)));
     expect(fixture.midSnapshot).toEqual(JSON.parse(JSON.stringify(round.midSnapshot)));
     const snapshot = fixture.snapshot as Record<string, unknown>;
-    expect(snapshot.schema).toBe('staged-survival/book-v1');
+    expect(snapshot.schema).toBe('staged-survival/book-v2');
     expect(Object.keys(snapshot).sort()).toEqual([
       'banks',
       'capBasisStake',
@@ -122,9 +123,11 @@ describe('frozen staged-survival wire fixtures', () => {
       'ledgerRevision',
       'liquidBalance',
       'pendingBanked',
+      'publishedRound',
       'receipts',
       'schema',
       'settlementCommitment',
+      'settlementSeed',
       'snapshotHash',
       'stageRevision',
       'steps',
@@ -134,7 +137,7 @@ describe('frozen staged-survival wire fixtures', () => {
   });
 
   it('restores both committed snapshots and rebuilds them byte for byte', () => {
-    const fixture = readFixture('staged-survival-book-v1.json');
+    const fixture = readFixture('staged-survival-book-v2.json');
     for (const key of ['midSnapshot', 'snapshot'] as const) {
       const snapshot = fixture[key] as object;
       const restored = SurvivalBook.restore(fiveRunnerReference, snapshot);
@@ -149,7 +152,7 @@ describe('frozen staged-survival wire fixtures', () => {
   });
 
   it('decodes every committed receipt through the strict codec', () => {
-    const fixture = readFixture('staged-survival-book-v1.json');
+    const fixture = readFixture('staged-survival-book-v2.json');
     const entries = (fixture.snapshot as { receipts: { receipt: WireReceipt }[] }).receipts;
     const decoded = entries.map((entry) => fromWireReceipt(entry.receipt, SURVIVAL_ACTIONS));
     expect(decoded.map((receipt) => receipt.ledgerRevision)).toEqual(
@@ -180,6 +183,13 @@ describe('frozen staged-survival wire fixtures', () => {
       credited: '999',
     };
     expect(() => fromWireReceipt(tamperedReceipt, SURVIVAL_ACTIONS)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
+    );
+  });
+
+  it('retains the v1 book fixture as an explicit non-migratable refusal vector', () => {
+    const legacy = readFixture('staged-survival-book-v1.json').snapshot as object;
+    expect(() => SurvivalBook.restore(fiveRunnerReference, legacy)).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
   });

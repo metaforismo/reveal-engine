@@ -6,7 +6,7 @@
     {
       "schema": "reveal-engine/receipt-v1",
       "idempotencyKey": "frozen-open",
-      "commandFingerprint": "f150c7966e8bafd6243048667d53f38592a12168cd0819ffef9ee58ac060891e",
+      "commandFingerprint": "75968f5b4bd92059593c172ebc247e15534cd62562b3768fc3e02fb1c1416bc6",
       "action": "open",
       "ledgerRevision": 1,
       "frameRevision": 0,
@@ -18,7 +18,7 @@
     {
       "schema": "reveal-engine/receipt-v1",
       "idempotencyKey": "frozen-sell",
-      "commandFingerprint": "0bc559f07a74e435e317542ea92c01488c97f564ecb33e655f5d7e87cd16581f",
+      "commandFingerprint": "25e93e78d6a199c471d1aaf4ce48dd9ca27e5ae727f92b1c62a50e2a3fa040e1",
       "action": "sell",
       "ledgerRevision": 2,
       "frameRevision": 1,
@@ -30,7 +30,7 @@
     {
       "schema": "reveal-engine/receipt-v1",
       "idempotencyKey": "frozen-reopen",
-      "commandFingerprint": "06105ecb53c4c00bb6a23f6532e3385e5565135ad600965d02db3eb67b939293",
+      "commandFingerprint": "a970151682c1f4d09ae073d2a38d317f7496584c5fce63a37147b0969b991c5b",
       "action": "open",
       "ledgerRevision": 3,
       "frameRevision": 1,
@@ -42,7 +42,7 @@
     {
       "schema": "reveal-engine/receipt-v1",
       "idempotencyKey": "frozen-settle",
-      "commandFingerprint": "2f85a1838992771c5e3abe59f3e17c45cb1cc671438d5b6cf669d8ec1c429559",
+      "commandFingerprint": "75b684fa5a1bcad0842e1c710a666a3247937f7949b762eb6e09356179316e2b",
       "action": "settle",
       "ledgerRevision": 4,
       "frameRevision": 3,

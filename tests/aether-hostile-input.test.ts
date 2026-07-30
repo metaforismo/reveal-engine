@@ -190,6 +190,11 @@ describe('AETHER ORDER hostile-input rejection', () => {
       'INEXACT_PAYOUT',
       '$.payout',
     );
+    expectFailure(
+      () => exactPayout(25n, { numerator: -1n, denominator: 1n }, '$.payout'),
+      'INVALID_TICKET',
+      '$.payout',
+    );
   });
 
   it('rejects an opened ticket carrying a conflicting idempotency key', () => {

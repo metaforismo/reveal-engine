@@ -47,9 +47,9 @@ const permutationRound = await buildFrozenPermutationRound();
 
 const files: readonly [string, unknown][] = [
   [
-    'tests/fixtures/round-book-v1.json',
+    'tests/fixtures/round-book-v2.json',
     {
-      note: 'Frozen reveal-engine/round-book-v1 snapshot. Regenerate with npm run fixtures:update.',
+      note: 'Frozen reveal-engine/round-book-v2 snapshot. Regenerate with npm run fixtures:update.',
       seed: FROZEN_SEED,
       roundId: FROZEN_ROUND_ID,
       snapshot: round.snapshot,
@@ -74,9 +74,9 @@ const files: readonly [string, unknown][] = [
     },
   ],
   [
-    'tests/fixtures/cards-book-v1.json',
+    'tests/fixtures/cards-book-v2.json',
     {
-      note: 'Frozen reveal-engine/cards-book-v1 snapshot and its receipt log, one entry per action.',
+      note: 'Frozen reveal-engine/cards-book-v2 snapshot and its receipt log, one entry per action.',
       seed: FROZEN_CARDS_SEED,
       roundId: FROZEN_CARDS_ROUND_ID,
       snapshot: cards.snapshot,
@@ -84,9 +84,9 @@ const files: readonly [string, unknown][] = [
     },
   ],
   [
-    'tests/fixtures/cards-book-stochastic-v1.json',
+    'tests/fixtures/cards-book-stochastic-v2.json',
     {
-      note: "Frozen reveal-engine/cards-book-v1 snapshot under rounding: 'stochastic' — it carries the committed rounding tape and its credits come from the settlement draw.",
+      note: "Frozen reveal-engine/cards-book-v2 snapshot under rounding: 'stochastic' — it carries the committed rounding tape and its credits come from the settlement draw.",
       seed: FROZEN_CARDS_SEED,
       roundId: FROZEN_STOCHASTIC_ROUND_ID,
       snapshot: drawn.snapshot,
@@ -94,9 +94,9 @@ const files: readonly [string, unknown][] = [
     },
   ],
   [
-    'tests/fixtures/cards-book-dormant-v1.json',
+    'tests/fixtures/cards-book-dormant-v2.json',
     {
-      note: 'Frozen reveal-engine/cards-book-v1 snapshot of a round the system settled: it carries the settlement reason, and its terminal receipt is fingerprinted over it.',
+      note: 'Frozen reveal-engine/cards-book-v2 snapshot of a round the system settled: it carries the settlement reason, and its terminal receipt is fingerprinted over it.',
       seed: FROZEN_CARDS_SEED,
       roundId: FROZEN_DORMANT_ROUND_ID,
       snapshot: dormant.snapshot,
@@ -114,9 +114,9 @@ const files: readonly [string, unknown][] = [
     },
   ],
   [
-    'tests/fixtures/staged-survival-book-v1.json',
+    'tests/fixtures/staged-survival-book-v2.json',
     {
-      note: 'Frozen staged-survival/book-v1 snapshots: one mid-round, one settled.',
+      note: 'Frozen staged-survival/book-v2 snapshots: one mid-round, one settled.',
       seed: FROZEN_SURVIVAL_SEED,
       roundId: FROZEN_SURVIVAL_ROUND,
       clientEntropy: FROZEN_SURVIVAL_ENTROPY,

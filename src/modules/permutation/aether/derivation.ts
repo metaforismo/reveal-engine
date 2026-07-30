@@ -96,14 +96,23 @@ function assertGameContext(game: PermutationGameDefinition, context: RoundContex
  * The pre-ticket publication. Its fixed game id follows the normative
  * signature, which intentionally has no game parameter.
  */
-export function seedCommitment(serverSeedHex: string, context: SeedContext): string {
+export function seedCommitment(
+  serverSeedHex: string,
+  game: PermutationGameDefinition,
+  context: SeedContext,
+): string {
   const seed = normalizeServerSeed(serverSeedHex);
   const seedContext = assertSeedContext(context);
+  if (seedContext.variantId !== game.variantId)
+    fail('ADAPTER_MISMATCH', 'Seed context belongs to another variant', '$.variantId');
   return sha256Hex(
     encodeFields([
       SEED_COMMIT_DOMAIN,
+      PERMUTATION_MODULE_VERSION,
       Buffer.from(seed, 'hex'),
-      AETHER_ORDER_GAME_ID,
+      game.id,
+      game.adapterVersion,
+      permutationAdapterFingerprint(game),
       seedContext.variantId,
       seedContext.roundId,
       seedContext.nonce,
@@ -114,6 +123,7 @@ export function seedCommitment(serverSeedHex: string, context: SeedContext): str
 /** Exact 256-bit rejection sampling; the loop is deliberately unbounded. */
 export function uniformBelow(
   serverSeedHex: string,
+  game: PermutationGameDefinition,
   context: RoundContext,
   label: string,
   counter: number,
@@ -121,6 +131,7 @@ export function uniformBelow(
 ): bigint {
   const seed = normalizeServerSeed(serverSeedHex);
   const ctx = assertRoundContext(context);
+  assertGameContext(game, ctx);
   if (
     typeof label !== 'string' ||
     label.length === 0 ||
@@ -138,12 +149,14 @@ export function uniformBelow(
     const payload = encodeFields([
       'sampler',
       PERMUTATION_MODULE_VERSION,
+      game.adapterVersion,
+      permutationAdapterFingerprint(game),
       ctx.gameId,
       ctx.variantId,
       ctx.roundId,
       ctx.clientSeed,
       ctx.nonce,
-      label,
+      `aether-order/${label}`,
       counter,
       rejection,
       modulus,
@@ -163,7 +176,9 @@ export function derivePermutation(
   const draws: number[] = [];
   for (let counter = 0; counter < game.n - 1; counter += 1)
     draws.push(
-      Number(uniformBelow(serverSeedHex, ctx, 'shuffle', counter, BigInt(game.n - counter))),
+      Number(
+        uniformBelow(serverSeedHex, game, ctx, 'shuffle-v2', counter, BigInt(game.n - counter)),
+      ),
     );
   return fisherYates(game.n, draws);
 }
@@ -235,7 +250,7 @@ export function makePermutationTranscript(
     n: game.n,
     permutation: Object.freeze([...permutation]),
     previousCommitment: previous,
-    seedCommitment: seedCommitment(seed, {
+    seedCommitment: seedCommitment(seed, game, {
       variantId: ctx.variantId,
       roundId: ctx.roundId,
       nonce: ctx.nonce,
@@ -305,7 +320,7 @@ export function verifyPermutationTranscript(
         'Pre-round seed commitment is missing or malformed',
         '$.seedCommitment',
       );
-    const expectedSeedCommitment = seedCommitment(seed, {
+    const expectedSeedCommitment = seedCommitment(seed, game, {
       variantId: context.variantId,
       roundId: context.roundId,
       nonce: context.nonce,

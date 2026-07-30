@@ -10,6 +10,7 @@ import {
 } from '../../core/ledger.js';
 import { assertClaimBudget } from '../../core/module.js';
 import { payableWithinCap, type Payable } from '../../core/payments.js';
+import { normalizeSeed } from '../../core/random.js';
 import { add, floor, multiply, rational, type Rational } from '../../core/rational.js';
 import {
   assertSnapshotKeys,
@@ -18,6 +19,7 @@ import {
   assertWireHex,
   assertWireString,
   parseSnapshotJson,
+  preflightSnapshotInput,
   parseWireBigInt,
   snapshotHash,
 } from '../../core/snapshot.js';
@@ -57,6 +59,10 @@ export interface SurvivalClaim {
   /** Still running: not failed, not banked. */
   readonly live: boolean;
   readonly banked: boolean;
+}
+export interface PublishedSurvivalRound {
+  readonly roundId: string;
+  readonly seedCommitment: string;
 }
 
 interface EntryRecord {
@@ -246,10 +252,32 @@ export class SurvivalBook {
   #stageRevision = 0;
   #terminal = false;
   #settlementCommitment: string | undefined;
+  #settlementSeed: string | undefined;
+  #publishedRound: PublishedSurvivalRound | undefined;
 
-  constructor(readonly definition: SurvivalDefinition) {
+  constructor(
+    readonly definition: SurvivalDefinition,
+    publishedRound?: PublishedSurvivalRound,
+  ) {
     assertSurvivalDefinition(definition);
+    if (publishedRound !== undefined) this.#publishedRound = copyPublishedRound(publishedRound);
     this.#ledger = new CommandLedger({ maxWinMultiple: definition.risk.maxWinMultiple });
+  }
+  get publishedRound(): PublishedSurvivalRound | undefined {
+    return this.#publishedRound;
+  }
+  bindRound(binding: PublishedSurvivalRound): PublishedSurvivalRound {
+    const copied = copyPublishedRound(binding);
+    if (this.#entries.length !== 0 || this.#choices.length !== 0 || this.#steps.length !== 0)
+      fail('COMMITMENT_MISMATCH', 'Round binding must be published before play');
+    if (
+      this.#publishedRound &&
+      (this.#publishedRound.roundId !== copied.roundId ||
+        this.#publishedRound.seedCommitment !== copied.seedCommitment)
+    )
+      fail('COMMITMENT_MISMATCH', 'Published round binding cannot be replaced');
+    this.#publishedRound ??= copied;
+    return this.#publishedRound;
   }
 
   get claims(): readonly SurvivalClaim[] {
@@ -322,7 +350,13 @@ export class SurvivalBook {
     // encoder happened to raise.
     this.#assertEntity(entity, '$.entity');
     assertSurvivalStake(stake, '$.stake');
-    const fingerprint = commandFingerprint('enter', [entity, stake]);
+    const binding = this.#requirePublishedRound();
+    const fingerprint = commandFingerprint('enter', [
+      binding.roundId,
+      binding.seedCommitment,
+      entity,
+      stake,
+    ]);
     return this.#ledger.execute<SurvivalAction>(key, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is terminal');
       if (this.#stageRevision !== 0 || this.#choices.length !== 0)
@@ -372,7 +406,10 @@ export class SurvivalBook {
     if (typeof contractId !== 'string' || contractId.length === 0)
       fail('INVALID_CHOICE', 'Stage contract id must be a string', '$.contractId');
     const banked = Object.freeze([...this.#pendingBanked].sort((left, right) => left - right));
+    const binding = this.#requirePublishedRound();
     const fingerprint = commandFingerprint('choose', [
+      binding.roundId,
+      binding.seedCommitment,
       this.#stageRevision,
       contractId,
       banked.length,
@@ -492,7 +529,14 @@ export class SurvivalBook {
       fail('CLAIM_REJECTED', 'Bank subset is not a bounded array', '$.entities');
     for (const entity of entities) this.#assertEntity(entity, '$.entities');
     const chosen = Object.freeze([...entities].sort((left, right) => left - right));
-    const fingerprint = commandFingerprint('bank', [this.#stageRevision, chosen.length, ...chosen]);
+    const binding = this.#requirePublishedRound();
+    const fingerprint = commandFingerprint('bank', [
+      binding.roundId,
+      binding.seedCommitment,
+      this.#stageRevision,
+      chosen.length,
+      ...chosen,
+    ]);
     return this.#ledger.execute<SurvivalAction>(key, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is terminal');
       if (this.#choices.length !== this.#stageRevision)
@@ -543,20 +587,38 @@ export class SurvivalBook {
     revealedSeed: string,
     transcript: SurvivalTranscript,
   ): Promise<Receipt<SurvivalAction>> {
-    const commitment = typeof transcript?.commitment === 'string' ? transcript.commitment : '';
-    const fingerprint = commandFingerprint('settle', [commitment]);
+    const normalizedSeed = normalizeSeed(revealedSeed);
+    if (!isRecord(transcript)) fail('INVALID_TRANSCRIPT', 'Settlement requires a transcript');
+    const canonicalTranscript = deserializeTranscript(transcriptToWire(transcript));
+    const binding = this.#requirePublishedRound();
+    const commitment = canonicalTranscript.commitment;
+    const fingerprint = commandFingerprint('settle', [
+      binding.roundId,
+      binding.seedCommitment,
+      normalizedSeed,
+      commitment,
+    ]);
     return this.#ledger.execute<SurvivalAction>(key, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
       if (this.#claims.size === 0) fail('CLAIM_REJECTED', 'Round has taken no stake', '$.claims');
       if (this.#choices.length !== this.#stageRevision)
         fail('CLAIM_REJECTED', 'A logged decision has not been resolved', '$.choices');
+      if (
+        canonicalTranscript.roundId !== binding.roundId ||
+        canonicalTranscript.seedCommitment !== binding.seedCommitment
+      )
+        fail(
+          'COMMITMENT_MISMATCH',
+          'Settlement proof does not open the published round binding',
+          '$.seedCommitment',
+        );
       // The proof is re-derived through the module's own verifier, on the **wire**
       // form, so settlement is held to exactly what a third party would check —
       // not to a privileged in-memory object the book happens to hold.
       const verification = verifySurvivalTranscript(
-        revealedSeed,
+        normalizedSeed,
         this.definition,
-        transcriptToWire(transcript),
+        transcriptToWire(canonicalTranscript),
         deserializeTranscript,
       );
       if (!verification.ok)
@@ -564,8 +626,8 @@ export class SurvivalBook {
           verificationCode: verification.code,
         });
       if (
-        !choicesEqual(transcript.choices, this.#choices) ||
-        !stepsEqual(transcript.steps, this.#steps)
+        !choicesEqual(canonicalTranscript.choices, this.#choices) ||
+        !stepsEqual(canonicalTranscript.steps, this.#steps)
       )
         fail(
           'TRANSCRIPT_MISMATCH',
@@ -586,7 +648,8 @@ export class SurvivalBook {
         );
         for (const claim of this.claims)
           this.#claims.set(claim.entity, Object.freeze({ ...claim, live: false }));
-        this.#settlementCommitment = transcript.commitment;
+        this.#settlementCommitment = canonicalTranscript.commitment;
+        this.#settlementSeed = normalizedSeed;
         this.#terminal = true;
         return receipt;
       });
@@ -597,6 +660,7 @@ export class SurvivalBook {
     const capBasisStake = this.#ledger.capBasisStake;
     const base = {
       schema: SURVIVAL_BOOK_SCHEMA,
+      publishedRound: this.#publishedRound ?? null,
       definition: { id: this.definition.id, fingerprint: survivalFingerprint(this.definition) },
       terminal: this.#terminal,
       stageRevision: this.#stageRevision,
@@ -623,6 +687,7 @@ export class SurvivalBook {
       entries: this.#entries.map((entry) => ({ entity: entry.entity, stake: String(entry.stake) })),
       banks: this.#banks.map((entry) => ({ stage: entry.stage, entities: [...entry.entities] })),
       settlementCommitment: this.#settlementCommitment ?? null,
+      settlementSeed: this.#settlementSeed ?? null,
       liquidBalance: String(this.#ledger.liquidBalance),
       capBasisStake: capBasisStake === undefined ? null : String(capBasisStake),
       receipts: this.#ledger.entries().map((stored) => ({
@@ -644,7 +709,11 @@ export class SurvivalBook {
    * entry, decision, or bank subset cannot survive its own ledger under a
    * freshly computed checksum.
    */
-  static restore(definition: SurvivalDefinition, input: string | object): SurvivalBook {
+  static restore(
+    definition: SurvivalDefinition,
+    input: string | object,
+    expectedBinding?: PublishedSurvivalRound,
+  ): SurvivalBook {
     assertSurvivalDefinition(definition);
     const raw = parseSurvivalSnapshot(input);
     if (
@@ -653,10 +722,23 @@ export class SurvivalBook {
     )
       fail('DEFINITION_MISMATCH', 'Snapshot belongs to another definition', '$.definition');
 
-    const book = new SurvivalBook(definition);
+    const snapshotBinding =
+      raw.publishedRound === null ? undefined : copyPublishedRound(raw.publishedRound);
+    if (
+      expectedBinding !== undefined &&
+      (snapshotBinding?.roundId !== expectedBinding.roundId ||
+        snapshotBinding.seedCommitment !== expectedBinding.seedCommitment)
+    )
+      fail(
+        'COMMITMENT_MISMATCH',
+        'Snapshot does not match the expected published round',
+        '$.expectedBinding',
+      );
+    const book = new SurvivalBook(definition, snapshotBinding);
     book.#terminal = raw.terminal;
     book.#stageRevision = raw.stageRevision;
     book.#settlementCommitment = raw.settlementCommitment ?? undefined;
+    book.#settlementSeed = raw.settlementSeed ?? undefined;
     if (
       raw.stageRevision > definition.stages ||
       raw.steps.length !== raw.stageRevision ||
@@ -882,7 +964,14 @@ export class SurvivalBook {
           receipt.credited !== 0n ||
           receipt.debited !== entry.stake ||
           receipt.frameRevision !== 0 ||
-          receipt.commandFingerprint !== commandFingerprint('enter', [entry.entity, entry.stake])
+          receipt.commandFingerprint !==
+            commandFingerprint('enter', [
+              ...(book.#publishedRound
+                ? [book.#publishedRound.roundId, book.#publishedRound.seedCommitment]
+                : []),
+              entry.entity,
+              entry.stake,
+            ])
         )
           fail('INVALID_SNAPSHOT', 'Receipt does not match the restored entry', '$.entries');
         staked += receipt.debited;
@@ -896,6 +985,9 @@ export class SurvivalBook {
           receipt.frameRevision !== chooses ||
           receipt.commandFingerprint !==
             commandFingerprint('choose', [
+              ...(book.#publishedRound
+                ? [book.#publishedRound.roundId, book.#publishedRound.seedCommitment]
+                : []),
               chooses,
               choice.contractId,
               choice.banked.length,
@@ -912,7 +1004,14 @@ export class SurvivalBook {
           receipt.frameRevision !== record.stage ||
           record.stage > raw.stageRevision ||
           receipt.commandFingerprint !==
-            commandFingerprint('bank', [record.stage, record.entities.length, ...record.entities])
+            commandFingerprint('bank', [
+              ...(book.#publishedRound
+                ? [book.#publishedRound.roundId, book.#publishedRound.seedCommitment]
+                : []),
+              record.stage,
+              record.entities.length,
+              ...record.entities,
+            ])
         )
           fail('INVALID_SNAPSHOT', 'Receipt does not match the logged bank', '$.banks');
         const stageValues = valuesAt[record.stage] as Map<number, Rational>;
@@ -940,7 +1039,14 @@ export class SurvivalBook {
           receipt.credited !== expected.credited ||
           receipt.capped !== expected.capped ||
           raw.settlementCommitment === null ||
-          receipt.commandFingerprint !== commandFingerprint('settle', [raw.settlementCommitment])
+          receipt.commandFingerprint !==
+            commandFingerprint('settle', [
+              ...(book.#publishedRound
+                ? [book.#publishedRound.roundId, book.#publishedRound.seedCommitment]
+                : []),
+              raw.settlementSeed as string,
+              raw.settlementCommitment as string,
+            ])
         )
           fail('INVALID_SNAPSHOT', 'Receipt does not match the replayed settlement', '$.receipts');
         liquid += expected.credited;
@@ -971,6 +1077,11 @@ export class SurvivalBook {
     });
     return book;
   }
+  #requirePublishedRound(): PublishedSurvivalRound {
+    if (!this.#publishedRound)
+      fail('COMMITMENT_MISMATCH', 'A round binding must be published before play');
+    return this.#publishedRound;
+  }
 
   /** Exact banked value of one claim, floored at the credit boundary only. */
   static bankableAmount(claim: SurvivalClaim): bigint {
@@ -983,6 +1094,7 @@ export class SurvivalBook {
 interface SurvivalSnapshot {
   readonly schema: typeof SURVIVAL_BOOK_SCHEMA;
   readonly definition: { readonly id: string; readonly fingerprint: string };
+  readonly publishedRound: PublishedSurvivalRound | null;
   readonly terminal: boolean;
   readonly stageRevision: number;
   readonly ledgerRevision: number;
@@ -992,6 +1104,7 @@ interface SurvivalSnapshot {
   readonly entries: readonly EntryRecord[];
   readonly banks: readonly BankRecord[];
   readonly settlementCommitment: string | null;
+  readonly settlementSeed: string | null;
   readonly liquidBalance: string;
   readonly capBasisStake: string | null;
   readonly receipts: readonly { readonly fingerprint: string; readonly receipt: WireReceipt }[];
@@ -1001,6 +1114,7 @@ interface SurvivalSnapshot {
 const SNAPSHOT_KEYS = Object.freeze([
   'schema',
   'definition',
+  'publishedRound',
   'terminal',
   'stageRevision',
   'ledgerRevision',
@@ -1010,6 +1124,7 @@ const SNAPSHOT_KEYS = Object.freeze([
   'entries',
   'banks',
   'settlementCommitment',
+  'settlementSeed',
   'liquidBalance',
   'capBasisStake',
   'receipts',
@@ -1027,7 +1142,9 @@ function asSnapshotFailure<T>(parse: () => T): T {
 }
 
 function parseSurvivalSnapshot(input: string | object): SurvivalSnapshot {
-  const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
+  const value = preflightSnapshotInput(
+    typeof input === 'string' ? parseSnapshotJson(input) : input,
+  );
   const candidate = assertSnapshotRecord(value, '$');
   assertSnapshotKeys(candidate, SNAPSHOT_KEYS, '$');
   // The checksum is compared over the payload as it arrived, before any field is
@@ -1058,6 +1175,14 @@ function parseSurvivalSnapshot(input: string | object): SurvivalSnapshot {
     assertWireString(candidate.capBasisStake, '$.capBasisStake');
   if (candidate.settlementCommitment !== null)
     assertWireHex(candidate.settlementCommitment, '$.settlementCommitment');
+  if (candidate.settlementSeed !== null)
+    assertWireHex(candidate.settlementSeed, '$.settlementSeed');
+  if (candidate.publishedRound !== null) {
+    const binding = assertSnapshotRecord(candidate.publishedRound, '$.publishedRound');
+    assertSnapshotKeys(binding, ['roundId', 'seedCommitment'], '$.publishedRound');
+    assertWireString(binding.roundId, '$.publishedRound.roundId');
+    assertWireHex(binding.seedCommitment, '$.publishedRound.seedCommitment');
+  }
 
   const choices = asSnapshotFailure(() => parseWireChoiceList(candidate.choices, '$.choices'));
   const steps = asSnapshotFailure(() => parseWireStepList(candidate.steps, '$.steps'));
@@ -1102,4 +1227,17 @@ function parseSurvivalSnapshot(input: string | object): SurvivalSnapshot {
     entries,
     banks,
   };
+}
+
+function copyPublishedRound(value: PublishedSurvivalRound): PublishedSurvivalRound {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    typeof value.roundId !== 'string' ||
+    value.roundId.length === 0 ||
+    typeof value.seedCommitment !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(value.seedCommitment)
+  )
+    fail('COMMITMENT_MISMATCH', 'Published survival round binding is malformed');
+  return Object.freeze({ roundId: value.roundId, seedCommitment: value.seedCommitment });
 }

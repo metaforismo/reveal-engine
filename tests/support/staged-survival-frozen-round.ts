@@ -7,6 +7,7 @@ import {
   transcriptToWire,
   type SurvivalTranscript,
 } from '../../src/modules/staged-survival/index.js';
+import { survivalAdmission } from './survival-admission.js';
 
 /**
  * One deterministic staged-survival round, replayed identically every time.
@@ -49,7 +50,10 @@ export interface FrozenSurvivalRound {
 
 export async function buildFrozenSurvivalRound(): Promise<FrozenSurvivalRound> {
   const definition = fiveRunnerReference;
-  const book = new SurvivalBook(definition);
+  const book = new SurvivalBook(
+    definition,
+    survivalAdmission(definition, FROZEN_SURVIVAL_SEED, frozenSurvivalRoundId),
+  );
   for (const [entity, stake] of FROZEN_SURVIVAL_STAKES.entries())
     await book.enter(`frozen-enter-${entity}`, entity, stake);
 

@@ -129,6 +129,7 @@ export function checkModuleConformance<S extends LifecycleShape>(
       const round: RoundIdentity = Object.freeze({
         moduleId: module.id,
         definitionId: resolved.definitionId,
+        fingerprint: resolved.fingerprint,
         roundId,
         proofVersion: COMMITMENT_VERSION,
       });

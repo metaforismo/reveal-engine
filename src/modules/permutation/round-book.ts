@@ -23,10 +23,11 @@ import {
   assertWireHex,
   assertWireString,
   parseSnapshotJson,
+  preflightSnapshotInput,
   parseWireBigInt,
   snapshotHash,
 } from '../../core/snapshot.js';
-import { assertBet, betFromParameters, betParameters, betWins, claimSignature } from './bets.js';
+import { betFromParameters, betParameters, betWins, claimSignature } from './bets.js';
 import {
   PERMUTATION_ACTIONS,
   PERMUTATION_BOOK_SCHEMA,
@@ -111,6 +112,70 @@ function assertIdempotencyKey(value: unknown): asserts value is string {
     Buffer.byteLength(value, 'utf8') > ENGINE_LIMITS.maxIdempotencyKeyBytes
   )
     fail('IDEMPOTENCY_CONFLICT', 'Invalid idempotency key', '$.idempotencyKey');
+}
+
+/**
+ * Copies a caller-owned bet into the module's canonical, deeply frozen form.
+ *
+ * The discriminator and every selected field are read once. In particular, a
+ * full-order array is copied before validation, so neither a later mutation nor
+ * a live accessor exposed through `claims` can change settlement.
+ */
+function canonicalizeRequestBet(definition: PermutationDefinition, value: unknown): PermutationBet {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    fail('CLAIM_REJECTED', 'Expected a bet object', '$.bet');
+  let keys: string[];
+  let code: unknown;
+  try {
+    keys = Object.keys(value).sort();
+    code = (value as { readonly code?: unknown }).code;
+  } catch {
+    fail('CLAIM_REJECTED', 'Bet object could not be inspected safely', '$.bet');
+  }
+  const expectedKeys: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    full: Object.freeze(['code', 'order']),
+    slot: Object.freeze(['code', 'item', 'position']),
+    first: Object.freeze(['code', 'item']),
+    last: Object.freeze(['code', 'item']),
+    stack: Object.freeze(['before', 'code', 'after'].sort()),
+  });
+  const expected = typeof code === 'string' ? expectedKeys[code] : undefined;
+  if (
+    expected === undefined ||
+    keys.length !== expected.length ||
+    keys.some((key, index) => key !== [...expected].sort()[index])
+  )
+    fail('CLAIM_REJECTED', 'Bet carries missing, unknown, or mismatched fields', '$.bet');
+
+  const bet = value as Record<string, unknown>;
+  let parameters: unknown;
+  try {
+    switch (code) {
+      case 'full': {
+        const order = bet.order;
+        if (!Array.isArray(order))
+          fail('CLAIM_REJECTED', 'A full-order bet must name every position', '$.bet.order');
+        parameters = Array.prototype.slice.call(order) as unknown[];
+        break;
+      }
+      case 'slot':
+        parameters = [bet.item, bet.position];
+        break;
+      case 'first':
+      case 'last':
+        parameters = [bet.item];
+        break;
+      case 'stack':
+        parameters = [bet.before, bet.after];
+        break;
+      default:
+        fail('CLAIM_REJECTED', 'Unknown bet code', '$.bet.code');
+    }
+  } catch (error) {
+    if (error instanceof Error && 'code' in error) throw error;
+    fail('CLAIM_REJECTED', 'Bet fields could not be read safely', '$.bet');
+  }
+  return betFromParameters(definition, code, parameters, '$.bet');
 }
 
 /**
@@ -354,10 +419,11 @@ export class PermutationBook {
 
   async place(request: PlaceRequest): Promise<Receipt<PermutationAction>> {
     assertRequest(request);
-    assertIdempotencyKey(request.idempotencyKey);
-    assertBet(request.bet, this.definition);
-    assertLineStake(this.definition, request.stake);
-    const bet = request.bet;
+    const idempotencyKey = request.idempotencyKey;
+    const stake = request.stake;
+    const bet = canonicalizeRequestBet(this.definition, request.bet);
+    assertIdempotencyKey(idempotencyKey);
+    assertLineStake(this.definition, stake);
     // Ahead of the ledger, not inside it: the command's own identity is a
     // function of the round, so an unbound book has no `place` command to
     // fingerprint, let alone to store against an idempotency key. The binding is
@@ -370,37 +436,37 @@ export class PermutationBook {
         'Round has no published commitment; bind it before accepting a bet',
         '$.binding',
       );
-    const payout = linePayout(this.definition, bet.code, request.stake);
+    const payout = linePayout(this.definition, bet.code, stake);
     const signature = claimSignature(this.definition, bet);
-    const fingerprint = placeFingerprint(binding, bet, request.stake);
-    return this.#ledger.execute<PermutationAction>(request.idempotencyKey, fingerprint, () => {
+    const fingerprint = placeFingerprint(binding, bet, stake);
+    return this.#ledger.execute<PermutationAction>(idempotencyKey, fingerprint, () => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
       assertClaimBudget(this.#claims.size, this.definition.maxOpenBets);
       // Inside the serialized section, and only for a new command: two
       // concurrent places must not both clear a ceiling taken outside it, and a
       // replayed one must not be charged twice against it.
-      assertTicketCeiling(this.definition, this.#stakedTotal + request.stake);
+      assertTicketCeiling(this.definition, this.#stakedTotal + stake);
       if (this.#signatures.has(signature))
         fail('CLAIM_REJECTED', 'Ticket already carries this claim; raise its stake', '$.bet');
       const receipt = this.#ledger.mint(
-        request.idempotencyKey,
+        idempotencyKey,
         fingerprint,
         'place',
         this.#stepRevision,
-        request.stake,
+        stake,
         0n,
         false,
       );
       // Independently funded: each bet raises the ceiling by what it risked.
-      this.#ledger.fundStake(request.stake, 'external');
-      this.#stakedTotal += request.stake;
-      this.#signatures.set(signature, request.idempotencyKey);
+      this.#ledger.fundStake(stake, 'external');
+      this.#stakedTotal += stake;
+      this.#signatures.set(signature, idempotencyKey);
       this.#claims.set(
-        request.idempotencyKey,
+        idempotencyKey,
         Object.freeze({
-          key: request.idempotencyKey,
-          bet: Object.freeze({ ...bet }) as PermutationBet,
-          stake: request.stake,
+          key: idempotencyKey,
+          bet,
+          stake,
           payout,
           signature,
         }),
@@ -929,7 +995,9 @@ function assertSettledOrder(
 }
 
 function parseSnapshotInput(input: string | object): PermutationBookSnapshot {
-  const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
+  const value = preflightSnapshotInput(
+    typeof input === 'string' ? parseSnapshotJson(input) : input,
+  );
   const candidate = assertSnapshotRecord(value, '$');
   // Ahead of the key set, so a retired schema is named as one. A `v1` snapshot
   // is missing `binding` and would otherwise be reported as a malformed object,

@@ -123,6 +123,10 @@ describe('hostile input and failure taxonomy', () => {
   it('maps malformed action requests to typed errors instead of native exceptions', async () => {
     const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
     await expect(book.open(null as never)).rejects.toMatchObject({ code: 'OPEN_REJECTED' });
+    book.bindRound({
+      roundId: 'hostile',
+      commitment: makeTranscript(seed(1), binaryBeaconReference, 'hostile').commitment,
+    });
     await expect(
       book.settle({
         idempotencyKey: 'bad-seed',

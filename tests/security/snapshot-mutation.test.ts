@@ -4,8 +4,10 @@ import {
   commandFingerprint,
   RECEIPT_SCHEMA as PERMUTATION_RECEIPT_SCHEMA,
 } from '../../src/core/ledger.js';
-import { snapshotHash } from '../../src/core/snapshot.js';
+import { multiply, rational } from '../../src/core/rational.js';
+import { snapshotHash, toWireRational } from '../../src/core/snapshot.js';
 import { initialPosterior } from '../../src/modules/progressive-market/posterior.js';
+import { quote } from '../../src/modules/progressive-market/posterior.js';
 import { makeTranscript } from '../../src/modules/progressive-market/fairness.js';
 import {
   RoundBook,
@@ -51,7 +53,10 @@ let valid: Json;
 beforeAll(async () => {
   const seedHex = seed(31);
   const transcript = makeTranscript(seedHex, game, 'snapshot-mutation');
-  const book = new RoundBook(game, initialPosterior(game));
+  const book = new RoundBook(game, initialPosterior(game), {
+    roundId: transcript.context.roundId,
+    commitment: transcript.commitment,
+  });
   await book.open({
     idempotencyKey: 'open',
     expectedFrameRevision: 0,
@@ -166,7 +171,8 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     const seedHex = seed(0x1f);
     const transcript = makeTranscript(seedHex, game, 'outcome-rewrite');
     const losing = (transcript.truth + 1) % game.outcomes.length;
-    const book = new RoundBook(game, initialPosterior(game));
+    const binding = { roundId: transcript.context.roundId, commitment: transcript.commitment };
+    const book = new RoundBook(game, initialPosterior(game), binding);
     await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,
@@ -177,7 +183,7 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     const honest = JSON.parse(book.serialize()) as Json;
 
     // What the honest book is worth: a losing position settles for nothing.
-    const settled = await RoundBook.restore(game, reseal(honest)).settle({
+    const settled = await RoundBook.restore(game, reseal(honest), binding).settle({
       idempotencyKey: 'settle',
       expectedFrameRevision: transcript.evidence.length,
       revealedSeed: seedHex,
@@ -194,7 +200,8 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
   it('refuses a re-sealed snapshot whose contingent payout was inflated', async () => {
     const seedHex = seed(0x1f);
     const transcript = makeTranscript(seedHex, game, 'payout-inflation');
-    const book = new RoundBook(game, initialPosterior(game));
+    const binding = { roundId: transcript.context.roundId, commitment: transcript.commitment };
+    const book = new RoundBook(game, initialPosterior(game), binding);
     await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,
@@ -204,7 +211,7 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     for (const event of transcript.evidence) await book.advanceFrame(event);
     const honest = JSON.parse(book.serialize()) as Json;
 
-    const settled = await RoundBook.restore(game, reseal(honest)).settle({
+    const settled = await RoundBook.restore(game, reseal(honest), binding).settle({
       idempotencyKey: 'settle',
       expectedFrameRevision: transcript.evidence.length,
       revealedSeed: seedHex,
@@ -225,6 +232,48 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     expect(() =>
       RoundBook.restore(game, writeAt(valid, ['liquidBalance'], '999') as never),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  it('rejects coordinated historical sell and re-entry credits after replaying the price', () => {
+    const forged = structuredClone(valid);
+    const binding = forged.publishedRound as { roundId: string; commitment: string };
+    const history = forged.openHistory as Json[];
+    const position = forged.position as Json;
+    const receipts = forged.receipts as { fingerprint: string; receipt: Json }[];
+    const sell = receipts[1] as { fingerprint: string; receipt: Json };
+    const reopen = receipts[2] as { fingerprint: string; receipt: Json };
+    const original = BigInt(sell.receipt.credited as string);
+    const invented = original + 1n;
+    const outcome = position.outcome as number;
+    const payout = multiply(
+      rational(invented),
+      quote(game, initialPosterior(game), outcome, false, 0).multiplier,
+    );
+    const reopenFingerprint = commandFingerprint('open', [
+      binding.roundId,
+      binding.commitment,
+      0,
+      outcome,
+      invented,
+    ]);
+
+    sell.receipt.credited = String(invented);
+    sell.receipt.balanceDelta = String(invented);
+    reopen.fingerprint = reopenFingerprint;
+    reopen.receipt.commandFingerprint = reopenFingerprint;
+    reopen.receipt.debited = String(invented);
+    reopen.receipt.balanceDelta = String(-invented);
+    position.stake = String(invented);
+    position.contingentPayout = toWireRational(payout);
+    (history[1] as Json).stake = String(invented);
+    (history[1] as Json).contingentPayout = toWireRational(payout);
+
+    expect(() => RoundBook.restore(game, reseal(forged), binding)).toThrowError(
+      expect.objectContaining({
+        code: 'INVALID_SNAPSHOT',
+        message: 'Historical sell credit does not re-derive',
+      }),
+    );
   });
 });
 

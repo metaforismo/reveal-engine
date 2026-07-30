@@ -39,6 +39,7 @@ export function permutationRound(
   return Object.freeze({
     moduleId: PERMUTATION_MODULE_ID,
     definitionId: definition.id,
+    fingerprint: permutationFingerprint(definition),
     roundId,
     proofVersion: COMMITMENT_VERSION,
   });

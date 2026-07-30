@@ -10,7 +10,7 @@ import {
   type StoredReceipt,
   type WireReceipt,
 } from '../../core/ledger.js';
-import type { Payable } from '../../core/payments.js';
+import { payableWithinCap, type Payable } from '../../core/payments.js';
 import { normalizeSeed } from '../../core/random.js';
 import { equal, multiply, rational, type Rational } from '../../core/rational.js';
 import {
@@ -22,6 +22,7 @@ import {
   assertWireString,
   fromWireRational,
   parseSnapshotJson,
+  preflightSnapshotInput,
   parseWireBigInt,
   snapshotHash,
   toWireRational,
@@ -36,7 +37,7 @@ import {
 } from './contracts.js';
 import { evidenceEqual, verifyTranscriptDetailed } from './fairness.js';
 import { fairValueClaim, initialPosterior, quote, updatePosterior } from './posterior.js';
-import { deserializeTranscript, serializeTranscript } from './transcript.js';
+import { deserializeTranscript, serializeTranscript, transcriptToWire } from './transcript.js';
 import { assertBoundedBigInt, assertEvidenceEvent, assertGameDefinition } from './validation.js';
 
 /** Receipt actions this module mints. */
@@ -72,9 +73,14 @@ export interface FrameState {
   readonly revision: number;
   readonly posterior: Posterior;
 }
+export interface PublishedRoundBinding {
+  readonly roundId: string;
+  readonly commitment: string;
+}
 
 export interface RoundBookSnapshot {
   readonly schema: typeof ROUND_BOOK_SCHEMA;
+  readonly publishedRound: PublishedRoundBinding | null;
   readonly adapter: { readonly id: string; readonly version: string; readonly fingerprint: string };
   readonly frameRevision: number;
   readonly ledgerRevision: number;
@@ -86,6 +92,18 @@ export interface RoundBookSnapshot {
     readonly other: string;
     readonly label: string;
   }[];
+  readonly openHistory: readonly {
+    readonly outcome: number;
+    readonly contingentPayout: WireRational;
+    readonly stake: string;
+    readonly capBasisStake: string;
+    readonly entryCount: number;
+    readonly openedAtFrameRevision: number;
+  }[];
+  readonly settlementProof: null | {
+    readonly revealedSeed: string;
+    readonly transcript: unknown;
+  };
   readonly position: null | {
     readonly outcome: number;
     readonly contingentPayout: WireRational;
@@ -115,18 +133,49 @@ export class RoundBook {
   #position: Position | undefined;
   #evidence: EvidenceEvent[] = [];
   #entryCount = 0;
+  #openHistory: Position[] = [];
+  #settlementProof:
+    | {
+        readonly revealedSeed: string;
+        readonly transcript: ReturnType<typeof deserializeTranscript>;
+      }
+    | undefined;
   #frameRevision = 0;
   #terminal = false;
+  #publishedRound: PublishedRoundBinding | undefined;
   readonly #ledger: CommandLedger;
 
   constructor(
     readonly game: GameDefinition,
     posterior: Posterior,
+    publishedRound?: PublishedRoundBinding,
   ) {
     assertGameDefinition(game);
     assertPosteriorForGame(posterior, game);
     this.#posterior = freezePosterior(posterior);
+    if (publishedRound !== undefined) this.#publishedRound = copyBinding(publishedRound);
     this.#ledger = new CommandLedger({ maxWinMultiple: game.risk.maxWinMultiple });
+  }
+  get publishedRound(): PublishedRoundBinding | undefined {
+    return this.#publishedRound;
+  }
+  bindRound(binding: PublishedRoundBinding): PublishedRoundBinding {
+    const copied = copyBinding(binding);
+    if (
+      this.#frameRevision !== 0 ||
+      this.#entryCount !== 0 ||
+      this.#evidence.length !== 0 ||
+      this.#ledger.ledgerRevision !== 0
+    )
+      fail('COMMITMENT_MISMATCH', 'Round binding must be published before play');
+    if (
+      this.#publishedRound &&
+      (this.#publishedRound.roundId !== copied.roundId ||
+        this.#publishedRound.commitment !== copied.commitment)
+    )
+      fail('COMMITMENT_MISMATCH', 'Published round binding cannot be replaced');
+    this.#publishedRound ??= copied;
+    return this.#publishedRound;
   }
   get frame(): FrameState {
     return Object.freeze({ revision: this.#frameRevision, posterior: this.#posterior });
@@ -148,6 +197,7 @@ export class RoundBook {
   }
 
   async advanceFrame(event: EvidenceEvent): Promise<FrameState> {
+    this.#requirePublishedRound();
     return this.#ledger.serial(() => {
       if (this.#terminal) fail('ROUND_TERMINAL', 'Cannot advance a terminal round');
       assertEvidenceEvent(event, this.game.outcomes.length, this.#frameRevision, '$.event');
@@ -163,25 +213,31 @@ export class RoundBook {
 
   async open(request: OpenRequest): Promise<Receipt> {
     assertRequestRecord(request, 'OPEN_REJECTED');
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedFrameRevision, '$.expectedFrameRevision');
-    assertBoundedBigInt(request.stake, '$.stake', true);
-    if (
-      !Number.isSafeInteger(request.outcome) ||
-      request.outcome < 0 ||
-      request.outcome >= this.game.outcomes.length
-    )
+    // Caller-owned request objects are an untrusted wire boundary. Snapshot
+    // every field exactly once before validation and never cross the async
+    // ledger boundary with a reference back into the request.
+    const idempotencyKey = request.idempotencyKey;
+    const expectedFrameRevision = request.expectedFrameRevision;
+    const outcome = request.outcome;
+    const stake = request.stake;
+    assertIdempotencyKey(idempotencyKey);
+    assertRevisionInput(expectedFrameRevision, '$.expectedFrameRevision');
+    assertBoundedBigInt(stake, '$.stake', true);
+    if (!Number.isSafeInteger(outcome) || outcome < 0 || outcome >= this.game.outcomes.length)
       fail('UNKNOWN_OUTCOME', 'Unknown outcome', '$.outcome');
+    const binding = this.#requirePublishedRound();
     const fingerprint = commandFingerprint('open', [
-      request.expectedFrameRevision,
-      request.outcome,
-      request.stake,
+      binding.roundId,
+      binding.commitment,
+      expectedFrameRevision,
+      outcome,
+      stake,
     ]);
-    return this.#ledger.execute<RoundAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertFrame(request.expectedFrameRevision);
+    return this.#ledger.execute<RoundAction>(idempotencyKey, fingerprint, () => {
+      this.#assertFrame(expectedFrameRevision);
       if (this.#terminal || this.#position) fail('OPEN_REJECTED', 'Position cannot be opened');
       const first = this.#entryCount === 0;
-      if (!first && request.stake > this.#ledger.liquidBalance)
+      if (!first && stake > this.#ledger.liquidBalance)
         fail(
           'OPEN_REJECTED',
           'Re-entry must be self-financing from liquidated proceeds',
@@ -196,30 +252,24 @@ export class RoundBook {
       const multiplier = quote(
         this.game,
         this.#posterior,
-        request.outcome,
+        outcome,
         first,
         this.#frameRevision,
       ).multiplier;
-      const claim = multiply(rational(request.stake), multiplier);
-      const capBasis = this.#ledger.capBasisStake ?? request.stake;
+      const claim = multiply(rational(stake), multiplier);
+      const capBasis = this.#ledger.capBasisStake ?? stake;
       const position = Object.freeze({
-        outcome: request.outcome,
+        outcome,
         contingentPayout: claim,
-        stake: request.stake,
+        stake,
         capBasisStake: capBasis,
         entryCount: this.#entryCount + 1,
         openedAtFrameRevision: this.#frameRevision,
       });
-      const receipt = this.#mint(
-        request.idempotencyKey,
-        fingerprint,
-        'open',
-        request.stake,
-        0n,
-        false,
-      );
-      this.#ledger.fundStake(request.stake, first ? 'external' : 'recycled');
+      const receipt = this.#mint(idempotencyKey, fingerprint, 'open', stake, 0n, false);
+      this.#ledger.fundStake(stake, first ? 'external' : 'recycled');
       this.#position = position;
+      this.#openHistory.push(position);
       this.#entryCount += 1;
       return receipt;
     });
@@ -227,11 +277,18 @@ export class RoundBook {
 
   async sell(request: SellRequest): Promise<Receipt> {
     assertRequestRecord(request, 'SELL_REJECTED');
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedFrameRevision, '$.expectedFrameRevision');
-    const fingerprint = commandFingerprint('sell', [request.expectedFrameRevision]);
-    return this.#ledger.execute<RoundAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertFrame(request.expectedFrameRevision);
+    const idempotencyKey = request.idempotencyKey;
+    const expectedFrameRevision = request.expectedFrameRevision;
+    assertIdempotencyKey(idempotencyKey);
+    assertRevisionInput(expectedFrameRevision, '$.expectedFrameRevision');
+    const binding = this.#requirePublishedRound();
+    const fingerprint = commandFingerprint('sell', [
+      binding.roundId,
+      binding.commitment,
+      expectedFrameRevision,
+    ]);
+    return this.#ledger.execute<RoundAction>(idempotencyKey, fingerprint, () => {
+      this.#assertFrame(expectedFrameRevision);
       if (this.#terminal || !this.#position || this.#ledger.capBasisStake === undefined)
         fail('SELL_REJECTED', 'No active position to sell');
       const theoretical = fairValueClaim(
@@ -244,7 +301,7 @@ export class RoundBook {
       // every credit path performs all three, so the ledger owns the sequence.
       return this.#ledger.creditClaim(theoretical, (result) => {
         const receipt = this.#mint(
-          request.idempotencyKey,
+          idempotencyKey,
           fingerprint,
           'sell',
           0n,
@@ -259,20 +316,36 @@ export class RoundBook {
 
   async settle(request: SettleRequest): Promise<Receipt> {
     assertRequestRecord(request, 'SETTLE_REJECTED');
-    assertIdempotencyKey(request.idempotencyKey);
-    assertRevisionInput(request.expectedFrameRevision, '$.expectedFrameRevision');
-    const revealedSeed = normalizeSeed(request.revealedSeed);
-    const transcript = deserializeTranscript(request.transcript);
+    const idempotencyKey = request.idempotencyKey;
+    const expectedFrameRevision = request.expectedFrameRevision;
+    const rawSeed = request.revealedSeed;
+    const rawTranscript = request.transcript;
+    assertIdempotencyKey(idempotencyKey);
+    assertRevisionInput(expectedFrameRevision, '$.expectedFrameRevision');
+    const binding = this.#requirePublishedRound();
+    const revealedSeed = normalizeSeed(rawSeed);
+    const transcript = deserializeTranscript(rawTranscript);
     const fingerprint = commandFingerprint('settle', [
-      request.expectedFrameRevision,
+      binding.roundId,
+      binding.commitment,
+      expectedFrameRevision,
       revealedSeed,
       serializeTranscript(transcript),
     ]);
-    return this.#ledger.execute<RoundAction>(request.idempotencyKey, fingerprint, () => {
-      this.#assertFrame(request.expectedFrameRevision);
+    return this.#ledger.execute<RoundAction>(idempotencyKey, fingerprint, () => {
+      this.#assertFrame(expectedFrameRevision);
       if (this.#terminal) fail('SETTLE_REJECTED', 'Round is already terminal');
       if (this.#frameRevision !== this.game.evidence.eventCount)
         fail('SETTLE_REJECTED', 'Settlement requires the complete evidence schedule');
+      if (
+        transcript.context.roundId !== binding.roundId ||
+        transcript.commitment !== binding.commitment
+      )
+        fail(
+          'COMMITMENT_MISMATCH',
+          'Settlement proof does not open the published round binding',
+          '$.transcript.commitment',
+        );
       const verification = verifyTranscriptDetailed(revealedSeed, this.game, transcript);
       if (!verification.ok)
         fail('INVALID_TRANSCRIPT', verification.message, verification.path, {
@@ -286,7 +359,7 @@ export class RoundBook {
           : rational(0n);
       const close = (result: Payable): Receipt => {
         const receipt = this.#mint(
-          request.idempotencyKey,
+          idempotencyKey,
           fingerprint,
           'settle',
           0n,
@@ -294,6 +367,7 @@ export class RoundBook {
           result.capped,
         );
         this.#terminal = true;
+        this.#settlementProof = Object.freeze({ revealedSeed, transcript });
         this.#position = undefined;
         return receipt;
       };
@@ -312,6 +386,7 @@ export class RoundBook {
     const capBasisStake = this.#ledger.capBasisStake;
     const base = {
       schema: ROUND_BOOK_SCHEMA,
+      publishedRound: this.#publishedRound ?? null,
       adapter: Object.freeze({
         id: this.game.id,
         version: this.game.adapterVersion,
@@ -328,6 +403,24 @@ export class RoundBook {
           Object.freeze({ ...event, favour: String(event.favour), other: String(event.other) }),
         ),
       ),
+      openHistory: Object.freeze(
+        this.#openHistory.map((position) =>
+          Object.freeze({
+            outcome: position.outcome,
+            contingentPayout: toWireRational(position.contingentPayout),
+            stake: String(position.stake),
+            capBasisStake: String(position.capBasisStake),
+            entryCount: position.entryCount,
+            openedAtFrameRevision: position.openedAtFrameRevision,
+          }),
+        ),
+      ),
+      settlementProof: this.#settlementProof
+        ? Object.freeze({
+            revealedSeed: this.#settlementProof.revealedSeed,
+            transcript: transcriptToWire(this.#settlementProof.transcript),
+          })
+        : null,
       position: this.#position
         ? Object.freeze({
             outcome: this.#position.outcome,
@@ -354,7 +447,11 @@ export class RoundBook {
     return Object.freeze({ ...base, snapshotHash: snapshotHash(base) });
   }
 
-  static restore(game: GameDefinition, input: string | RoundBookSnapshot): RoundBook {
+  static restore(
+    game: GameDefinition,
+    input: string | RoundBookSnapshot,
+    expectedBinding?: PublishedRoundBinding,
+  ): RoundBook {
     const raw = parseSnapshotInput(input);
     if (
       raw.schema !== ROUND_BOOK_SCHEMA ||
@@ -377,7 +474,15 @@ export class RoundBook {
       total: parseWireBigInt(raw.posterior.total, '$.posterior.total'),
     });
     assertPosteriorForGame(posterior, game);
-    const book = new RoundBook(game, posterior);
+    const snapshotBinding =
+      raw.publishedRound === null ? undefined : copyBinding(raw.publishedRound);
+    if (
+      expectedBinding !== undefined &&
+      (snapshotBinding?.roundId !== expectedBinding.roundId ||
+        snapshotBinding.commitment !== expectedBinding.commitment)
+    )
+      fail('COMMITMENT_MISMATCH', 'Snapshot does not match the expected published round');
+    const book = new RoundBook(game, posterior, snapshotBinding);
     book.#frameRevision = assertSnapshotRevision(raw.frameRevision, '$.frameRevision');
     book.#evidence = raw.evidence.map((event, index) =>
       Object.freeze({
@@ -407,6 +512,14 @@ export class RoundBook {
         : parseWireBigInt(raw.capBasisStake, '$.capBasisStake');
     const liquidBalance = parseWireBigInt(raw.liquidBalance, '$.liquidBalance', true);
     book.#terminal = raw.terminal;
+    book.#openHistory = raw.openHistory.map((position) => parseWirePosition(position));
+    book.#settlementProof =
+      raw.settlementProof === null
+        ? undefined
+        : Object.freeze({
+            revealedSeed: normalizeSeed(raw.settlementProof.revealedSeed),
+            transcript: deserializeTranscript(raw.settlementProof.transcript),
+          });
     book.#position = raw.position
       ? Object.freeze({
           outcome: raw.position.outcome,
@@ -460,6 +573,7 @@ export class RoundBook {
     });
     if (
       book.#entryCount !== openCount ||
+      book.#openHistory.length !== openCount ||
       book.#terminal !== settled ||
       Boolean(book.#position) !== activePosition ||
       (firstStake === undefined) !== (capBasisStake === undefined) ||
@@ -468,6 +582,94 @@ export class RoundBook {
       fail('INVALID_SNAPSHOT', 'Snapshot state invariants failed');
     if (reconstructedLiquid !== liquidBalance)
       fail('INVALID_SNAPSHOT', 'Snapshot accounting does not conserve liquid value');
+    let replayLiquid = 0n;
+    let replayPosition: Position | undefined;
+    let replayOpen = 0;
+    for (const entry of [...stored].sort(
+      (left, right) => left.receipt.ledgerRevision - right.receipt.ledgerRevision,
+    )) {
+      const receipt = entry.receipt;
+      if (receipt.action === 'open') {
+        const position = book.#openHistory[replayOpen++];
+        if (
+          !position ||
+          receipt.debited !== position.stake ||
+          entry.fingerprint !==
+            commandFingerprint('open', [
+              ...(book.#publishedRound
+                ? [book.#publishedRound.roundId, book.#publishedRound.commitment]
+                : []),
+              position.openedAtFrameRevision,
+              position.outcome,
+              position.stake,
+            ])
+        )
+          fail('INVALID_SNAPSHOT', 'Open history does not match its receipt');
+        const atOpen = book.#evidence
+          .slice(0, position.openedAtFrameRevision)
+          .reduce(updatePosterior, initialPosterior(game));
+        const expected = multiply(
+          rational(position.stake),
+          quote(
+            game,
+            atOpen,
+            position.outcome,
+            position.entryCount === 1,
+            position.openedAtFrameRevision,
+          ).multiplier,
+        );
+        if (!equal(expected, position.contingentPayout))
+          fail('INVALID_SNAPSHOT', 'Historical position does not re-derive from its price');
+        if (position.entryCount > 1) replayLiquid -= position.stake;
+        replayPosition = position;
+      } else if (receipt.action === 'sell') {
+        if (!replayPosition || capBasisStake === undefined)
+          fail('INVALID_SNAPSHOT', 'Sell has no replayed position');
+        const atSell = book.#evidence
+          .slice(0, receipt.frameRevision)
+          .reduce(updatePosterior, initialPosterior(game));
+        const result = payableWithinCap(
+          fairValueClaim(
+            replayPosition.contingentPayout,
+            atSell,
+            replayPosition.outcome,
+            game.pricing.liquidationSpread,
+          ),
+          capBasisStake,
+          game.risk.maxWinMultiple,
+          replayLiquid,
+        );
+        if (receipt.credited !== result.credited || receipt.capped !== result.capped)
+          fail('INVALID_SNAPSHOT', 'Historical sell credit does not re-derive');
+        replayLiquid += result.credited;
+        replayPosition = undefined;
+      } else {
+        if (!book.#settlementProof) fail('INVALID_SNAPSHOT', 'Settled snapshot lacks its proof');
+        const proof = book.#settlementProof;
+        const verification = verifyTranscriptDetailed(proof.revealedSeed, game, proof.transcript);
+        if (
+          !verification.ok ||
+          proof.transcript.commitment !== book.#publishedRound?.commitment ||
+          proof.transcript.context.roundId !== book.#publishedRound?.roundId ||
+          !evidenceEqual(book.#evidence, proof.transcript.evidence)
+        )
+          fail('INVALID_SNAPSHOT', 'Stored settlement proof is invalid');
+        const theoretical =
+          replayPosition?.outcome === proof.transcript.truth
+            ? replayPosition.contingentPayout
+            : rational(0n);
+        const result =
+          capBasisStake === undefined
+            ? Object.freeze({ theoretical, credited: 0n, capped: false })
+            : payableWithinCap(theoretical, capBasisStake, game.risk.maxWinMultiple, replayLiquid);
+        if (receipt.credited !== result.credited || receipt.capped !== result.capped)
+          fail('INVALID_SNAPSHOT', 'Historical settlement credit does not re-derive');
+        replayLiquid += result.credited;
+        replayPosition = undefined;
+      }
+    }
+    if (replayLiquid !== liquidBalance)
+      fail('INVALID_SNAPSHOT', 'Replayed credits do not conserve liquid value');
     book.#ledger.restoreBalances({ ledgerRevision, liquidBalance, capBasisStake });
     const position = book.#position;
     if (position) {
@@ -487,6 +689,9 @@ export class RoundBook {
       if (
         lastOpenFingerprint !==
         commandFingerprint('open', [
+          ...(book.#publishedRound
+            ? [book.#publishedRound.roundId, book.#publishedRound.commitment]
+            : []),
           position.openedAtFrameRevision,
           position.outcome,
           position.stake,
@@ -530,6 +735,11 @@ export class RoundBook {
         received: expected,
       });
   }
+  #requirePublishedRound(): PublishedRoundBinding {
+    if (!this.#publishedRound)
+      fail('COMMITMENT_MISMATCH', 'A round binding must be published before play');
+    return this.#publishedRound;
+  }
   #mint(
     key: string,
     fingerprint: string,
@@ -572,19 +782,50 @@ function assertRevisionInput(value: unknown, path: string): asserts value is num
 function freezePosterior(posterior: Posterior): Posterior {
   return Object.freeze({ ...posterior, weights: Object.freeze([...posterior.weights]) });
 }
+function copyBinding(value: PublishedRoundBinding): PublishedRoundBinding {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    typeof value.roundId !== 'string' ||
+    value.roundId.length === 0 ||
+    Buffer.byteLength(value.roundId, 'utf8') > ENGINE_LIMITS.maxIdentifierBytes ||
+    typeof value.commitment !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(value.commitment)
+  )
+    fail('COMMITMENT_MISMATCH', 'Published round binding is malformed');
+  return Object.freeze({ roundId: value.roundId, commitment: value.commitment });
+}
+function parseWirePosition(position: RoundBookSnapshot['openHistory'][number]): Position {
+  return Object.freeze({
+    outcome: position.outcome,
+    contingentPayout: fromWireRational(position.contingentPayout),
+    stake: parseWireBigInt(position.stake, '$.openHistory.stake'),
+    capBasisStake: parseWireBigInt(position.capBasisStake, '$.openHistory.capBasisStake'),
+    entryCount: assertSnapshotRevision(position.entryCount, '$.openHistory.entryCount'),
+    openedAtFrameRevision: assertSnapshotRevision(
+      position.openedAtFrameRevision,
+      '$.openHistory.openedAtFrameRevision',
+    ),
+  });
+}
 
 function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapshot {
-  const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
+  const value = preflightSnapshotInput(
+    typeof input === 'string' ? parseSnapshotJson(input) : input,
+  );
   const candidate = assertSnapshotRecord(value, '$');
   assertSnapshotKeys(
     candidate,
     [
       'schema',
+      'publishedRound',
       'adapter',
       'frameRevision',
       'ledgerRevision',
       'posterior',
       'evidence',
+      'openHistory',
+      'settlementProof',
       'position',
       'entryCount',
       'capBasisStake',
@@ -597,6 +838,12 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
   );
   const adapter = assertSnapshotRecord(candidate.adapter, '$.adapter');
   assertSnapshotKeys(adapter, ['id', 'version', 'fingerprint'], '$.adapter');
+  if (candidate.publishedRound !== null) {
+    const binding = assertSnapshotRecord(candidate.publishedRound, '$.publishedRound');
+    assertSnapshotKeys(binding, ['roundId', 'commitment'], '$.publishedRound');
+    assertWireString(binding.roundId, '$.publishedRound.roundId');
+    assertWireHex(binding.commitment, '$.publishedRound.commitment');
+  }
   const posterior = assertSnapshotRecord(candidate.posterior, '$.posterior');
   assertSnapshotKeys(posterior, ['weights', 'total'], '$.posterior');
   if (!Array.isArray(posterior.weights))
@@ -627,6 +874,32 @@ function parseSnapshotInput(input: string | RoundBookSnapshot): RoundBookSnapsho
     assertWireString(event.other, `$.evidence[${index}].other`);
     assertWireString(event.label, `$.evidence[${index}].label`);
   });
+  if (
+    !Array.isArray(candidate.openHistory) ||
+    candidate.openHistory.length > ENGINE_LIMITS.maxReceipts
+  )
+    fail('INVALID_SNAPSHOT', 'Open history must be a bounded array', '$.openHistory');
+  candidate.openHistory.forEach((item, index) => {
+    const position = assertSnapshotRecord(item, `$.openHistory[${index}]`);
+    assertSnapshotKeys(
+      position,
+      [
+        'outcome',
+        'contingentPayout',
+        'stake',
+        'capBasisStake',
+        'entryCount',
+        'openedAtFrameRevision',
+      ],
+      `$.openHistory[${index}]`,
+    );
+  });
+  if (candidate.settlementProof !== null) {
+    const proof = assertSnapshotRecord(candidate.settlementProof, '$.settlementProof');
+    assertSnapshotKeys(proof, ['revealedSeed', 'transcript'], '$.settlementProof');
+    assertWireHex(proof.revealedSeed, '$.settlementProof.revealedSeed');
+    deserializeTranscript(proof.transcript);
+  }
   if (candidate.position !== null) {
     const position = assertSnapshotRecord(candidate.position, '$.position');
     assertSnapshotKeys(

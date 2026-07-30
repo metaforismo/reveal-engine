@@ -24,6 +24,7 @@ import { deriveRevealSteps, stepDigest } from '../../src/modules/sequential-card
 import { deriveDeal } from '../../src/modules/sequential-cards/truth.js';
 import type { RevealStep } from '../../src/modules/sequential-cards/contracts.js';
 import { seed } from '../helpers.js';
+import { cardsAdmission } from '../support/cards-admission.js';
 
 const definition = triadMiddleReference;
 const SEED = seed(53);
@@ -68,6 +69,7 @@ async function stakedRound(): Promise<{
     idempotencyKey: 'open',
     expectedStepRevision: 0,
     roundId: ROUND,
+    ...cardsAdmission(definition, SEED, ROUND),
     selections: [{ id: 'a', kind: 'position', position: 0, stake: 25n }],
   });
   const deal = deriveDeal(SEED, definition, ROUND);
@@ -122,6 +124,8 @@ describe("sequential-cards: restore() replays the round's own rules", () => {
         ...(snapshot.receipts as WireEntry[]),
         ...chain.map((link, index) => {
           const fingerprint = commandFingerprint(link.action, [
+            snapshot.roundId as string,
+            snapshot.seedCommitment as string,
             stepDigest([step]),
             'a',
             link.positions.length,
@@ -306,6 +310,7 @@ describe("sequential-cards: restore() replays the round's own rules", () => {
         idempotencyKey: 'open',
         expectedStepRevision: 0,
         roundId,
+        ...cardsAdmission(definition, seed(index), roundId),
         selections: [
           { id: 'a', kind: 'position', position: 0, stake: 25n },
           { id: 'm', kind: 'market', marketId: 'BAND:CORE', stake: 50n },
@@ -363,6 +368,7 @@ describe('sequential-cards: restore() replays the rules of a liquidation too', (
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId,
+      ...cardsAdmission(definition, seed(index), roundId),
       selections: [
         { id: 'a', kind: 'position', position: 0, stake: 25n },
         { id: 'm', kind: 'market', marketId: 'BAND:CORE', stake: 25n },
@@ -406,6 +412,8 @@ describe('sequential-cards: restore() replays the rules of a liquidation too', (
     const liquid = BigInt(base.liquidBalance as string);
     const payable = payableWithinCap(value, CAP_BASIS, definition.risk.maxWinMultiple, liquid);
     const fingerprint = commandFingerprint('cash', [
+      base.roundId as string,
+      base.seedCommitment as string,
       stepDigest((base.steps as RevealStep[]).slice(0, frame)),
       selectionId,
     ]);
@@ -598,6 +606,7 @@ describe('sequential-cards: the frame rule on a two-reveal round', () => {
         idempotencyKey: 'open',
         expectedStepRevision: 0,
         roundId,
+        ...cardsAdmission(cascade, seed(index), roundId),
         selections: [{ id: 'a', kind: 'position', position: 0, stake: 10n }],
       });
       const deal = deriveDeal(seed(index), cascade, roundId);
@@ -629,6 +638,8 @@ describe('sequential-cards: the frame rule on a two-reveal round', () => {
       );
       const payable = payableWithinCap(value, 10n, cascade.risk.maxWinMultiple, 0n);
       const fingerprint = commandFingerprint('cash', [
+        fixture.roundId as string,
+        fixture.seedCommitment as string,
         stepDigest((fixture.steps as RevealStep[]).slice(0, frame)),
         'a',
       ]);

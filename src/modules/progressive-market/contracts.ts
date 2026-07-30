@@ -12,7 +12,8 @@ export const PROGRESSIVE_MARKET_MODULE_VERSION = '1.0.0' as const;
 
 export const TRANSCRIPT_SCHEMA = 'reveal-engine/transcript-v2' as const;
 export const LEGACY_TRANSCRIPT_SCHEMA = 'reveal-engine/transcript-v1' as const;
-export const ROUND_BOOK_SCHEMA = 'reveal-engine/round-book-v1' as const;
+export const LEGACY_ROUND_BOOK_SCHEMA = 'reveal-engine/round-book-v1' as const;
+export const ROUND_BOOK_SCHEMA = 'reveal-engine/round-book-v2' as const;
 
 export { COMMITMENT_VERSION, ENGINE_API_VERSION, LEGACY_COMMITMENT_VERSION };
 export type { CommitmentVersion };
@@ -46,6 +47,7 @@ export interface EvidenceSchedule {
 
 export interface RoundContext {
   readonly gameId: string;
+  readonly definitionFingerprint?: string;
   readonly roundId: string;
   readonly proofVersion: CommitmentVersion;
 }

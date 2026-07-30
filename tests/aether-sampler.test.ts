@@ -8,19 +8,20 @@ import {
   derivePermutation,
   factorial,
   fisherYates,
+  permutationAdapterFingerprint,
   uniformBelow,
 } from '../src/modules/permutation/aether/index.js';
 import { encodeFields } from '../src/internal/canonical.js';
 
 const referenceDraws = Object.freeze([
   ['4', '3', '1', '0'],
-  ['2', '1', '0', '0'],
-  ['3', '1', '2', '1'],
-  ['0', '1', '2', '1'],
-  ['1', '0', '0', '2', '2', '1'],
-  ['4', '2', '2', '1', '0', '1'],
-  ['2', '0', '4', '0', '1', '0'],
-  ['0', '0', '1', '3', '0', '0'],
+  ['3', '2', '0', '1'],
+  ['1', '2', '2', '1'],
+  ['4', '2', '0', '0'],
+  ['4', '5', '4', '3', '1', '0'],
+  ['6', '1', '3', '3', '1', '1'],
+  ['6', '2', '1', '0', '0', '1'],
+  ['1', '3', '2', '3', '1', '1'],
 ]);
 
 function independentlyDerive(
@@ -32,6 +33,7 @@ function independentlyDerive(
     clientSeed: string;
     nonce: number;
   },
+  game: typeof aetherOrderClassic,
   n: number,
 ): readonly number[] {
   const order = Array.from({ length: n }, (_, index) => index);
@@ -44,12 +46,14 @@ function independentlyDerive(
       const payload = encodeFields([
         'sampler',
         'reveal-engine/permutation-v1',
+        game.adapterVersion,
+        permutationAdapterFingerprint(game),
         context.gameId,
         context.variantId,
         context.roundId,
         context.clientSeed,
         context.nonce,
-        'shuffle',
+        'aether-order/shuffle-v2',
         counter,
         rejection,
         modulus,
@@ -79,8 +83,9 @@ describe('AETHER ORDER rejection sampler and shuffle', () => {
       const actual = Array.from({ length: n - 1 }, (_, counter) =>
         uniformBelow(
           vector.serverSeed,
+          n === 5 ? aetherOrderClassic : aetherOrderSeven,
           context,
-          'shuffle',
+          'shuffle-v2',
           counter,
           BigInt(n - counter),
         ).toString(),
@@ -110,7 +115,7 @@ describe('AETHER ORDER rejection sampler and shuffle', () => {
       const game = vector.context.variantId === 'classic' ? aetherOrderClassic : aetherOrderSeven;
       const context = { gameId: 'aether-order', ...vector.context };
       expect(derivePermutation(vector.serverSeed, game, context)).toEqual(
-        independentlyDerive(vector.serverSeed, context, game.n),
+        independentlyDerive(vector.serverSeed, context, game, game.n),
       );
     }
   });

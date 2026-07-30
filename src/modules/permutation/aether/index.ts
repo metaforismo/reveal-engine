@@ -45,6 +45,7 @@ export {
 export {
   computePermutationCatalogueDigest,
   definePermutationGame,
+  definePermutationGameAsync,
   permutationAdapterFingerprint,
   permutationCatalogueDigest,
   permutationClaimSignature,
@@ -111,6 +112,7 @@ export {
   AETHER_ORDER_STAKE_QUANTUM,
   AETHER_ORDER_TARGET_RTP,
   aetherOrderClassic,
+  aetherOrderSix,
   aetherOrderSeven,
 } from './catalogue.js';
 export type { PermutationErrorCode } from '../../../api/errors.js';

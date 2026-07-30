@@ -293,6 +293,8 @@ export function verifyReceipt(
     const recomputedTicketDigest = ticketDigestForReceipt(
       {
         gameId: transcript.gameId,
+        adapterVersion: transcript.adapterVersion,
+        adapterFingerprint: transcript.adapterFingerprint,
         variantId: transcript.variantId,
         roundId: transcript.roundId,
         nonce: transcript.nonce,
@@ -308,11 +310,20 @@ export function verifyReceipt(
         'Receipt does not bind the supplied ticket',
         '$.ticketDigest',
       );
-    const recomputedSettlementDigest = settlementDigestFor(
-      transcript.gameId,
-      transcript.variantId,
-      context.settlement,
-    );
+    let recomputedSettlementDigest: string;
+    try {
+      recomputedSettlementDigest = settlementDigestFor(
+        transcript.gameId,
+        transcript.variantId,
+        context.settlement,
+      );
+    } catch {
+      return rejected(
+        'TRANSCRIPT_MISMATCH',
+        'Receipt does not bind the supplied settlement',
+        '$.settlementDigest',
+      );
+    }
     if (
       typeof receipt.settlementDigest !== 'string' ||
       !constantTimeHexEqual(recomputedSettlementDigest, receipt.settlementDigest)

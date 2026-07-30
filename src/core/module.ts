@@ -82,12 +82,19 @@ export interface DefinitionIdentity {
 export interface RoundIdentity {
   readonly moduleId: string;
   readonly definitionId: string;
+  readonly fingerprint: string;
   readonly roundId: string;
   readonly proofVersion: CommitmentVersion;
 }
 
 export function samplerScopeOf(round: RoundIdentity): SamplerScope {
   if (!isRecord(round)) fail('INVALID_CONTEXT', 'Expected a round identity', '$.round');
+  if (
+    typeof round.moduleId !== 'string' ||
+    typeof round.fingerprint !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(round.fingerprint)
+  )
+    fail('INVALID_CONTEXT', 'Round identity lacks a module/fingerprint binding', '$.round');
   return Object.freeze({
     domain: round.definitionId,
     roundId: round.roundId,

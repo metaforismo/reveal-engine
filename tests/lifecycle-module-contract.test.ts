@@ -48,7 +48,7 @@ describe('lifecycle module contract', () => {
     expect(progressiveMarket.book.settlement).toBe('winner-takes-claim');
     expect(progressiveMarket.book.actions).toEqual(['open', 'sell', 'settle']);
     expect(progressiveMarket.transcript.schema).toBe('reveal-engine/transcript-v2');
-    expect(progressiveMarket.book.snapshotSchema).toBe('reveal-engine/round-book-v1');
+    expect(progressiveMarket.book.snapshotSchema).toBe('reveal-engine/round-book-v2');
     expect(Object.isFrozen(progressiveMarket)).toBe(true);
   });
 
@@ -174,6 +174,7 @@ describe('lifecycle module contract', () => {
     const definition = binaryBeaconReference;
     const transcript = progressiveMarket.transcript.build(seed(12), definition, 'book-round');
     const book = progressiveMarket.book.create(definition);
+    book.bindRound({ roundId: transcript.context.roundId, commitment: transcript.commitment });
     await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,
@@ -288,6 +289,7 @@ describe('lifecycle module contract', () => {
     const roundId = 'conformance-13';
     const transcript = progressiveMarket.transcript.build(seedHex, definition, roundId);
     const book = progressiveMarket.book.create(definition);
+    book.bindRound({ roundId, commitment: transcript.commitment });
     await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,
@@ -413,6 +415,7 @@ describe('lifecycle module contract', () => {
     const round = {
       moduleId: cramped.id,
       definitionId: definition.id,
+      fingerprint: cramped.definitions.fingerprint(definition),
       roundId: 'budget',
       proofVersion: 'reveal-engine/commit-v2' as const,
     };

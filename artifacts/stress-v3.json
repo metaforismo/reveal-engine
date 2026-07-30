@@ -4,16 +4,16 @@
   "workloadSeed": 1592598566,
   "rounds": 500,
   "operations": 5538,
-  "elapsedMs": 1122.754625,
-  "throughputOpsPerSecond": 4932.511411386971,
+  "elapsedMs": 24085.532291,
+  "throughputOpsPerSecond": 229.93056300729444,
   "latency": {
-    "p50Ms": 0.01516700000001947,
-    "p95Ms": 0.21041600000000926,
-    "p99Ms": 1.6568340000001172,
-    "maxMs": 11.933582999999999
+    "p50Ms": 0.02824999999938882,
+    "p95Ms": 2.3092500000020664,
+    "p99Ms": 33.4985829999996,
+    "maxMs": 192.75279099999898
   },
-  "heapDeltaBytes": 2369776,
-  "maxSnapshotBytes": 5436,
+  "heapDeltaBytes": 1036456,
+  "maxSnapshotBytes": 5647,
   "maxTranscriptBytes": 1262,
   "accepted": {
     "open": 667,
@@ -36,8 +36,8 @@
     "CLAIM_REJECTED": 100
   },
   "moduleDigests": {
-    "progressive-market": "fdb9e9b8ed782e685c9ddcfb74b3418b879db56602cb2c8bcde81b785bfbaef1",
-    "staged-survival": "37bf46bde056e0f318206e3d160b8f5afc0b61d6265ecd118b5f4da66dda824e"
+    "progressive-market": "90a0f1e0001d3a53d38a7a945f8527a2d062c6d42c64fe357821bef030b8cd8d",
+    "staged-survival": "cc0e2647a4b558deb8f3e15f96be5f3e11481e043fdfca4e68db4ccff0ce42b7"
   },
   "thresholds": {
     "elapsedMs": 30000,

@@ -25,6 +25,7 @@ import {
   assertWireString,
   fromWireRational,
   parseSnapshotJson,
+  preflightSnapshotInput,
   parseWireBigInt,
   snapshotHash,
   toWireRational,
@@ -99,6 +100,8 @@ export interface OpenRequest {
    * proof would verify, and the round would settle on somebody else's deal.
    */
   readonly roundId: string;
+  readonly seedCommitment: string;
+  readonly clientSeed: string;
   readonly selections: readonly TicketSelection[];
   /**
    * The round's committed rounding tape, required exactly when
@@ -113,6 +116,11 @@ export interface OpenRequest {
    * for the one-credit edge a party who knows it early can take.
    */
   readonly roundingSeed?: string;
+}
+
+export interface PublishedCardsRound {
+  readonly roundId: string;
+  readonly seedCommitment: string;
 }
 export interface TransformRequest {
   readonly idempotencyKey: string;
@@ -230,6 +238,8 @@ export interface CardsBookSnapshot {
     readonly fingerprint: string;
   };
   readonly roundId: string | null;
+  readonly seedCommitment: string | null;
+  readonly clientSeed: string | null;
   readonly stepRevision: number;
   readonly ledgerRevision: number;
   readonly terminal: boolean;
@@ -287,6 +297,8 @@ const SNAPSHOT_KEYS = Object.freeze([
   'schema',
   'definition',
   'roundId',
+  'seedCommitment',
+  'clientSeed',
   'stepRevision',
   'ledgerRevision',
   'terminal',
@@ -371,6 +383,8 @@ export class CardsBook {
   readonly #steps: RevealStep[] = [];
   readonly #decisions: CardsDecision[] = [];
   #roundId: string | undefined;
+  #seedCommitment: string | undefined;
+  #clientSeed: string | undefined;
   #roundingSeed: string | undefined;
   #settlement: CardsSettlementRecord | null = null;
   #settlementReason: CardsSettlementReason | null = null;
@@ -473,9 +487,27 @@ export class CardsBook {
     const key = request.idempotencyKey;
     const expected = request.expectedStepRevision;
     const roundId = request.roundId;
+    const publishedCommitment = request.seedCommitment;
+    const clientSeed = request.clientSeed;
     assertIdempotencyKey(key);
     assertRevisionInput(expected);
     assertIdentifier(roundId, '$.roundId', 'CLAIM_REJECTED');
+    if (typeof publishedCommitment !== 'string' || !/^[0-9a-f]{64}$/u.test(publishedCommitment))
+      fail('COMMITMENT_MISMATCH', 'A seed commitment must be published before the ticket opens');
+    if (
+      typeof clientSeed !== 'string' ||
+      !/^[0-9a-f]*$/iu.test(clientSeed) ||
+      clientSeed.length % 2 !== 0 ||
+      clientSeed.length / 2 > 128 ||
+      (this.definition.seed.clientEntropy === 'required' &&
+        clientSeed.length / 2 < this.definition.seed.clientSeedBytes)
+    )
+      reject(
+        'CLAIM_REJECTED',
+        'This definition requires bounded client entropy at admission',
+        '$.clientSeed',
+        'MISSING_CLIENT_ENTROPY',
+      );
     const rows = this.#assertTicketShape(request.selections);
     // Read once, like every other field of the request, and required exactly
     // where the declared economics need it. A stochastic definition without a
@@ -502,6 +534,8 @@ export class CardsBook {
       roundId,
       rows,
       roundingSeed === undefined ? undefined : roundingCommitment(roundingSeed),
+      publishedCommitment,
+      clientSeed,
     );
     return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
       this.#assertStepRevision(expected);
@@ -559,6 +593,8 @@ export class CardsBook {
       // multiple of the whole ticket rather than of whichever row came first.
       this.#ledger.fundStake(total, 'external');
       this.#roundId = roundId;
+      this.#seedCommitment = publishedCommitment;
+      this.#clientSeed = clientSeed;
       this.#roundingSeed = roundingSeed;
       for (const selection of priced) this.#selections.set(selection.id, selection);
       for (const selection of priced)
@@ -601,6 +637,7 @@ export class CardsBook {
     assertRevisionInput(expected);
     const step = this.#copyRevealStep(request.step);
     const fingerprint = commandFingerprint('reveal', [
+      ...this.#bindingFields(),
       stepDigest(this.#steps),
       ...encodeRevealStep(step),
     ]);
@@ -673,7 +710,11 @@ export class CardsBook {
     assertIdempotencyKey(key);
     assertRevisionInput(expected);
     assertIdentifier(selectionId, '$.selectionId', 'CLAIM_REJECTED');
-    const fingerprint = commandFingerprint('cash', [stepDigest(this.#steps), selectionId]);
+    const fingerprint = commandFingerprint('cash', [
+      ...this.#bindingFields(),
+      stepDigest(this.#steps),
+      selectionId,
+    ]);
     return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
       this.#assertStepRevision(expected);
       const selection = this.#assertActionable(selectionId, 'cash');
@@ -728,6 +769,7 @@ export class CardsBook {
     const objectiveRank = objectiveRankOf(this.definition, transcript.deal.ranks);
     const objectivePosition = objectivePositionOf(this.definition, transcript.deal.ranks);
     const fingerprint = commandFingerprint('settle', [
+      ...this.#bindingFields(),
       stepDigest(this.#steps),
       revealedSeed,
       transcript.commitment,
@@ -744,13 +786,21 @@ export class CardsBook {
           '$.expectedStepRevision',
           'CHOICE_CONFLICT',
         );
+      if (
+        transcript.roundId !== this.#roundId ||
+        transcript.seedCommitment !== this.#seedCommitment
+      )
+        fail(
+          'COMMITMENT_MISMATCH',
+          'Settlement proof does not open the published round binding',
+          '$.seedCommitment',
+        );
       const verification = verifyCardsTranscript(revealedSeed, this.definition, transcript);
       if (!verification.ok)
         fail('INVALID_TRANSCRIPT', verification.message, verification.path, {
           verificationCode: verification.code,
         });
       if (
-        transcript.roundId !== this.#roundId ||
         transcript.choices.length !== this.#choices.length ||
         transcript.choices.some(
           (choice, index) => choice.position !== this.#choices[index]?.position,
@@ -884,13 +934,17 @@ export class CardsBook {
     const transcript = deserializeCardsTranscript(request.transcript);
     const objectiveRank = objectiveRankOf(this.definition, transcript.deal.ranks);
     const objectivePosition = objectivePositionOf(this.definition, transcript.deal.ranks);
-    const fingerprint = dormantFingerprint(stepDigest(this.#steps), {
-      revealedSeed,
-      commitment: transcript.commitment,
-      objectiveRank,
-      objectivePosition,
-      reason,
-    });
+    const fingerprint = dormantFingerprint(
+      stepDigest(this.#steps),
+      {
+        revealedSeed,
+        commitment: transcript.commitment,
+        objectiveRank,
+        objectivePosition,
+        reason,
+      },
+      { roundId: this.#roundId as string, seedCommitment: this.#seedCommitment as string },
+    );
     return this.#ledger.execute<CardsAction>(key, fingerprint, () => {
       this.#assertStepRevision(expected);
       if (this.#terminal) fail('ROUND_TERMINAL', 'Round is already terminal');
@@ -906,6 +960,15 @@ export class CardsBook {
           '$.expectedStepRevision',
           'ROUND_NOT_DORMANT',
         );
+      if (
+        transcript.roundId !== this.#roundId ||
+        transcript.seedCommitment !== this.#seedCommitment
+      )
+        fail(
+          'COMMITMENT_MISMATCH',
+          'Settlement proof does not open the published round binding',
+          '$.seedCommitment',
+        );
       const verification = verifyCardsTranscript(revealedSeed, this.definition, transcript);
       if (!verification.ok)
         fail('INVALID_TRANSCRIPT', verification.message, verification.path, {
@@ -916,7 +979,6 @@ export class CardsBook {
       // The prefix is still exact: every step this round published must be the
       // step the sealed deal produces at that index.
       if (
-        transcript.roundId !== this.#roundId ||
         transcript.choices.length !== this.#choices.length ||
         transcript.choices.some(
           (choice, index) => choice.position !== this.#choices[index]?.position,
@@ -983,6 +1045,8 @@ export class CardsBook {
         fingerprint: cardsFingerprint(this.definition),
       }),
       roundId: this.#roundId ?? null,
+      seedCommitment: this.#seedCommitment ?? null,
+      clientSeed: this.#clientSeed ?? null,
       stepRevision: this.stepRevision,
       ledgerRevision: this.#ledger.ledgerRevision,
       terminal: this.#terminal,
@@ -1074,7 +1138,11 @@ export class CardsBook {
    * `docs/modules/sequential-cards.md` §6.3 says so, including the claim an
    * earlier revision of this docstring made that the code did not support.
    */
-  static restore(definition: SequentialCardsDefinition, input: string | object): CardsBook {
+  static restore(
+    definition: SequentialCardsDefinition,
+    input: string | object,
+    expectedBinding?: PublishedCardsRound,
+  ): CardsBook {
     assertCardsDefinition(definition);
     const raw = parseCardsSnapshot(definition, input);
     if (raw.snapshotHash !== snapshotHash({ ...raw, snapshotHash: undefined }))
@@ -1085,10 +1153,25 @@ export class CardsBook {
       raw.definition.fingerprint !== cardsFingerprint(definition)
     )
       fail('DEFINITION_MISMATCH', 'Snapshot belongs to another definition', '$.definition');
+    const bound = raw.roundId !== null || raw.seedCommitment !== null;
+    if (bound && (raw.roundId === null || raw.seedCommitment === null))
+      fail('INVALID_SNAPSHOT', 'Round binding is incomplete', '$.seedCommitment');
+    if (
+      expectedBinding !== undefined &&
+      (raw.roundId !== expectedBinding.roundId ||
+        raw.seedCommitment !== expectedBinding.seedCommitment)
+    )
+      fail(
+        'COMMITMENT_MISMATCH',
+        'Snapshot does not match the expected published round',
+        '$.expectedBinding',
+      );
 
     const book = new CardsBook(definition);
     if (raw.roundId !== null) assertIdentifier(raw.roundId, '$.roundId', 'INVALID_SNAPSHOT');
     book.#roundId = raw.roundId ?? undefined;
+    book.#seedCommitment = raw.seedCommitment ?? undefined;
+    book.#clientSeed = raw.clientSeed ?? undefined;
     assertPlayerChoices(definition, raw.choices, '$.choices');
     for (const choice of raw.choices) book.#choices.push(Object.freeze({ ...choice }));
     assertRevealSteps(definition, book.#choices, raw.steps, '$.steps');
@@ -1237,6 +1320,8 @@ export class CardsBook {
           book.#roundId,
           rows,
           book.#roundingSeed === undefined ? undefined : roundingCommitment(book.#roundingSeed),
+          book.#seedCommitment as string,
+          book.#clientSeed as string,
         );
         const total = rows.reduce((sum, row) => sum + row.stake, 0n);
         if (receipt.commandFingerprint !== expected || receipt.debited !== total)
@@ -1257,7 +1342,12 @@ export class CardsBook {
         if (
           step === undefined ||
           receipt.commandFingerprint !==
-            commandFingerprint('reveal', [digest, ...encodeRevealStep(step)])
+            commandFingerprint('reveal', [
+              book.#roundId as string,
+              book.#seedCommitment as string,
+              digest,
+              ...encodeRevealStep(step),
+            ])
         )
           fail('INVALID_SNAPSHOT', 'Receipt does not match the reveal it recorded', '$.steps');
         reveals += 1;
@@ -1273,6 +1363,8 @@ export class CardsBook {
           decision.stepRevision !== receipt.frameRevision ||
           receipt.commandFingerprint !==
             commandFingerprint(receipt.action, [
+              book.#roundId as string,
+              book.#seedCommitment as string,
               digest,
               decision.selectionId,
               decision.positions.length,
@@ -1378,7 +1470,13 @@ export class CardsBook {
         const selection = [...book.#selections.values()].find(
           (candidate) =>
             candidate.status === 'live' &&
-            receipt.commandFingerprint === commandFingerprint('cash', [digest, candidate.id]),
+            receipt.commandFingerprint ===
+              commandFingerprint('cash', [
+                book.#roundId as string,
+                book.#seedCommitment as string,
+                digest,
+                candidate.id,
+              ]),
         );
         if (selection === undefined)
           fail('INVALID_SNAPSHOT', 'Cash receipt matches no live selection', '$.receipts');
@@ -1490,8 +1588,17 @@ export class CardsBook {
         (!dormant && receipt.frameRevision !== definition.reveal.count) ||
         receipt.commandFingerprint !==
           (dormant
-            ? dormantFingerprint(digest, { ...record, reason: reason as string })
+            ? dormantFingerprint(
+                digest,
+                { ...record, reason: reason as string },
+                {
+                  roundId: book.#roundId as string,
+                  seedCommitment: book.#seedCommitment as string,
+                },
+              )
             : commandFingerprint('settle', [
+                book.#roundId as string,
+                book.#seedCommitment as string,
                 digest,
                 record.revealedSeed,
                 record.commitment,
@@ -1619,7 +1726,12 @@ export class CardsBook {
         'Settlement reason disagrees with the receipt log',
         '$.settlementReason',
       );
-    if (opened !== (book.#roundId !== undefined))
+    if (
+      opened !==
+      (book.#roundId !== undefined &&
+        book.#seedCommitment !== undefined &&
+        book.#clientSeed !== undefined)
+    )
       fail('INVALID_SNAPSHOT', 'Round identity disagrees with the receipt log', '$.roundId');
     if (!opened && book.#roundingSeed !== undefined)
       fail(
@@ -1681,6 +1793,12 @@ export class CardsBook {
     return covered;
   }
 
+  #bindingFields(): readonly [string, string] {
+    if (this.#roundId === undefined || this.#seedCommitment === undefined)
+      fail('COMMITMENT_MISMATCH', 'A round binding must be published before play');
+    return Object.freeze([this.#roundId, this.#seedCommitment]);
+  }
+
   async #transform(action: 'switch' | 'split', request: TransformRequest): Promise<CardsReceipt> {
     assertRequestRecord(request);
     const key = request.idempotencyKey;
@@ -1691,6 +1809,7 @@ export class CardsBook {
     assertIdentifier(selectionId, '$.selectionId', 'CLAIM_REJECTED');
     const positions = assertTargetShape(this.definition, action, request.positions);
     const fingerprint = commandFingerprint(action, [
+      ...this.#bindingFields(),
       stepDigest(this.#steps),
       selectionId,
       positions.length,
@@ -2016,8 +2135,10 @@ export function dormantFingerprint(
     readonly objectivePosition: number;
     readonly reason: string;
   },
+  binding?: PublishedCardsRound,
 ): string {
   return commandFingerprint('settleDormant', [
+    ...(binding === undefined ? [] : [binding.roundId, binding.seedCommitment]),
     digest,
     record.revealedSeed,
     record.commitment,
@@ -2167,10 +2288,13 @@ export function openFingerprint(
   roundId: string,
   rows: readonly TicketSelection[],
   tapeCommitment?: string,
+  seedCommitment?: string,
+  clientSeed?: string,
 ): string {
   return commandFingerprint('open', [
     stepDigest([]),
     roundId,
+    ...(seedCommitment === undefined ? [] : [seedCommitment, clientSeed as string]),
     rows.length,
     ...rows.flatMap((row) => ticketRowFields(row)),
     ...(tapeCommitment === undefined ? [] : [tapeCommitment]),
@@ -2249,7 +2373,9 @@ function parseCardsSnapshot(
   subject: SequentialCardsDefinition,
   input: string | object,
 ): CardsBookSnapshot {
-  const value: unknown = typeof input === 'string' ? parseSnapshotJson(input) : input;
+  const value = preflightSnapshotInput(
+    typeof input === 'string' ? parseSnapshotJson(input) : input,
+  );
   const candidate = assertSnapshotRecord(value, '$');
   assertSnapshotKeys(candidate, snapshotKeysFor(subject), '$');
   if (candidate.roundingSeed !== undefined && candidate.roundingSeed !== null)
@@ -2274,6 +2400,9 @@ function parseCardsSnapshot(
   assertWireString(definition.version, '$.definition.version');
   assertWireHex(definition.fingerprint, '$.definition.fingerprint');
   if (candidate.roundId !== null) assertWireString(candidate.roundId, '$.roundId');
+  if (candidate.seedCommitment !== null)
+    assertWireHex(candidate.seedCommitment, '$.seedCommitment');
+  if (candidate.clientSeed !== null) assertWireString(candidate.clientSeed, '$.clientSeed');
   assertWireString(candidate.liquidBalance, '$.liquidBalance');
   if (candidate.capBasisStake !== null)
     assertWireString(candidate.capBasisStake, '$.capBasisStake');

@@ -53,7 +53,10 @@ describe('continuation policy derivation', () => {
       risk: { maxWinMultiple: 5000n, continuation: { maxRides: 1, rtpFloor: rational(1n, 2n) } },
     });
     const transcript = makeTranscript(seed(9), game, 'rides');
-    const book = new RoundBook(game, initialPosterior(game));
+    const book = new RoundBook(game, initialPosterior(game), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,

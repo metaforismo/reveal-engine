@@ -13,7 +13,10 @@ export async function completedBook(
   roundId = 'round-1',
 ): Promise<{ book: RoundBook; transcript: Transcript }> {
   const transcript = makeTranscript(seedHex, game, roundId);
-  const book = new RoundBook(game, initialPosterior(game));
+  const book = new RoundBook(game, initialPosterior(game), {
+    roundId,
+    commitment: transcript.commitment,
+  });
   for (const event of transcript.evidence) await book.advanceFrame(event);
   return { book, transcript };
 }

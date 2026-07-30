@@ -13,7 +13,7 @@ to an epsilon." This is the module that uses it.
 
 - Module id: `sequential-cards`, version `1.0.0`
 - Transcript schema: `reveal-engine/cards-transcript-v1`
-- Book snapshot schema: `reveal-engine/cards-book-v1`
+- Book snapshot schema: `reveal-engine/cards-book-v2`
 - Reference definitions: `triad-middle-v1`, `triad-stochastic-v1`, `duo-middle-v1`,
   `cascade-middle-v1`
 
@@ -299,15 +299,14 @@ is worth 240 credits on a 100-credit `triad-middle-v1` stake and a chosen tape i
 worth one — and it is closed the same way: the host derives the tape with
 `deriveRoundingSeed()` against the sealed seed rather than accepting one.
 
-**What the wire format does and does not change.** A `'floor'` definition's
-fingerprints, receipts and snapshots are **byte-identical** to the ones this
-module wrote before the draw existed: the open fingerprint appends the tape
-commitment only when there is one, and the snapshot carries a `roundingSeed` key
-only under `'stochastic'`. The key set is a function of the definition, not of
-the payload, and `snapshot.definition.fingerprint` pins which definition applies
-— so `cards-book-v1` still names one format, read against the definition it
-belongs to. `tests/fixtures/cards-book-stochastic-v1.json` freezes the drawn
-shape beside `cards-book-v1.json`.
+**What the wire format does and does not change.** A `'floor'` definition takes
+no rounding draw, while a stochastic definition carries `roundingSeed`; the key
+set remains a function of the definition and its fingerprint. Book v2 also
+records the seed commitment and admitted client entropy that existed before the
+ticket. `tests/fixtures/cards-book-v2.json` and
+`cards-book-stochastic-v2.json` freeze both current shapes. The retained v1
+books are refusal vectors because a migration cannot invent that earlier
+publication.
 
 ## 6. The book
 

@@ -21,7 +21,8 @@ export const STAGED_SURVIVAL_MODULE_ID = 'staged-survival' as const;
 export const STAGED_SURVIVAL_MODULE_VERSION = '1.0.0' as const;
 
 export const TRANSCRIPT_SCHEMA = 'staged-survival/transcript-v1' as const;
-export const SURVIVAL_BOOK_SCHEMA = 'staged-survival/book-v1' as const;
+export const LEGACY_SURVIVAL_BOOK_SCHEMA = 'staged-survival/book-v1' as const;
+export const SURVIVAL_BOOK_SCHEMA = 'staged-survival/book-v2' as const;
 
 /** Receipt actions this module mints. */
 export const SURVIVAL_ACTIONS = Object.freeze(['enter', 'choose', 'bank', 'settle'] as const);

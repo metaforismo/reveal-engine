@@ -77,6 +77,9 @@ export function roundIdentityOf(context: RoundContext): RoundIdentity {
   return Object.freeze({
     moduleId: PROGRESSIVE_MARKET_MODULE_ID,
     definitionId: context.gameId,
+    fingerprint:
+      context.definitionFingerprint ??
+      sha256Hex(encodeFields(['progressive-market/legacy-sampler-domain', context.gameId])),
     roundId: context.roundId,
     proofVersion: context.proofVersion,
   });

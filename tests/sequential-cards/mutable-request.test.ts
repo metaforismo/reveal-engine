@@ -11,6 +11,7 @@ import { buildCardsTranscript } from '../../src/modules/sequential-cards/transcr
 import { CardsBook } from '../../src/modules/sequential-cards/round-book.js';
 import type { RevealStep } from '../../src/modules/sequential-cards/contracts.js';
 import { seed } from '../helpers.js';
+import { cardsAdmission } from '../support/cards-admission.js';
 
 const definition = triadMiddleReference;
 const dormant = triadDormantReference;
@@ -42,6 +43,8 @@ describe('sequential-cards: a command prices what it validated', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId,
+      ...cardsAdmission(dormant, SEED, roundId),
+      ...cardsAdmission(definition, seed(1), roundId),
       selections: selections as never,
     });
 
@@ -160,6 +163,7 @@ describe('sequential-cards: a command prices what it validated', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId,
+      ...cardsAdmission(dormant, SEED, roundId),
       selections: [{ id: 'a', kind: 'position', position: 0, stake: 25n }],
       roundingSeed: deriveRoundingSeed(SEED, cardsFingerprint(dormant), roundId),
     });
@@ -190,6 +194,7 @@ describe('sequential-cards: a command prices what it validated', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId: `${roundId}-2`,
+      ...cardsAdmission(dormant, SEED, `${roundId}-2`),
       selections: [{ id: 'a', kind: 'position', position: 0, stake: 25n }],
       roundingSeed: deriveRoundingSeed(SEED, cardsFingerprint(dormant), `${roundId}-2`),
     });

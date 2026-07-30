@@ -19,6 +19,7 @@ const roundOf = (roundId: string): Parameters<typeof survival.steps.derive>[2] =
   Object.freeze({
     moduleId: survival.id,
     definitionId: definition.id,
+    fingerprint: survival.definitions.fingerprint(definition),
     roundId,
     proofVersion: COMMITMENT_VERSION,
   });
@@ -312,6 +313,7 @@ describe('core enforces the choice limits it publishes', () => {
     const round = {
       moduleId: progressiveMarket.id,
       definitionId: binaryBeaconReference.id,
+      fingerprint: progressiveMarket.definitions.fingerprint(binaryBeaconReference),
       roundId: 'r8',
       proofVersion: COMMITMENT_VERSION,
     } as const;

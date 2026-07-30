@@ -10,7 +10,8 @@ export const SEQUENTIAL_CARDS_MODULE_ID = 'sequential-cards' as const;
 export const SEQUENTIAL_CARDS_MODULE_VERSION = '1.0.0' as const;
 
 export const CARDS_TRANSCRIPT_SCHEMA = 'reveal-engine/cards-transcript-v1' as const;
-export const CARDS_BOOK_SCHEMA = 'reveal-engine/cards-book-v1' as const;
+export const LEGACY_CARDS_BOOK_SCHEMA = 'reveal-engine/cards-book-v1' as const;
+export const CARDS_BOOK_SCHEMA = 'reveal-engine/cards-book-v2' as const;
 
 /** Receipt actions this module mints. */
 export const CARDS_ACTIONS = Object.freeze([

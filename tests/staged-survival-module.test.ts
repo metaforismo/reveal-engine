@@ -45,6 +45,7 @@ import {
   type SurvivalStep,
 } from '../src/modules/staged-survival/index.js';
 import { seed } from './helpers.js';
+import { survivalAdmission } from './support/survival-admission.js';
 
 const definition = fiveRunnerReference;
 /** The sweep the CLI runs in CI; a narrower one in tests would let CI find things first. */
@@ -82,7 +83,7 @@ describe('staged-survival: module contract declarations', () => {
     expect(stagedSurvival.book.settlement).toBe('partial');
     expect(stagedSurvival.book.actions).toEqual(['enter', 'choose', 'bank', 'settle']);
     expect(stagedSurvival.transcript.schema).toBe('staged-survival/transcript-v1');
-    expect(stagedSurvival.book.snapshotSchema).toBe('staged-survival/book-v1');
+    expect(stagedSurvival.book.snapshotSchema).toBe('staged-survival/book-v2');
     // A choice-timed module owes both of these, and `defineLifecycleModule`
     // refuses to build one that does not expose them.
     expect(typeof stagedSurvival.transcript.seedCommitment).toBe('function');
@@ -694,7 +695,7 @@ describe('staged-survival: property and metamorphic sweeps', () => {
       const truth = deriveTruth(seedHex, definition, roundId);
       const choices = ridePath(definition, truth);
       const steps = deriveSteps(definition, truth, choices);
-      const book = new SurvivalBook(definition);
+      const book = new SurvivalBook(definition, survivalAdmission(definition, seedHex, roundId));
       for (let entity = 0; entity < definition.entities; entity += 1)
         await book.enter(`e-${entity}`, entity, 1_000n);
       for (const [stage, choice] of choices.entries()) {
@@ -755,8 +756,13 @@ describe('staged-survival: property and metamorphic sweeps', () => {
 });
 
 describe('staged-survival: the round book', () => {
-  async function openRound(game = definition, stake = 1_000n): Promise<SurvivalBook> {
-    const book = new SurvivalBook(game);
+  async function openRound(
+    game = definition,
+    stake = 1_000n,
+    seedHex = seed(1),
+    roundId = roundIdFor('book-default'),
+  ): Promise<SurvivalBook> {
+    const book = new SurvivalBook(game, survivalAdmission(game, seedHex, roundId));
     for (let entity = 0; entity < game.entities; entity += 1)
       await book.enter(`enter-${entity}`, entity, stake);
     return book;
@@ -775,7 +781,10 @@ describe('staged-survival: the round book', () => {
   });
 
   it('refuses a decision before every entity is funded, and an entry after one', async () => {
-    const book = new SurvivalBook(definition);
+    const book = new SurvivalBook(
+      definition,
+      survivalAdmission(definition, seed(1), roundIdFor('partial')),
+    );
     await book.enter('enter-0', 0, 1_000n);
     await expect(book.choose('c', 'wide')).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
     for (let entity = 1; entity < 5; entity += 1)
@@ -793,7 +802,10 @@ describe('staged-survival: the round book', () => {
     // permanently unreconnectable at that point and at every later point of its
     // life. No value leaked (the cap basis only grows, so an early bank is
     // measured against a strictly smaller ceiling); what leaked was availability.
-    const book = new SurvivalBook(definition);
+    const book = new SurvivalBook(
+      definition,
+      survivalAdmission(definition, seed(1), roundIdFor('banking')),
+    );
     await book.enter('enter-0', 0, 1_000_000n);
     await expect(book.bank('bank-early', [0])).rejects.toMatchObject({
       code: 'CLAIM_REJECTED',
@@ -844,6 +856,7 @@ describe('staged-survival: the round book', () => {
       expect(SurvivalBook.restore(definition, book.snapshot()).claims).toEqual([]);
     }
     // The boundary itself is legal, and the round it opens still restores.
+    book.bindRound(survivalAdmission(definition, seed(1), roundIdFor('wide-stake')));
     for (let entity = 0; entity < definition.entities; entity += 1)
       await book.enter(`wide-${entity}`, entity, widest);
     expect(book.capBasisStake).toBe(widest * BigInt(definition.entities));
@@ -865,7 +878,7 @@ describe('staged-survival: the round book', () => {
   it('refuses a step that does not resolve the decision it was fenced to', async () => {
     const roundId = roundIdFor('fence');
     const truth = deriveTruth(seed(70), definition, roundId);
-    const book = await openRound();
+    const book = await openRound(definition, 1_000n, seed(70), roundId);
     await book.choose('choose-0', 'wide');
     const wide = deriveSteps(definition, truth, [
       { contractId: 'wide', banked: [] },
@@ -901,7 +914,7 @@ describe('staged-survival: the round book', () => {
   it('folds the banked subset into the decision it precedes', async () => {
     const roundId = roundIdFor('fold');
     const truth = deriveTruth(seed(71), definition, roundId);
-    const book = await openRound();
+    const book = await openRound(definition, 1_000n, seed(72), roundId);
     await book.choose('choose-0', 'wide');
     const first = makeTranscript(seed(71), definition, roundId, book.choices);
     await book.resolve(first.steps[0] as SurvivalStep);
@@ -920,7 +933,7 @@ describe('staged-survival: the round book', () => {
 
   it('refuses a settlement proof built from a different decision log', async () => {
     const roundId = roundIdFor('settle-log');
-    const book = await openRound();
+    const book = await openRound(definition, 1_000n, seed(72), roundId);
     await book.choose('choose-0', 'wide');
     const mine = makeTranscript(seed(72), definition, roundId, book.choices);
     await book.resolve(mine.steps[0] as SurvivalStep);
@@ -944,9 +957,23 @@ describe('staged-survival: the round book', () => {
     await expect(book.bank('after', [0])).rejects.toMatchObject({ code: 'ROUND_TERMINAL' });
   });
 
+  it('does not replay a successful settlement when the same key carries another seed', async () => {
+    const roundId = roundIdFor('settle-seed-idempotency');
+    const seedHex = seed(172);
+    const book = await openRound(definition, 1_000n, seedHex, roundId);
+    await book.choose('choose-0', 'wide');
+    const transcript = makeTranscript(seedHex, definition, roundId, book.choices);
+    await book.resolve(transcript.steps[0] as SurvivalStep);
+    const first = await book.settle('settle', seedHex, transcript);
+    expect(first.action).toBe('settle');
+    await expect(book.settle('settle', seed(173), transcript)).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+  });
+
   it('refuses a settlement while a logged decision is still unresolved', async () => {
     const roundId = roundIdFor('pending');
-    const book = await openRound();
+    const book = await openRound(definition, 1_000n, seed(74), roundId);
     await book.choose('choose-0', 'wide');
     const transcript = makeTranscript(seed(74), definition, roundId, book.choices);
     await expect(book.settle('settle', seed(74), transcript)).rejects.toMatchObject({
@@ -958,7 +985,7 @@ describe('staged-survival: the round book', () => {
     const seedHex = seed(80);
     const roundId = roundIdFor('pinned');
     const derived = stakedSnapshotFor(definition, seedHex, roundId);
-    const book = new SurvivalBook(definition);
+    const book = new SurvivalBook(definition, survivalAdmission(definition, seedHex, roundId));
     // The same idempotency keys the re-derivation uses: they are part of the
     // receipt, so a comparison that let them differ would be comparing a
     // payload `restore()` never sees.
@@ -984,7 +1011,7 @@ describe('staged-survival: the round book', () => {
   it('round-trips a snapshot at every point of a full round', async () => {
     const seedHex = seed(81);
     const roundId = roundIdFor('roundtrip');
-    const book = await openRound();
+    const book = await openRound(definition, 1_000n, seedHex, roundId);
     const check = (): void => {
       const snapshot = book.snapshot();
       const restored = SurvivalBook.restore(definition, snapshot);
@@ -1024,7 +1051,7 @@ describe('staged-survival: the round book', () => {
     const roundId = roundIdFor('oracle-book');
     const truth = deriveTruth(seedHex, oracleTrialReference, roundId);
     const choices = ridePath(oracleTrialReference, truth);
-    const book = await openRound(oracleTrialReference, 500n);
+    const book = await openRound(oracleTrialReference, 500n, seedHex, roundId);
     expect(book.capBasisStake).toBe(1_500n);
     for (const [stage, choice] of choices.entries()) {
       await book.choose(`choose-${stage}`, choice.contractId);

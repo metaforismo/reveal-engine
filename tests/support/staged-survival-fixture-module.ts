@@ -139,6 +139,7 @@ function roundOf(definition: SurvivalDefinition, roundId: string): RoundIdentity
   return Object.freeze({
     moduleId: MODULE_ID,
     definitionId: definition.id,
+    fingerprint: fingerprint(definition),
     roundId,
     proofVersion: COMMITMENT_VERSION,
   });

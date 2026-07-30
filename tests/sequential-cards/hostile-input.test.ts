@@ -130,7 +130,7 @@ describe('sequential-cards: hostile input', () => {
     const book = new CardsBook(definition);
     const snapshot = book.snapshot() as unknown as Record<string, unknown>;
     for (const mutation of [
-      { schema: 'reveal-engine/cards-book-v2' },
+      { schema: 'reveal-engine/cards-book-v1' },
       { stepRevision: -1 },
       { ledgerRevision: 1.5 },
       { selections: 'none' },
@@ -251,6 +251,8 @@ describe('sequential-cards: hostile input', () => {
         idempotencyKey: 'x'.repeat(ENGINE_LIMITS.maxIdempotencyKeyBytes + 1),
         expectedStepRevision: 0,
         roundId: 'r',
+        seedCommitment: '00'.repeat(32),
+        clientSeed: '11'.repeat(32),
         selections: [{ id: 'M', kind: 'position', position: 0, stake: 25n }],
       }),
     ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });

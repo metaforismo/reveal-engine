@@ -23,11 +23,16 @@ describe('snapshot, reconnect, and deterministic replay', () => {
   it('restores byte-identical state at every frame boundary', async () => {
     const seedHex = seed(21);
     const transcript = makeTranscript(seedHex, binaryBeaconReference, 'reconnect');
-    let book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const binding = { roundId: transcript.context.roundId, commitment: transcript.commitment };
+    let book = new RoundBook(
+      binaryBeaconReference,
+      initialPosterior(binaryBeaconReference),
+      binding,
+    );
     for (const event of transcript.evidence) {
       await book.advanceFrame(event);
       const serialized = book.serialize();
-      book = RoundBook.restore(binaryBeaconReference, serialized);
+      book = RoundBook.restore(binaryBeaconReference, serialized, binding);
       expect(book.serialize()).toBe(serialized);
     }
     await book.open({
@@ -37,7 +42,7 @@ describe('snapshot, reconnect, and deterministic replay', () => {
       stake: 100n,
     });
     const beforeSettle = book.serialize();
-    const restored = RoundBook.restore(binaryBeaconReference, beforeSettle);
+    const restored = RoundBook.restore(binaryBeaconReference, beforeSettle, binding);
     const receipt = await restored.settle({
       idempotencyKey: 'settle',
       expectedFrameRevision: 3,
@@ -55,7 +60,10 @@ describe('snapshot, reconnect, and deterministic replay', () => {
 
   it('rejects tampered snapshot and cross-adapter restore', async () => {
     const transcript = makeTranscript(seed(22), binaryBeaconReference, 'snapshot-tamper');
-    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     await advanceAll(book, transcript);
     const snapshot = JSON.parse(book.serialize()) as Record<string, unknown>;
     expect(() =>
@@ -71,7 +79,10 @@ describe('snapshot, reconnect, and deterministic replay', () => {
 
   it('rejects unknown snapshot fields and malformed receipt wire values', async () => {
     const transcript = makeTranscript(seed(24), binaryBeaconReference, 'snapshot-schema');
-    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,
@@ -95,7 +106,10 @@ describe('snapshot, reconnect, and deterministic replay', () => {
     const seedHex = seed(23);
     const transcript = makeTranscript(seedHex, binaryBeaconReference, 'replay');
     async function run(): Promise<string> {
-      const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+      const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference), {
+        roundId: transcript.context.roundId,
+        commitment: transcript.commitment,
+      });
       await book.open({
         idempotencyKey: 'open',
         expectedFrameRevision: 0,

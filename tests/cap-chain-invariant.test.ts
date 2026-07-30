@@ -266,7 +266,10 @@ describe('cap-chain invariant, by enumeration', () => {
   it('holds through a real progressive-market round with sell and re-entry', async () => {
     const game = binaryBeaconReference;
     const transcript = makeTranscript(seed(50), game, 'cap-invariant');
-    const book = new RoundBook(game, initialPosterior(game));
+    const book = new RoundBook(game, initialPosterior(game), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     const check = (): void => {
       const basis = book.capBasisStake;
       if (basis === undefined) expect(book.liquidBalance).toBe(0n);

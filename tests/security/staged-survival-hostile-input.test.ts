@@ -35,6 +35,7 @@ import {
   type SurvivalStep,
 } from '../../src/modules/staged-survival/index.js';
 import { seed } from '../helpers.js';
+import { survivalAdmission } from '../support/survival-admission.js';
 
 const definition = fiveRunnerReference;
 const SEED = seed(5);
@@ -53,7 +54,7 @@ const reseal = (snapshot: Record<string, unknown>): Record<string, unknown> => (
 });
 
 async function stakedBook(): Promise<SurvivalBook> {
-  const book = new SurvivalBook(definition);
+  const book = new SurvivalBook(definition, survivalAdmission(definition, SEED, ROUND_ID));
   for (let entity = 0; entity < definition.entities; entity += 1)
     await book.enter(`enter-${entity}`, entity, 1_000n);
   await book.choose('choose-0', 'wide');
@@ -496,7 +497,7 @@ describe('staged-survival: the snapshot boundary', () => {
     // still reconcile with each other; it is refused for what it is rather than
     // for an arithmetic mismatch. The ledger's own revision numbering refuses it
     // independently, which is why the path is asserted and not only the code.
-    const book = new SurvivalBook(definition);
+    const book = new SurvivalBook(definition, survivalAdmission(definition, SEED, ROUND_ID));
     for (let entity = 0; entity < definition.entities; entity += 1)
       await book.enter(`fund-${entity}`, entity, 1_000n);
     await book.bank('bank-first', [0]);
@@ -657,7 +658,7 @@ describe('staged-survival: the snapshot boundary', () => {
           return reseal(rest);
         })(),
       ],
-      ['wrong schema', reseal({ ...snapshot, schema: 'staged-survival/book-v2' })],
+      ['wrong schema', reseal({ ...snapshot, schema: 'staged-survival/book-v1' })],
       ['negative stage revision', reseal({ ...snapshot, stageRevision: -1 })],
       ['non-canonical balance', reseal({ ...snapshot, liquidBalance: '007' })],
       ['bank with no entities', reseal({ ...snapshot, banks: [{ stage: 1, entities: [] }] })],
@@ -870,6 +871,7 @@ describe('staged-survival: hostile arguments to the pricing surface', () => {
       await expect(
         book.enter(`k-${entity}-${stake}`, entity, stake as bigint),
       ).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
+    book.bindRound(survivalAdmission(definition, SEED, ROUND_ID));
     await book.enter('ok', 0, 100n);
     await expect(book.enter('again', 0, 100n)).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
     await expect(book.bank('nothing', [])).rejects.toMatchObject({ code: 'CLAIM_REJECTED' });
@@ -1077,7 +1079,7 @@ describe('staged-survival: every exported helper fails in the module’s taxonom
  */
 describe('staged-survival: resolve() and restore() admit the same steps', () => {
   async function atDecision(): Promise<{ book: SurvivalBook; honest: SurvivalStep }> {
-    const book = new SurvivalBook(definition);
+    const book = new SurvivalBook(definition, survivalAdmission(definition, SEED, ROUND_ID));
     for (let entity = 0; entity < definition.entities; entity += 1)
       await book.enter(`e-${entity}`, entity, 1_000n);
     await book.choose('c-0', 'wide');
@@ -1249,7 +1251,7 @@ describe('staged-survival: resolve() and restore() admit the same steps', () => 
     const field = [...honest.survivors, ...honest.failed].sort((left, right) => left - right);
 
     const open = async (): Promise<SurvivalBook> => {
-      const book = new SurvivalBook(definition);
+      const book = new SurvivalBook(definition, survivalAdmission(definition, seedHex, roundId));
       for (let entity = 0; entity < definition.entities; entity += 1)
         await book.enter(`e-${entity}`, entity, 1_000n);
       await book.choose('c', 'wide');

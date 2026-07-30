@@ -1,6 +1,7 @@
 import { rational } from '../../../core/rational.js';
 import {
   definePermutationGame,
+  registerLegacyAdapterFingerprint,
   type PermutationGameDefinition,
   type PermutationPricingPolicy,
   type PermutationPlayPolicy,
@@ -243,28 +244,28 @@ const classicPricing: PermutationPricingPolicy = Object.freeze({
   }),
 });
 
-const sevenPricing: PermutationPricingPolicy = Object.freeze({
+const sixPricing: PermutationPricingPolicy = Object.freeze({
   targetRtp: AETHER_ORDER_TARGET_RTP,
   rounding: 'floor',
   stakeQuantum: AETHER_ORDER_STAKE_QUANTUM,
   multipliers: Object.freeze({
     before: rational(48n, 25n),
-    early: rational(84n, 25n),
-    late: rational(84n, 25n),
-    neighbours: rational(84n, 25n),
-    first: rational(168n, 25n),
-    last: rational(168n, 25n),
-    slot: rational(168n, 25n),
-    stack: rational(168n, 25n),
-    opening: rational(1008n, 25n),
-    podium: rational(1008n, 5n),
-    full: rational(24192n, 5n),
+    early: rational(72n, 25n),
+    late: rational(72n, 25n),
+    neighbours: rational(72n, 25n),
+    first: rational(144n, 25n),
+    last: rational(144n, 25n),
+    slot: rational(144n, 25n),
+    stack: rational(144n, 25n),
+    opening: rational(144n, 5n),
+    podium: rational(576n, 5n),
+    full: rational(3456n, 5n),
   }),
 });
 
 function definition(
-  variantId: 'classic' | 'seven',
-  n: 5 | 7,
+  variantId: 'classic' | 'six',
+  n: 5 | 6,
   pricing: PermutationPricingPolicy,
 ): PermutationGameDefinition {
   return definePermutationGame({
@@ -283,8 +284,51 @@ function definition(
 }
 
 export const aetherOrderClassic = definition('classic', 5, classicPricing);
-export const aetherOrderSeven = definition('seven', 7, sevenPricing);
+export const aetherOrderSix = definition('six', 6, sixPricing);
+
+/**
+ * Verification-only definition for the frozen v1 seven-element corpus.
+ *
+ * It deliberately bypasses the public synchronous factory, whose work budget
+ * now rejects this size. The old fingerprint is installed from the immutable
+ * cross-repository fixture so verification does not recompute 27.6M predicates.
+ * New tickets and current schemas use `aetherOrderClassic` or `aetherOrderSix`.
+ */
+export const aetherOrderSeven: PermutationGameDefinition = Object.freeze({
+  apiVersion: ENGINE_API_VERSION,
+  moduleVersion: PERMUTATION_MODULE_VERSION,
+  adapterVersion: '1.3.0',
+  id: 'aether-order',
+  variantId: 'seven',
+  n: 7,
+  elements: Object.freeze(AETHER_ORDER_ELEMENTS.slice(0, 7)),
+  bets: AETHER_ORDER_BET_FAMILIES,
+  pricing: Object.freeze({
+    targetRtp: AETHER_ORDER_TARGET_RTP,
+    rounding: 'floor',
+    stakeQuantum: AETHER_ORDER_STAKE_QUANTUM,
+    multipliers: Object.freeze({
+      before: rational(48n, 25n),
+      early: rational(84n, 25n),
+      late: rational(84n, 25n),
+      neighbours: rational(84n, 25n),
+      first: rational(168n, 25n),
+      last: rational(168n, 25n),
+      slot: rational(168n, 25n),
+      stack: rational(168n, 25n),
+      opening: rational(1008n, 25n),
+      podium: rational(1008n, 5n),
+      full: rational(24192n, 5n),
+    }),
+  }),
+  risk: AETHER_ORDER_RISK_POLICY,
+  play: AETHER_ORDER_PLAY_POLICY,
+});
+registerLegacyAdapterFingerprint(
+  aetherOrderSeven,
+  'bb25720f7a43f15534a58083ec3438fb31298961727b5224c64ea6de24009801',
+);
 export const AETHER_ORDER_DEFINITIONS = Object.freeze({
   classic: aetherOrderClassic,
-  seven: aetherOrderSeven,
+  six: aetherOrderSix,
 });

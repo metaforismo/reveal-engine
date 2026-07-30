@@ -20,7 +20,7 @@ This is the second lifecycle module on the shared core, alongside
 | `book.settlement`     | `partial`                                                      |
 | `book.actions`        | `enter`, `choose`, `bank`, `settle`                            |
 | `transcript.schema`   | `staged-survival/transcript-v1`                                |
-| `book.snapshotSchema` | `staged-survival/book-v1`                                      |
+| `book.snapshotSchema` | `staged-survival/book-v2`                                      |
 
 ---
 
@@ -525,7 +525,7 @@ Every failure is one of `INVALID_TRANSCRIPT`, `UNSUPPORTED_VERSION`,
 offered is `INVALID_TRANSCRIPT` — it is not a disagreement about randomness, it
 is a transcript that could not have been played.
 
-### 7.3 `staged-survival/book-v1`
+### 7.3 `staged-survival/book-v2`
 
 `restore()` re-validates rather than trusting, and **nothing money-bearing is
 read out of the snapshot**:
@@ -606,9 +606,10 @@ transcript must match the book's own log.
 | Any change to snapshot fields               | new snapshot schema; unknown ones rejected |
 
 `tests/fixtures/staged-survival-transcript-v1.json` and
-`staged-survival-book-v1.json` are committed files compared field for field, not
-round trips generated at run time. Regenerate with `npm run fixtures:update`,
-deliberately.
+`staged-survival-book-v2.json` are committed files compared field for field, not
+round trips generated at run time. The retained book-v1 is a negative fixture:
+it predates the published seed commitment and cannot be migrated by inventing
+one. Regenerate current fixtures with `npm run fixtures:update`, deliberately.
 
 That command formats its output with **prettier**, using the repo's own
 configuration, and is idempotent against the repo's own gate: regenerating an

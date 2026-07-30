@@ -6,6 +6,46 @@ Three lifecycle modules land on the 0.3 platform core, developed independently
 and integrated together: `sequential-cards`, `staged-survival` and
 `permutation`. None of them required a change to the module contract itself.
 
+### Security hardening follow-up — 2026-07-30
+
+- Caller-owned command payloads are copied once before validation and before
+  ledger serialization. Progressive opens and permutation placements never
+  re-read stake, outcome, key, frame, bet discriminator, or nested full-order
+  arrays. Stored claims expose detached, frozen graphs.
+- Progressive, sequential-cards, and staged-survival books now retain the
+  independently published round commitment before the first stake, event, or
+  choice; bind it into command fingerprints and snapshots; refuse rebinding;
+  compare it before transcript self-verification; and can compare it with the
+  host's independently retained value during restore.
+- This is a deliberate snapshot wire break:
+  `reveal-engine/round-book-v2`, `reveal-engine/cards-book-v2`, and
+  `staged-survival/book-v2` replace their v1 books. The v1 fixtures remain
+  negative vectors: they cannot be migrated because they lack a commitment that
+  had to exist before play, and migration policy forbids inventing proof.
+- AETHER's transcript, ticket, signed receipt, and round snapshot schemas move
+  to v2. The seed commitment, shuffle sampler, ticket identity, ticket digest,
+  and settlement checks bind the permutation module version, adapter version,
+  and full adapter fingerprint. A ticket opened under one economic fingerprint
+  is invalid under every other even when the other identifiers collide. The
+  original cross-repository v1 fixture remains byte-pinned; a new v2 fixture
+  proves the current derivation.
+- Progressive restore retains open history and the revealed settlement proof,
+  then replays every quote, sell credit, settlement credit, cap, and receipt.
+  Coordinated rewrites of historical credits are rejected.
+- Settlement digest inputs reject negative, inverted, or inconsistent money
+  fields with typed errors. Required client entropy is enforced when a cards
+  ticket is admitted.
+- Object snapshots are detached and bounded by depth, node count, bytes, and
+  array length before allocation or semantic parsing; cycles, sparse arrays,
+  accessors, symbols, and exotic prototypes fail closed.
+- Synchronous permutation definition construction rejects a conservative
+  factorial-work estimate before invoking adapter callbacks.
+  `definePermutationGameAsync()` runs the same exhaustive economics and
+  behavioural fingerprint walk while yielding between bounded batches.
+- Sampler purposes use distinct labels, legacy `commit-v1` stays
+  verification-only, and repeated staged-survival settlement returns the
+  ledger's stored receipt through the idempotency path.
+
 ### `sequential-cards`
 
 #### Added

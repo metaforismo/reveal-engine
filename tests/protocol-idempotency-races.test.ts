@@ -8,13 +8,21 @@ import {
 } from '../src/modules/progressive-market/references/index.js';
 import { completedBook, seed } from './helpers.js';
 
+const freshBook = (roundId = 'idempotency'): RoundBook => {
+  const transcript = makeTranscript(seed(5), binaryBeaconReference, roundId);
+  return new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference), {
+    roundId,
+    commitment: transcript.commitment,
+  });
+};
+
 describe('idempotency, stale frames, races, and atomicity', () => {
   it.each([
     ['changed stake', { expectedFrameRevision: 0, outcome: 0, stake: 2n }],
     ['changed outcome', { expectedFrameRevision: 0, outcome: 1, stake: 1n }],
     ['changed revision', { expectedFrameRevision: 1, outcome: 0, stake: 1n }],
   ])('rejects key reuse with %s', async (_, changed) => {
-    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const book = freshBook(`reuse-${String(_)}`);
     await book.open({ idempotencyKey: 'key', expectedFrameRevision: 0, outcome: 0, stake: 1n });
     await expect(book.open({ idempotencyKey: 'key', ...changed })).rejects.toMatchObject({
       code: 'IDEMPOTENCY_CONFLICT',
@@ -22,7 +30,7 @@ describe('idempotency, stale frames, races, and atomicity', () => {
   });
 
   it('rejects cross-action key reuse instead of returning the wrong receipt', async () => {
-    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const book = freshBook('cross-action');
     await book.open({
       idempotencyKey: 'collision',
       expectedFrameRevision: 0,
@@ -37,7 +45,7 @@ describe('idempotency, stale frames, races, and atomicity', () => {
   });
 
   it('linearizes concurrent identical and conflicting opens', async () => {
-    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const book = freshBook('concurrent');
     const results = await Promise.allSettled([
       ...Array.from({ length: 32 }, () =>
         book.open({ idempotencyKey: 'same', expectedFrameRevision: 0, outcome: 0, stake: 100n }),
@@ -52,7 +60,10 @@ describe('idempotency, stale frames, races, and atomicity', () => {
   it('rejects stale action frames after evidence advances', async () => {
     const seedHex = seed(6);
     const transcript = makeTranscript(seedHex, binaryBeaconReference, 'stale');
-    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     await book.advanceFrame(transcript.evidence[0]!);
     await expect(
       book.open({ idempotencyKey: 'stale', expectedFrameRevision: 0, outcome: 0, stake: 1n }),

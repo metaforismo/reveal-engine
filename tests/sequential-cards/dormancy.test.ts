@@ -29,6 +29,7 @@ import {
   frozenDormantDefinition,
 } from '../support/frozen-cards-round.js';
 import { seed } from '../helpers.js';
+import { cardsAdmission } from '../support/cards-admission.js';
 
 /**
  * The dormant settlement: what the module can check, and what it cannot.
@@ -66,6 +67,7 @@ async function stakedRound(
     idempotencyKey: 'open',
     expectedStepRevision: 0,
     roundId,
+    ...cardsAdmission(subject, seedHex, roundId),
     selections: [
       { id: 'MIDDLE', kind: 'position', position: 0, stake: subject.pricing.minStakeCredits },
       {
@@ -350,6 +352,7 @@ describe('sequential-cards: the dormant settlement', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId: ROUND,
+      ...cardsAdmission(definition, SEED, ROUND),
       selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
       roundingSeed: deriveRoundingSeed(SEED, cardsFingerprint(definition), ROUND),
     });
@@ -375,6 +378,7 @@ describe('sequential-cards: the dormant settlement', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId: ROUND,
+      ...cardsAdmission(triadMiddleReference, SEED, ROUND),
       selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
     });
     await expect(
@@ -417,6 +421,7 @@ describe('sequential-cards: the dormant settlement', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId: ROUND,
+      ...cardsAdmission(definition, SEED, ROUND),
       selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
       roundingSeed: deriveRoundingSeed(seed(99), cardsFingerprint(definition), ROUND),
     });
@@ -658,6 +663,7 @@ describe('sequential-cards: the dormant settlement', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId: ROUND,
+      ...cardsAdmission(definition, SEED, ROUND),
       selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
       roundingSeed: deriveRoundingSeed(SEED, cardsFingerprint(definition), ROUND),
     });
@@ -845,7 +851,7 @@ describe('sequential-cards: the dormant settlement', () => {
     // round-tripped: a rebuilt round moves both sides of a round trip together
     // and would happily accept a changed encoding.
     const fixture = JSON.parse(
-      readFileSync('tests/fixtures/cards-book-dormant-v1.json', 'utf8'),
+      readFileSync('tests/fixtures/cards-book-dormant-v2.json', 'utf8'),
     ) as Record<string, unknown>;
     const rebuilt = await buildFrozenDormantCardsRound();
     expect(fixture.snapshot).toEqual(JSON.parse(JSON.stringify(rebuilt.snapshot)));

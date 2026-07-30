@@ -20,7 +20,9 @@ const readFixture = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(`tests/fixtures/${name}`, 'utf8')) as Record<string, unknown>;
 
 /**
- * `cards-transcript-v1` and `cards-book-v1` are frozen on disk, not round-tripped.
+ * `cards-transcript-v1` and the current `cards-book-v2` are frozen on disk.
+ * The retained v1 book is a refusal vector because it has no published seed
+ * commitment or admitted client entropy to migrate.
  *
  * A round trip generated at run time moves both sides of the comparison
  * together and would happily accept a changed encoding. These compare a rebuilt
@@ -80,7 +82,7 @@ describe('sequential-cards: frozen wire fixtures', () => {
   });
 
   it('matches the committed receipt log, one entry per action taken', () => {
-    const fixture = readFixture('cards-book-v1.json');
+    const fixture = readFixture('cards-book-v2.json');
     const frozen = fixture.receipts as readonly WireReceipt[];
     expect(frozen).toEqual(round.receipts);
     expect(frozen.map((receipt) => receipt.action)).toEqual(['open', 'reveal', 'switch', 'settle']);
@@ -98,14 +100,15 @@ describe('sequential-cards: frozen wire fixtures', () => {
     );
   });
 
-  it('matches the committed cards-book-v1 snapshot field for field', () => {
-    const fixture = readFixture('cards-book-v1.json');
+  it('matches the committed cards-book-v2 snapshot field for field', () => {
+    const fixture = readFixture('cards-book-v2.json');
     expect(fixture.snapshot).toEqual(JSON.parse(JSON.stringify(round.snapshot)));
     const snapshot = fixture.snapshot as Record<string, unknown>;
-    expect(snapshot.schema).toBe('reveal-engine/cards-book-v1');
+    expect(snapshot.schema).toBe('reveal-engine/cards-book-v2');
     expect(Object.keys(snapshot).sort()).toEqual([
       'capBasisStake',
       'choices',
+      'clientSeed',
       'decisions',
       'definition',
       'ledgerRevision',
@@ -113,6 +116,7 @@ describe('sequential-cards: frozen wire fixtures', () => {
       'receipts',
       'roundId',
       'schema',
+      'seedCommitment',
       'selections',
       'settlement',
       'snapshotHash',
@@ -123,7 +127,7 @@ describe('sequential-cards: frozen wire fixtures', () => {
   });
 
   it('restores the committed snapshot and re-derives every money-bearing field', () => {
-    const fixture = readFixture('cards-book-v1.json');
+    const fixture = readFixture('cards-book-v2.json');
     const restored = CardsBook.restore(
       frozenCardsDefinition,
       JSON.stringify(fixture.snapshot as Record<string, unknown>),
@@ -154,7 +158,7 @@ describe('sequential-cards: frozen wire fixtures', () => {
   };
 
   it('rejects a re-sealed mutation of the committed snapshot on its merits', () => {
-    const snapshot = readFixture('cards-book-v1.json').snapshot as Record<string, unknown>;
+    const snapshot = readFixture('cards-book-v2.json').snapshot as Record<string, unknown>;
     expect(() => CardsBook.restore(frozenCardsDefinition, reseal(snapshot))).not.toThrow();
     const selections = snapshot.selections as Record<string, unknown>[];
     for (const tampered of [
@@ -191,12 +195,19 @@ describe('sequential-cards: frozen wire fixtures', () => {
   });
 
   it('also rejects an unsealed mutation, by the checksum', () => {
-    const snapshot = readFixture('cards-book-v1.json').snapshot as Record<string, unknown>;
+    const snapshot = readFixture('cards-book-v2.json').snapshot as Record<string, unknown>;
     expect(() =>
       CardsBook.restore(
         frozenCardsDefinition,
         JSON.stringify({ ...snapshot, liquidBalance: '999999' }),
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+  });
+
+  it('retains the v1 book fixture as an explicit non-migratable refusal vector', () => {
+    const legacy = readFixture('cards-book-v1.json').snapshot as object;
+    expect(() => CardsBook.restore(frozenCardsDefinition, legacy)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
+    );
   });
 });

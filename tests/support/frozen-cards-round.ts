@@ -23,6 +23,7 @@ import {
 } from '../../src/modules/sequential-cards/references.js';
 import { deriveRoundingSeed } from '../../src/modules/sequential-cards/credits.js';
 import { cardsFingerprint } from '../../src/modules/sequential-cards/adapter.js';
+import { cardsAdmission } from './cards-admission.js';
 import {
   CardsBook,
   type CardsBookSnapshot,
@@ -108,6 +109,7 @@ async function buildRound(
         idempotencyKey: 'frozen-open',
         expectedStepRevision: 0,
         roundId,
+        ...cardsAdmission(definition, FROZEN_CARDS_SEED, roundId),
         selections: [
           { id: 'MIDDLE', kind: 'position', position: 0, stake: 100n },
           { id: 'BAND', kind: 'market', marketId: 'BAND:CORE', stake: 25n },

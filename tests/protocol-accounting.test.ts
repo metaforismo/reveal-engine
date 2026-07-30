@@ -12,13 +12,21 @@ import { advanceAll, completedBook, seed } from './helpers.js';
 
 describe('protocol accounting and exact claims', () => {
   it('keeps contingent payout exact until settlement', async () => {
-    const book = new RoundBook(constellationReference, initialPosterior(constellationReference));
+    const transcript = makeTranscript(seed(1), constellationReference, 'exact');
+    const book = new RoundBook(constellationReference, initialPosterior(constellationReference), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     await book.open({ idempotencyKey: 'open', expectedFrameRevision: 0, outcome: 0, stake: 1n });
     expect(book.position?.contingentPayout).toEqual(rational(97n, 50n));
   });
 
   it('charges the first-entry margin once and keeps re-entry unshaded', async () => {
-    const book = new RoundBook(constellationReference, initialPosterior(constellationReference));
+    const transcript = makeTranscript(seed(2), constellationReference, 're-entry');
+    const book = new RoundBook(constellationReference, initialPosterior(constellationReference), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     const open = await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,
@@ -47,7 +55,10 @@ describe('protocol accounting and exact claims', () => {
     });
     const seedHex = seed(13);
     const transcript = makeTranscript(seedHex, game, 'cap-chain');
-    const book = new RoundBook(game, initialPosterior(game));
+    const book = new RoundBook(game, initialPosterior(game), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     const pickedTruth = transcript.truth;
     await book.open({
       idempotencyKey: 'open',
@@ -108,7 +119,10 @@ describe('protocol accounting and exact claims', () => {
   it('makes losing settlement and empty settlement explicit zero credits', async () => {
     const seedHex = seed(8);
     const transcript = makeTranscript(seedHex, binaryBeaconReference, 'lose');
-    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference));
+    const book = new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference), {
+      roundId: transcript.context.roundId,
+      commitment: transcript.commitment,
+    });
     await book.open({
       idempotencyKey: 'open',
       expectedFrameRevision: 0,

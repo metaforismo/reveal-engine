@@ -83,6 +83,7 @@ export function roundIdentityOf(definition: SurvivalDefinition, roundId: string)
   return Object.freeze({
     moduleId: STAGED_SURVIVAL_MODULE_ID,
     definitionId: survivalFingerprint(definition),
+    fingerprint: survivalFingerprint(definition),
     roundId,
     proofVersion: COMMITMENT_VERSION,
   });

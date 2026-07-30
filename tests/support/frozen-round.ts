@@ -34,7 +34,10 @@ export interface FrozenRound {
 
 export async function buildFrozenRound(): Promise<FrozenRound> {
   const transcript = makeTranscript(FROZEN_SEED, frozenGame, FROZEN_ROUND_ID);
-  const book = new RoundBook(frozenGame, initialPosterior(frozenGame));
+  const book = new RoundBook(frozenGame, initialPosterior(frozenGame), {
+    roundId: FROZEN_ROUND_ID,
+    commitment: transcript.commitment,
+  });
   const receipts: WireReceipt[] = [];
 
   receipts.push(

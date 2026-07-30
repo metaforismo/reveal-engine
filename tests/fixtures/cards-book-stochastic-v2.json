@@ -1,0 +1,197 @@
+{
+  "note": "Frozen reveal-engine/cards-book-v2 snapshot under rounding: 'stochastic' — it carries the committed rounding tape and its credits come from the settlement draw.",
+  "seed": "000000000000000000000000000000000000000000000000000000000000002a",
+  "roundId": "frozen-cards-draw-1",
+  "snapshot": {
+    "schema": "reveal-engine/cards-book-v2",
+    "definition": {
+      "id": "triad-stochastic-v1",
+      "version": "1.0.0",
+      "fingerprint": "86dca5fd72ae65a0704e456f206a265e17ac305806391a835d7243a457dd91d1"
+    },
+    "roundId": "frozen-cards-draw-1",
+    "seedCommitment": "210f136cc11ede45a9be04dfb4df26ee4d4f629fe0c4b1401d8a526896ec7962",
+    "clientSeed": "1111111111111111111111111111111111111111111111111111111111111111",
+    "stepRevision": 1,
+    "ledgerRevision": 4,
+    "terminal": true,
+    "choices": [
+      {
+        "index": 0,
+        "kind": "back",
+        "position": 0
+      }
+    ],
+    "steps": [
+      {
+        "index": 0,
+        "position": 1,
+        "rank": 3,
+        "sorted": [0, 2],
+        "label": "triad-cut/v1:0"
+      }
+    ],
+    "selections": [
+      {
+        "id": "MIDDLE",
+        "kind": "position",
+        "marketId": null,
+        "openedPosition": 0,
+        "positions": [2],
+        "stake": "100",
+        "claim": {
+          "numerator": "12960",
+          "denominator": "1"
+        },
+        "decidedAtStepRevision": 1,
+        "status": "settled",
+        "credited": "0"
+      },
+      {
+        "id": "BAND",
+        "kind": "market",
+        "marketId": "BAND:CORE",
+        "openedPosition": null,
+        "positions": [],
+        "stake": "25",
+        "claim": {
+          "numerator": "3432",
+          "denominator": "53"
+        },
+        "decidedAtStepRevision": -1,
+        "status": "settled",
+        "credited": "0"
+      }
+    ],
+    "decisions": [
+      {
+        "selectionId": "MIDDLE",
+        "action": "switch",
+        "stepRevision": 1,
+        "positions": [2]
+      }
+    ],
+    "settlement": {
+      "revealedSeed": "000000000000000000000000000000000000000000000000000000000000002a",
+      "commitment": "fcfc9ab56e8493d51ca4d0195101ef3f75841add925a756cc32fa4af048c39a6",
+      "objectiveRank": 7,
+      "objectivePosition": 0
+    },
+    "roundingSeed": "e288a19f46151b2a7ba08a55bdedf263ac96953973510929e4793ce3ca254ff7",
+    "liquidBalance": "64",
+    "capBasisStake": "125",
+    "receipts": [
+      {
+        "fingerprint": "51f46f49c2fbe2c8d4771ce624eb7c40ae01669cf4ec2d850a02224ecd0a239f",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-open",
+          "commandFingerprint": "51f46f49c2fbe2c8d4771ce624eb7c40ae01669cf4ec2d850a02224ecd0a239f",
+          "action": "open",
+          "ledgerRevision": 1,
+          "frameRevision": 0,
+          "debited": "125",
+          "credited": "0",
+          "balanceDelta": "-125",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "7d39766c7d211c1ce600b8596e3359a569c6c64f8e3cf9478ea9ec5598d851c1",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-reveal",
+          "commandFingerprint": "7d39766c7d211c1ce600b8596e3359a569c6c64f8e3cf9478ea9ec5598d851c1",
+          "action": "reveal",
+          "ledgerRevision": 2,
+          "frameRevision": 0,
+          "debited": "0",
+          "credited": "0",
+          "balanceDelta": "0",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "b49d164b5ae8f81149fcf3b4f8a91753b53fb7154123b87be15f3059306d51a5",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-switch",
+          "commandFingerprint": "b49d164b5ae8f81149fcf3b4f8a91753b53fb7154123b87be15f3059306d51a5",
+          "action": "switch",
+          "ledgerRevision": 3,
+          "frameRevision": 1,
+          "debited": "0",
+          "credited": "0",
+          "balanceDelta": "0",
+          "capped": false
+        }
+      },
+      {
+        "fingerprint": "e701d820a4bf143b2c4d1513561d45281b34b1cbf86ddc7d12b74f3343dc6b76",
+        "receipt": {
+          "schema": "reveal-engine/receipt-v1",
+          "idempotencyKey": "frozen-settle",
+          "commandFingerprint": "e701d820a4bf143b2c4d1513561d45281b34b1cbf86ddc7d12b74f3343dc6b76",
+          "action": "settle",
+          "ledgerRevision": 4,
+          "frameRevision": 1,
+          "debited": "0",
+          "credited": "64",
+          "balanceDelta": "64",
+          "capped": false
+        }
+      }
+    ],
+    "snapshotHash": "8a08d61d9ea2cffc244703aa9e4debf9b4f879ad285e9a477c6aca3d5b64d2a5"
+  },
+  "receipts": [
+    {
+      "schema": "reveal-engine/receipt-v1",
+      "idempotencyKey": "frozen-open",
+      "commandFingerprint": "51f46f49c2fbe2c8d4771ce624eb7c40ae01669cf4ec2d850a02224ecd0a239f",
+      "action": "open",
+      "ledgerRevision": 1,
+      "frameRevision": 0,
+      "debited": "125",
+      "credited": "0",
+      "balanceDelta": "-125",
+      "capped": false
+    },
+    {
+      "schema": "reveal-engine/receipt-v1",
+      "idempotencyKey": "frozen-reveal",
+      "commandFingerprint": "7d39766c7d211c1ce600b8596e3359a569c6c64f8e3cf9478ea9ec5598d851c1",
+      "action": "reveal",
+      "ledgerRevision": 2,
+      "frameRevision": 0,
+      "debited": "0",
+      "credited": "0",
+      "balanceDelta": "0",
+      "capped": false
+    },
+    {
+      "schema": "reveal-engine/receipt-v1",
+      "idempotencyKey": "frozen-switch",
+      "commandFingerprint": "b49d164b5ae8f81149fcf3b4f8a91753b53fb7154123b87be15f3059306d51a5",
+      "action": "switch",
+      "ledgerRevision": 3,
+      "frameRevision": 1,
+      "debited": "0",
+      "credited": "0",
+      "balanceDelta": "0",
+      "capped": false
+    },
+    {
+      "schema": "reveal-engine/receipt-v1",
+      "idempotencyKey": "frozen-settle",
+      "commandFingerprint": "e701d820a4bf143b2c4d1513561d45281b34b1cbf86ddc7d12b74f3343dc6b76",
+      "action": "settle",
+      "ledgerRevision": 4,
+      "frameRevision": 1,
+      "debited": "0",
+      "credited": "64",
+      "balanceDelta": "64",
+      "capped": false
+    }
+  ]
+}

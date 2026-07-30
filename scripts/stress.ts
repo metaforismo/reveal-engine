@@ -21,7 +21,10 @@ import {
   fiveRunnerReference,
   makeTranscript as makeSurvivalTranscript,
   oracleTrialReference,
+  parseRoundRefId,
+  roundIdentityOf,
   roundRefId,
+  seedCommitment as survivalSeedCommitment,
   serializeTranscript as serializeSurvivalTranscript,
   stagedSurvival,
   transcriptToWire as survivalToWire,
@@ -103,7 +106,10 @@ for (let round = 0; round < rounds; round += 1) {
     maxTranscriptBytes,
     Buffer.byteLength(serializeTranscript(transcript)),
   );
-  let book = new RoundBook(game, initialPosterior(game));
+  let book = new RoundBook(game, initialPosterior(game), {
+    roundId: transcript.context.roundId,
+    commitment: transcript.commitment,
+  });
   const pick = round % 3 === 0 ? transcript.truth : (transcript.truth + 1) % game.outcomes.length;
   const duplicate = await timed(() =>
     Promise.all([
@@ -214,7 +220,10 @@ for (let round = 0; round < survivalRounds; round += 1) {
       .toString(16)
       .padStart(64, '0'),
   });
-  let book = new SurvivalBook(game);
+  let book = new SurvivalBook(game, {
+    roundId: parseRoundRefId(roundId).roundId,
+    seedCommitment: survivalSeedCommitment(seedHex, game, roundIdentityOf(game, roundId)),
+  });
   for (let entity = 0; entity < game.entities; entity += 1)
     recordSurvival(await timed(() => book.enter(`enter-${round}-${entity}`, entity, 1_000n)));
 

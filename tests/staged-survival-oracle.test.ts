@@ -16,6 +16,7 @@ import {
   type SurvivalDefinition,
   type SurvivalStep,
 } from '../src/modules/staged-survival/index.js';
+import { survivalAdmission } from './support/survival-admission.js';
 
 /**
  * The mandatory oracle: a three-entity, two-stage instance enumerated
@@ -436,7 +437,14 @@ describe('staged-survival oracle: three entities, two stages, enumerated exhaust
       const stageTwoEvents: (ModelEvent | undefined)[] =
         survivors.length === 0 ? [undefined] : modelStage(pair, survivors);
       for (const stageTwo of stageTwoEvents) {
-        const book = new SurvivalBook(cappedTrial);
+        const oracleRound = roundRefId({
+          roundId: 'oracle-cap-sweep',
+          clientEntropy: '11'.repeat(32),
+        });
+        const book = new SurvivalBook(
+          cappedTrial,
+          survivalAdmission(cappedTrial, '01'.repeat(32), oracleRound),
+        );
         for (let entity = 0; entity < ENTITIES; entity += 1)
           await book.enter(`enter-${entity}`, entity, stake);
         await book.choose('choose-0', 'pair');
@@ -486,7 +494,14 @@ describe('staged-survival oracle: three entities, two stages, enumerated exhaust
       (event) => event.survivors.length === ENTITIES,
     ) as ModelEvent;
 
-    const book = new SurvivalBook(cappedTrial);
+    const oracleRound = roundRefId({
+      roundId: 'oracle-cap-chain',
+      clientEntropy: '22'.repeat(32),
+    });
+    const book = new SurvivalBook(
+      cappedTrial,
+      survivalAdmission(cappedTrial, '02'.repeat(32), oracleRound),
+    );
     for (let entity = 0; entity < ENTITIES; entity += 1)
       await book.enter(`enter-${entity}`, entity, stake);
     await book.choose('choose-0', 'pair');

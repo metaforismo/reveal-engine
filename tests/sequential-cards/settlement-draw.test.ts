@@ -26,6 +26,7 @@ import { buildCardsTranscript } from '../../src/modules/sequential-cards/transcr
 import { analyseDefinition } from '../../src/modules/sequential-cards/analysis.js';
 import type { RevealStep } from '../../src/modules/sequential-cards/contracts.js';
 import { seed } from '../helpers.js';
+import { cardsAdmission } from '../support/cards-admission.js';
 
 /**
  * `pricing.rounding: 'stochastic'`, which `triad/docs/ENGINE.md` §4.1 declares
@@ -62,6 +63,7 @@ async function revealedRound(roundId: string, stake: bigint): Promise<CardsBook>
     idempotencyKey: 'open',
     expectedStepRevision: 0,
     roundId,
+    ...cardsAdmission(stochastic, SEED, roundId),
     selections: [
       { id: 'MIDDLE', kind: 'position', position: 0, stake },
       { id: 'BAND', kind: 'market', marketId: 'BAND:CORE', stake: 25n },
@@ -82,6 +84,7 @@ describe('sequential-cards: the settlement draw', () => {
         idempotencyKey: 'open',
         expectedStepRevision: 0,
         roundId: ROUND,
+        ...cardsAdmission(stochastic, SEED, ROUND),
         selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
       }),
     ).rejects.toThrowError(
@@ -99,6 +102,7 @@ describe('sequential-cards: the settlement draw', () => {
         idempotencyKey: 'open',
         expectedStepRevision: 0,
         roundId: ROUND,
+        ...cardsAdmission(triadMiddleReference, SEED, ROUND),
         selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
         roundingSeed: tapeFor(ROUND).roundingSeed,
       }),
@@ -157,6 +161,7 @@ describe('sequential-cards: the settlement draw', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId,
+      ...cardsAdmission(stochastic, SEED, roundId),
       selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
       // A tape from another round: every draw it produces is a legal uniform
       // integer, and none of them is the one this round committed to.
@@ -216,6 +221,7 @@ describe('sequential-cards: the settlement draw', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId: 'floor-round',
+      ...cardsAdmission(triadMiddleReference, SEED, 'floor-round'),
       selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
     });
     const snapshot = JSON.parse(floorBook.serialize()) as Record<string, unknown>;
@@ -299,10 +305,10 @@ describe('sequential-cards: the settlement draw', () => {
 
   it('matches the committed stochastic wire fixture field for field', () => {
     const fixture = JSON.parse(
-      readFileSync('tests/fixtures/cards-book-stochastic-v1.json', 'utf8'),
+      readFileSync('tests/fixtures/cards-book-stochastic-v2.json', 'utf8'),
     ) as Record<string, unknown>;
     const snapshot = fixture.snapshot as Record<string, unknown>;
-    expect(snapshot.schema).toBe('reveal-engine/cards-book-v1');
+    expect(snapshot.schema).toBe('reveal-engine/cards-book-v2');
     expect(Object.keys(snapshot)).toContain('roundingSeed');
     expect(snapshot.definition).toMatchObject({
       id: 'triad-stochastic-v1',
@@ -446,6 +452,7 @@ describe('sequential-cards: the rounding tape is a pre-settlement residual', () 
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId,
+      ...cardsAdmission(stochastic, SEED, roundId),
       selections: [{ id: 'MIDDLE', kind: 'position', position: 0, stake: 25n }],
       roundingSeed: tapeFor(roundId).roundingSeed,
     });
@@ -481,7 +488,13 @@ describe('sequential-cards: the rounding tape is a pre-settlement residual', () 
     if (better === undefined) throw new Error('no candidate tape paid the extra credit');
 
     const rows = [{ id: 'MIDDLE', kind: 'position' as const, position: 0, stake: 25n }];
-    const openFp = openFingerprint(roundId, rows, roundingCommitment(better));
+    const openFp = openFingerprint(
+      roundId,
+      rows,
+      roundingCommitment(better),
+      snapshot.seedCommitment as string,
+      snapshot.clientSeed as string,
+    );
     const receipts = (
       snapshot.receipts as { fingerprint: string; receipt: Record<string, unknown> }[]
     ).map((entry) =>

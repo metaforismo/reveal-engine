@@ -19,6 +19,7 @@ import { deriveRevealSteps, stepDigest } from '../../src/modules/sequential-card
 import { buildCardsTranscript } from '../../src/modules/sequential-cards/transcript.js';
 import { deriveDeal } from '../../src/modules/sequential-cards/truth.js';
 import { seed } from '../helpers.js';
+import { cardsAdmission } from '../support/cards-admission.js';
 
 type Definition = typeof triadMiddleReference;
 
@@ -31,7 +32,13 @@ async function openedRound(
   reveals = definition.reveal.count,
 ): Promise<{ book: CardsBook; steps: readonly RevealStep[] }> {
   const book = new CardsBook(definition);
-  await book.open({ idempotencyKey: 'open', expectedStepRevision: 0, roundId, selections });
+  await book.open({
+    idempotencyKey: 'open',
+    expectedStepRevision: 0,
+    roundId,
+    ...cardsAdmission(definition, seedHex, roundId),
+    selections,
+  });
   const deal = deriveDeal(seedHex, definition, roundId);
   const steps = deriveRevealSteps(definition, deal, book.choices);
   for (let index = 0; index < reveals; index += 1)
@@ -393,6 +400,7 @@ describe('sequential-cards: the multi-position round book', () => {
         idempotencyKey: 'open',
         expectedStepRevision: 0,
         roundId: 'r-ticket',
+        ...cardsAdmission(triadMiddleReference, seed(1), 'r-ticket'),
         selections,
       }),
     ).rejects.toMatchObject({ details: { reason } });
@@ -405,6 +413,7 @@ describe('sequential-cards: the multi-position round book', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId: 'r-idem',
+      ...cardsAdmission(triadMiddleReference, seed(1), 'r-idem'),
       selections: [{ id: 'M', kind: 'position' as const, position: 0, stake: 25n }],
     };
     const first = await book.open(request);
@@ -465,7 +474,7 @@ describe('sequential-cards: the multi-position round book', () => {
       // A proof that verifies on its own is still not this round: two rounds
       // routinely publish the same reveal, so the round identity is what stops
       // a book settling on somebody else's deal.
-    ).rejects.toMatchObject({ code: 'TRANSCRIPT_MISMATCH' });
+    ).rejects.toMatchObject({ code: 'COMMITMENT_MISMATCH' });
     await expect(
       book.settle({
         idempotencyKey: 'wrong-seed',
@@ -759,6 +768,7 @@ describe('sequential-cards: the multi-position round book', () => {
         idempotencyKey: 'flood',
         expectedStepRevision: 0,
         roundId: 'r-flood',
+        ...cardsAdmission(triadMiddleReference, seed(1), 'r-flood'),
         selections: rows,
       }),
     ).rejects.toMatchObject({ code: 'CLAIM_REJECTED', details: { reason: 'DUPLICATE_SELECTION' } });
@@ -788,6 +798,7 @@ describe('sequential-cards: the multi-position round book', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId,
+      ...cardsAdmission(triadMiddleReference, seedHex, roundId),
       selections: [{ id: 's1', kind: 'position', position: 0, stake: 100n }],
     });
     const deal = deriveDeal(seedHex, triadMiddleReference, roundId);

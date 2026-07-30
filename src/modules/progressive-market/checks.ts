@@ -166,9 +166,17 @@ export function stakedSnapshotFor(
   const evidence = transcript.evidence.slice(0, Math.min(3, transcript.evidence.length));
   const outcome = transcript.truth;
   const posterior = posteriorFor(game, evidence);
-  const fingerprint = commandFingerprint('open', [0, outcome, stake]);
+  const publishedRound = { roundId, commitment: transcript.commitment };
+  const fingerprint = commandFingerprint('open', [
+    roundId,
+    transcript.commitment,
+    0,
+    outcome,
+    stake,
+  ]);
   const base = {
     schema: ROUND_BOOK_SCHEMA,
+    publishedRound,
     adapter: {
       id: game.id,
       version: game.adapterVersion,
@@ -182,6 +190,22 @@ export function stakedSnapshotFor(
       favour: String(event.favour),
       other: String(event.other),
     })),
+    openHistory: [
+      {
+        outcome,
+        contingentPayout: toWireRational(
+          multiply(
+            rational(stake),
+            quote(game, initialPosterior(game), outcome, true, 0).multiplier,
+          ),
+        ),
+        stake: String(stake),
+        capBasisStake: String(stake),
+        entryCount: 1,
+        openedAtFrameRevision: 0,
+      },
+    ],
+    settlementProof: null,
     position: {
       outcome,
       contingentPayout: toWireRational(

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import fixtures from './fixtures/aether-order-transcripts.json' with { type: 'json' };
+import v2Fixtures from './fixtures/aether-order-transcripts-v2.json' with { type: 'json' };
 import {
   aetherOrderClassic,
   aetherOrderSeven,
@@ -78,7 +79,7 @@ describe('AETHER ORDER frozen cross-repository vectors', () => {
     const signer = ed25519KeyPairFromSeed(signerSeed);
     expect(signer.publicKeyHex).toBe(fixtures.operatorPublicKey);
 
-    for (const vector of fixtures.vectors) {
+    for (const vector of v2Fixtures.vectors) {
       const game = gameFor(vector.context.variantId);
       const context = { gameId: 'aether-order', ...vector.context };
       const transcript = makePermutationTranscript(

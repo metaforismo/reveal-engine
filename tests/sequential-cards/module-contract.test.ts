@@ -40,6 +40,7 @@ import {
 } from '../../src/modules/sequential-cards/transcript.js';
 import { deriveDeal } from '../../src/modules/sequential-cards/truth.js';
 import { seed } from '../helpers.js';
+import { cardsAdmission } from '../support/cards-admission.js';
 
 const definition = triadMiddleReference;
 const choices = [{ index: 0, kind: 'back' as const, position: 1 }];
@@ -65,7 +66,7 @@ describe('sequential-cards: the lifecycle contract', () => {
       'settleDormant',
     ]);
     expect(sequentialCards.transcript.schema).toBe('reveal-engine/cards-transcript-v1');
-    expect(sequentialCards.book.snapshotSchema).toBe('reveal-engine/cards-book-v1');
+    expect(sequentialCards.book.snapshotSchema).toBe('reveal-engine/cards-book-v2');
     expect(sequentialCards.steps.maxSteps).toBe(8);
     expect(Object.isFrozen(sequentialCards)).toBe(true);
     // A choice-timed module must publish both a seed pre-commitment and its log.
@@ -653,6 +654,7 @@ describe('sequential-cards: the lifecycle contract', () => {
       idempotencyKey: 'open',
       expectedStepRevision: 0,
       roundId,
+      ...cardsAdmission(definition, seedHex, roundId),
       selections: [
         { id: 'M', kind: 'position', position: 1, stake: 25n },
         { id: 'B', kind: 'market', marketId: 'BAND:LOW', stake: 25n },
@@ -697,6 +699,7 @@ describe('sequential-cards: the lifecycle contract', () => {
         idempotencyKey: 'conformance-open',
         expectedStepRevision: 0,
         roundId,
+        ...cardsAdmission(reference, seedHex, roundId),
         selections: [
           ...Array.from(
             { length: reference.backing.maxOpenBeforeReveal },

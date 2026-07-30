@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { fail } from '../../../api/errors.js';
-import type { Rational } from '../../../core/rational.js';
+import { RevealEngineError, fail } from '../../../api/errors.js';
+import { equal, multiply, rational, type Rational } from '../../../core/rational.js';
 import { sha256Hex } from '../../../core/random.js';
 import { encodeFields, type CanonicalField } from '../../../internal/canonical.js';
 import { assertPrintableIdentifier, isRecord, type SeedContext } from './context.js';
@@ -74,15 +74,41 @@ const instanceIndexCache = new WeakMap<
 >();
 const claimCache = new WeakMap<PermutationGameDefinition, Map<string, string>>();
 
-function cloneRational(value: unknown, path: string): Rational {
+/** Internal-only bridge for immutable, frozen v1 verification fixtures. */
+export function registerLegacyAdapterFingerprint(
+  game: PermutationGameDefinition,
+  fingerprint: string,
+): void {
+  if (!/^[0-9a-f]{64}$/u.test(fingerprint))
+    fail('INVALID_ADAPTER', 'Legacy adapter fingerprint is malformed', '$.fingerprint');
+  fingerprintCache.set(game, fingerprint);
+}
+
+function cloneRational(value: unknown, path: string, upperBoundOne = false): Rational {
   if (
     !isRecord(value) ||
     typeof value.numerator !== 'bigint' ||
-    typeof value.denominator !== 'bigint' ||
-    value.denominator <= 0n
+    typeof value.denominator !== 'bigint'
   )
-    fail('INVALID_ADAPTER', 'Expected a reduced positive-denominator Rational', path);
-  return Object.freeze({ numerator: value.numerator, denominator: value.denominator });
+    fail('INVALID_ADAPTER', 'Expected a positive bounded Rational', path);
+  let normalized: Rational;
+  try {
+    normalized = rational(value.numerator, value.denominator);
+  } catch (error) {
+    if (error instanceof RevealEngineError)
+      fail('INVALID_ADAPTER', 'Rational is outside the engine arithmetic limits', path);
+    throw error;
+  }
+  if (
+    normalized.numerator <= 0n ||
+    (upperBoundOne && normalized.numerator > normalized.denominator)
+  )
+    fail(
+      'INVALID_ADAPTER',
+      upperBoundOne ? 'Target RTP must be in (0, 1]' : 'Multiplier must be strictly positive',
+      path,
+    );
+  return normalized;
 }
 
 function positiveSafeInteger(value: unknown, path: string): number {
@@ -129,11 +155,71 @@ function cloneFamily(family: BetFamily, index: number): BetFamily {
   });
 }
 
+function factorialBigInt(value: number): bigint {
+  let result = 1n;
+  for (let factor = 2n; factor <= BigInt(value); factor += 1n) result *= factor;
+  return result;
+}
+
+/**
+ * Rejects synchronous constructions whose worst-case behavioural sweep would
+ * monopolise the event loop. The estimate is deliberately conservative: every
+ * family is allowed up to `n!` instances, each checked across `n!` outcomes,
+ * once for the fingerprint and once for mandatory economics.
+ */
+function assertBehavioralWorkBudget(n: number, familyCount: number): void {
+  const permutations = factorialBigInt(n);
+  const estimate = 2n * BigInt(familyCount) * permutations * permutations;
+  if (estimate > BigInt(PERMUTATION_LIMITS.maxBehavioralEvaluations))
+    fail(
+      'INVALID_ADAPTER',
+      `Definition requires an estimated ${estimate.toString()} synchronous predicate evaluations; the budget is ${PERMUTATION_LIMITS.maxBehavioralEvaluations}`,
+      '$.n',
+    );
+}
+
+function assertEconomicConformance(game: PermutationGameDefinition): void {
+  const views = viewsFor(game);
+  for (const family of game.bets) {
+    const multiplier = game.pricing.multipliers[family.code];
+    if (multiplier === undefined)
+      fail(
+        'INVALID_ADAPTER',
+        'Bet family has no multiplier',
+        `$.pricing.multipliers.${family.code}`,
+      );
+    if (game.pricing.stakeQuantum % multiplier.denominator !== 0n)
+      fail(
+        'INVALID_ADAPTER',
+        'Stake quantum cannot pay this multiplier exactly',
+        `$.pricing.multipliers.${family.code}`,
+      );
+    for (const instance of instancesFor(game, family)) {
+      let wins = 0n;
+      for (const view of views) {
+        const verdict = family.resolve(instance, view);
+        if (verdict !== true && verdict !== false)
+          fail('INVALID_ADAPTER', 'Bet resolver must return a boolean', `$.bets.${family.code}`);
+        if (verdict) wins += 1n;
+      }
+      if (wins === 0n)
+        fail('INVALID_ADAPTER', 'Bet instance can never win', `$.bets.${family.code}`);
+      const probability = rational(wins, BigInt(views.length));
+      if (!equal(multiply(probability, multiplier), game.pricing.targetRtp))
+        fail(
+          'INVALID_ADAPTER',
+          'Multiplier does not price the target RTP exactly',
+          `$.pricing.multipliers.${family.code}`,
+        );
+    }
+  }
+}
+
 /**
  * The sole supported construction path. It snapshots every declarative value,
  * freezes the graph, then pays the behavioral-fingerprint cost once at startup.
  */
-export function definePermutationGame(input: PermutationGameDefinition): PermutationGameDefinition {
+function preparePermutationGame(input: PermutationGameDefinition): PermutationGameDefinition {
   if (!isRecord(input)) fail('INVALID_ADAPTER', 'Definition must be a plain object', '$');
   if (input.apiVersion !== ENGINE_API_VERSION)
     fail('INVALID_ADAPTER', 'Unknown engine API version', '$.apiVersion');
@@ -163,9 +249,11 @@ export function definePermutationGame(input: PermutationGameDefinition): Permuta
   );
   if (new Set(elements).size !== elements.length)
     fail('INVALID_ADAPTER', 'Element identifiers must be unique', '$.elements');
-  if (!Array.isArray(input.bets) || input.bets.length === 0)
+  if (!Array.isArray(input.bets) || input.bets.length === 0 || input.bets.length > 32)
     fail('INVALID_ADAPTER', 'Definition needs at least one bet family', '$.bets');
   const bets = Object.freeze(input.bets.map(cloneFamily));
+  if (new Set(bets.map((family) => family.code)).size !== bets.length)
+    fail('INVALID_ADAPTER', 'Bet family codes must be unique', '$.bets');
   if (!isRecord(input.pricing) || !isRecord(input.pricing.multipliers))
     fail('INVALID_ADAPTER', 'Pricing policy is malformed', '$.pricing');
   const multipliers = Object.freeze(
@@ -219,7 +307,7 @@ export function definePermutationGame(input: PermutationGameDefinition): Permuta
     elements,
     bets,
     pricing: Object.freeze({
-      targetRtp: cloneRational(input.pricing.targetRtp, '$.pricing.targetRtp'),
+      targetRtp: cloneRational(input.pricing.targetRtp, '$.pricing.targetRtp', true),
       multipliers,
       rounding: 'floor',
       stakeQuantum: positiveBigInt(input.pricing.stakeQuantum, '$.pricing.stakeQuantum'),
@@ -249,7 +337,79 @@ export function definePermutationGame(input: PermutationGameDefinition): Permuta
       autoplay: 'none',
     }),
   });
+  if (
+    definition.risk.minLineStake > definition.risk.maxLineStake ||
+    definition.risk.maxLineStake > definition.risk.maxTicketStake
+  )
+    fail('INVALID_ADAPTER', 'Stake bounds are not ordered', '$.risk');
+  return definition;
+}
+
+export function definePermutationGame(input: PermutationGameDefinition): PermutationGameDefinition {
+  if (!isRecord(input) || !Array.isArray(input.bets))
+    fail('INVALID_ADAPTER', 'Definition must carry bet families', '$.bets');
+  assertBehavioralWorkBudget(Number(input.n), input.bets.length);
+  const definition = preparePermutationGame(input);
+  assertEconomicConformance(definition);
   permutationAdapterFingerprint(definition);
+  return definition;
+}
+
+/**
+ * Exhaustively validates a larger declaration without monopolising the event
+ * loop. The same economics and behavioural fingerprint are proven as by the
+ * synchronous constructor; only the scheduling differs.
+ */
+export async function definePermutationGameAsync(
+  input: PermutationGameDefinition,
+  options: { readonly yieldEvery?: number } = {},
+): Promise<PermutationGameDefinition> {
+  const every = options.yieldEvery ?? 10_000;
+  if (!Number.isSafeInteger(every) || every < 1)
+    fail('INVALID_ADAPTER', 'Yield interval must be a positive integer', '$.yieldEvery');
+  const definition = preparePermutationGame(input);
+  const views = viewsFor(definition);
+  let evaluations = 0;
+  for (const family of definition.bets) {
+    const multiplier = definition.pricing.multipliers[family.code];
+    if (multiplier === undefined)
+      fail('INVALID_ADAPTER', 'Bet family has no multiplier', `$.pricing.${family.code}`);
+    if (definition.pricing.stakeQuantum % multiplier.denominator !== 0n)
+      fail(
+        'INVALID_ADAPTER',
+        'Stake quantum cannot pay this multiplier exactly',
+        `$.pricing.${family.code}`,
+      );
+    for (const instance of instancesFor(definition, family)) {
+      let wins = 0n;
+      for (const view of views) {
+        const verdict = family.resolve(instance, view);
+        if (verdict !== true && verdict !== false)
+          fail('INVALID_ADAPTER', 'Bet resolver must return a boolean', `$.bets.${family.code}`);
+        if (verdict) wins += 1n;
+        evaluations += 1;
+        if (evaluations % every === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (
+        wins === 0n ||
+        !equal(
+          multiply(rational(wins, BigInt(views.length)), multiplier),
+          definition.pricing.targetRtp,
+        )
+      )
+        fail(
+          'INVALID_ADAPTER',
+          'Multiplier does not price the target RTP exactly',
+          `$.pricing.${family.code}`,
+        );
+    }
+  }
+  const digest = await computePermutationCatalogueDigestAsync(definition, every);
+  catalogueCache.set(definition, digest);
+  fingerprintCache.set(
+    definition,
+    sha256Hex(encodeFields(permutationFingerprintFields(definition, digest))),
+  );
   return definition;
 }
 
@@ -305,7 +465,7 @@ export function instancesFor(
   const existing = byFamily.get(family.code);
   if (existing) return existing;
   const raw = family.enumerateInstances(game.n);
-  if (!Array.isArray(raw) || raw.length === 0)
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > factorial(game.n))
     fail('INVALID_ADAPTER', 'Bet family enumerated no instances', `$.bets.${family.code}`);
   const instances = Object.freeze(
     Array.prototype.slice.call(raw).map((value: unknown, index: number) => {
@@ -435,6 +595,43 @@ export function computePermutationCatalogueDigest(
       for (let index = 0; index < views.length; index += 1)
         if (family.resolve(instance, views[index] as OutcomeView) === true)
           bitmap[index >> 3] = (bitmap[index >> 3] as number) | (1 << (index & 7));
+      hash.update(encodeFields([instance.label, canonicalParams(instance.params), bitmap]));
+    }
+  }
+  return hash.digest('hex');
+}
+
+async function computePermutationCatalogueDigestAsync(
+  game: PermutationGameDefinition,
+  yieldEvery: number,
+): Promise<string> {
+  const views = viewsFor(game);
+  const hash = createHash('sha256');
+  hash.update(
+    encodeFields([
+      'catalogue',
+      PERMUTATION_MODULE_VERSION,
+      game.id,
+      game.variantId,
+      game.n,
+      views.length,
+      game.bets.length,
+    ]),
+  );
+  const bitmap = Buffer.alloc(Math.ceil(views.length / 8));
+  let evaluations = 0;
+  for (const family of game.bets) {
+    const instances = instancesFor(game, family);
+    hash.update(encodeFields(['family', family.code, family.tier, instances.length]));
+    for (const instance of instances) {
+      bitmap.fill(0);
+      for (let index = 0; index < views.length; index += 1) {
+        if (family.resolve(instance, views[index] as OutcomeView) === true)
+          bitmap[index >> 3] = (bitmap[index >> 3] as number) | (1 << (index & 7));
+        evaluations += 1;
+        if (evaluations % yieldEvery === 0)
+          await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       hash.update(encodeFields([instance.label, canonicalParams(instance.params), bitmap]));
     }
   }
