@@ -812,7 +812,13 @@ describe('staged-survival: the round book', () => {
       path: '$.claims',
     });
     expect(book.liquidBalance).toBe(0n);
-    expect(SurvivalBook.restore(definition, book.snapshot()).liquidBalance).toBe(0n);
+    expect(
+      SurvivalBook.restore(
+        definition,
+        book.snapshot(),
+        book.publishedRound ?? null,
+      ).liquidBalance,
+    ).toBe(0n);
 
     for (let entity = 1; entity < definition.entities; entity += 1)
       await book.enter(`enter-${entity}`, entity, 1_000_000n);
@@ -821,7 +827,11 @@ describe('staged-survival: the round book', () => {
     expect(receipt.credited).toBe(955_000n);
     expect(receipt.capped).toBe(false);
     expect(book.capBasisStake).toBe(5_000_000n);
-    const restored = SurvivalBook.restore(definition, book.snapshot());
+    const restored = SurvivalBook.restore(
+      definition,
+      book.snapshot(),
+      book.publishedRound ?? null,
+    );
     expect(restored.liquidBalance).toBe(955_000n);
     expect(JSON.stringify(restored.snapshot())).toBe(JSON.stringify(book.snapshot()));
     // No entry can follow a credited bank, which is what makes `restore()`'s
@@ -853,14 +863,20 @@ describe('staged-survival: the round book', () => {
       expect(book.claims).toEqual([]);
       expect(book.capBasisStake).toBeUndefined();
       expect(book.ledgerRevision).toBe(0);
-      expect(SurvivalBook.restore(definition, book.snapshot()).claims).toEqual([]);
+      expect(SurvivalBook.restore(definition, book.snapshot(), null).claims).toEqual([]);
     }
     // The boundary itself is legal, and the round it opens still restores.
     book.bindRound(survivalAdmission(definition, seed(1), roundIdFor('wide-stake')));
     for (let entity = 0; entity < definition.entities; entity += 1)
       await book.enter(`wide-${entity}`, entity, widest);
     expect(book.capBasisStake).toBe(widest * BigInt(definition.entities));
-    expect(SurvivalBook.restore(definition, book.snapshot()).capBasisStake).toBe(
+    expect(
+      SurvivalBook.restore(
+        definition,
+        book.snapshot(),
+        book.publishedRound ?? null,
+      ).capBasisStake,
+    ).toBe(
       book.capBasisStake,
     );
   });
@@ -1014,7 +1030,11 @@ describe('staged-survival: the round book', () => {
     const book = await openRound(definition, 1_000n, seedHex, roundId);
     const check = (): void => {
       const snapshot = book.snapshot();
-      const restored = SurvivalBook.restore(definition, snapshot);
+      const restored = SurvivalBook.restore(
+        definition,
+        snapshot,
+        book.publishedRound ?? null,
+      );
       expect(JSON.parse(JSON.stringify(restored.snapshot()))).toEqual(
         JSON.parse(JSON.stringify(snapshot)),
       );

@@ -56,6 +56,17 @@ function reseal(value: Mutable): string {
   });
 }
 
+function restoreSnapshot(
+  subject: Parameters<typeof CardsBook.restore>[0],
+  input: string | Mutable,
+): CardsBook {
+  const snapshot = typeof input === 'string' ? (JSON.parse(input) as Mutable) : input;
+  return CardsBook.restore(subject, input, {
+    roundId: snapshot.roundId as string,
+    seedCommitment: snapshot.seedCommitment as string,
+  });
+}
+
 /** A round staked on a backed position and a side market, one reveal in. */
 async function stakedRound(
   subject = definition,
@@ -493,7 +504,7 @@ describe('sequential-cards: the dormant settlement', () => {
     );
 
     // The partially-revealed dormant snapshot round-trips.
-    const restored = CardsBook.restore(cascade, book.serialize());
+    const restored = restoreSnapshot(cascade, book.serialize());
     expect(restored.serialize()).toBe(book.serialize());
     expect(restored.settlementReason).toBe('ROUND_DORMANT');
   });
@@ -509,14 +520,14 @@ describe('sequential-cards: the dormant settlement', () => {
       elapsedSeconds: WINDOW,
     });
     const serialized = book.serialize();
-    expect(CardsBook.restore(definition, serialized).serialize()).toBe(serialized);
+    expect(restoreSnapshot(definition, serialized).serialize()).toBe(serialized);
     const snapshot = JSON.parse(serialized) as Mutable;
     expect(snapshot.settlementReason).toBe('ROUND_DORMANT');
 
     // Relabelled after the fact. The reason is inside the receipt fingerprint,
     // so the rest of the log staying consistent buys the forgery nothing.
     expect(() =>
-      CardsBook.restore(
+      restoreSnapshot(
         definition,
         reseal({ ...snapshot, settlementReason: 'ACCOUNT_STATE_CHANGED' }),
       ),
@@ -529,11 +540,11 @@ describe('sequential-cards: the dormant settlement', () => {
     // Erased: a system settlement that will not say why it happened is a system
     // settlement presented as the player's own.
     expect(() =>
-      CardsBook.restore(definition, reseal({ ...snapshot, settlementReason: null })),
+      restoreSnapshot(definition, reseal({ ...snapshot, settlementReason: null })),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
     // Invented: a reason neither this module nor the definition knows.
     expect(() =>
-      CardsBook.restore(definition, reseal({ ...snapshot, settlementReason: 'HOUSE_CHOICE' })),
+      restoreSnapshot(definition, reseal({ ...snapshot, settlementReason: 'HOUSE_CHOICE' })),
     ).toThrowError(
       expect.objectContaining({
         message: 'A system settlement records the reason it was taken under',
@@ -553,7 +564,7 @@ describe('sequential-cards: the dormant settlement', () => {
     const snapshot = JSON.parse(book.serialize()) as Mutable;
     expect(snapshot.settlementReason).toBeNull();
     expect(() =>
-      CardsBook.restore(definition, reseal({ ...snapshot, settlementReason: 'ROUND_DORMANT' })),
+      restoreSnapshot(definition, reseal({ ...snapshot, settlementReason: 'ROUND_DORMANT' })),
     ).toThrowError(
       expect.objectContaining({
         message: 'A settlement the player took records no system reason',
@@ -589,13 +600,13 @@ describe('sequential-cards: the dormant settlement', () => {
       ],
       ledgerRevision: receipts.length + 1,
     });
-    expect(() => CardsBook.restore(plain, forged)).toThrowError(
+    expect(() => restoreSnapshot(plain, forged)).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
     // And the key itself is refused on a definition with no policy: the key set
     // is a function of the definition, not of the payload.
     expect(() =>
-      CardsBook.restore(plain, reseal({ ...snapshot, settlementReason: null })),
+      restoreSnapshot(plain, reseal({ ...snapshot, settlementReason: null })),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
@@ -646,7 +657,7 @@ describe('sequential-cards: the dormant settlement', () => {
           : entry,
       ),
     });
-    expect(() => CardsBook.restore(definition, refenced)).toThrowError(
+    expect(() => restoreSnapshot(definition, refenced)).toThrowError(
       expect.objectContaining({
         message: 'Receipt is fenced to a step revision the round was not standing at',
       }),
@@ -706,7 +717,7 @@ describe('sequential-cards: the dormant settlement', () => {
       ledgerRevision: receipts.length + 1,
       selections: (snapshot.selections as Mutable[]).map((row) => ({ ...row, status: 'settled' })),
     });
-    expect(() => CardsBook.restore(definition, forged)).toThrowError(
+    expect(() => restoreSnapshot(definition, forged)).toThrowError(
       expect.objectContaining({
         message: 'A dormant settlement cannot precede the reveal that made the board decidable',
       }),
@@ -744,7 +755,7 @@ describe('sequential-cards: the dormant settlement', () => {
       });
       expect(receipt.credited).toBeLessThanOrEqual(ceiling);
       expect(receipt.credited).toBeGreaterThanOrEqual(0n);
-      expect(CardsBook.restore(definition, book.serialize()).serialize()).toBe(book.serialize());
+      expect(restoreSnapshot(definition, book.serialize()).serialize()).toBe(book.serialize());
     }
   });
 
@@ -865,7 +876,7 @@ describe('sequential-cards: the dormant settlement', () => {
       'switch',
       'settleDormant',
     ]);
-    const restored = CardsBook.restore(frozenDormantDefinition, JSON.stringify(snapshot));
+    const restored = restoreSnapshot(frozenDormantDefinition, JSON.stringify(snapshot));
     expect(restored.terminal).toBe(true);
     expect(restored.settlementReason).toBe('ROUND_DORMANT');
     expect(restored.snapshot()).toEqual(snapshot);
@@ -894,7 +905,7 @@ describe('sequential-cards: the dormant settlement', () => {
     });
     const basis = book.capBasisStake as bigint;
     expect(receipt.credited).toBeLessThanOrEqual(basis * capped.risk.maxWinMultiple);
-    expect(CardsBook.restore(capped, book.serialize()).serialize()).toBe(book.serialize());
+    expect(restoreSnapshot(capped, book.serialize()).serialize()).toBe(book.serialize());
     expect(rational(receipt.credited).denominator).toBe(1n);
   });
 });

@@ -185,7 +185,11 @@ describe('sequential-cards: the settlement draw', () => {
     const book = await revealedRound(roundId, 25n);
     if (book.offers('MIDDLE').includes('cash'))
       await book.cash({ idempotencyKey: 'cash', expectedStepRevision: 1, selectionId: 'MIDDLE' });
-    const restored = CardsBook.restore(stochastic, book.serialize());
+    const restored = CardsBook.restore(
+      stochastic,
+      book.serialize(),
+      book.publishedRound ?? null,
+    );
     expect(restored.snapshot()).toEqual(book.snapshot());
     expect(restored.liquidBalance).toBe(book.liquidBalance);
 
@@ -203,11 +207,14 @@ describe('sequential-cards: the settlement draw', () => {
       CardsBook.restore(
         stochastic,
         reseal({ ...snapshot, roundingSeed: tapeFor('a-different-round').roundingSeed }),
+        book.publishedRound ?? null,
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
     // And a snapshot with no tape at all is not a round this definition played.
     const { roundingSeed: _dropped, ...tapeless } = snapshot;
-    expect(() => CardsBook.restore(stochastic, reseal(tapeless))).toThrowError(
+    expect(() =>
+      CardsBook.restore(stochastic, reseal(tapeless), book.publishedRound ?? null),
+    ).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
   });
@@ -238,6 +245,7 @@ describe('sequential-cards: the settlement draw', () => {
             snapshotHash: undefined,
           }),
         }),
+        floorBook.publishedRound ?? null,
       ),
     ).toThrowError(RevealEngineError);
   });
@@ -324,7 +332,10 @@ describe('sequential-cards: the settlement draw', () => {
       ),
     );
     expect(roundingCommitment(snapshot.roundingSeed as string)).toMatch(/^[0-9a-f]{64}$/u);
-    const restored = CardsBook.restore(stochastic, JSON.stringify(snapshot));
+    const restored = CardsBook.restore(stochastic, JSON.stringify(snapshot), {
+      roundId: snapshot.roundId as string,
+      seedCommitment: snapshot.seedCommitment as string,
+    });
     expect(restored.terminal).toBe(true);
     expect(restored.snapshot()).toEqual(snapshot);
     expect(restored.liquidBalance).toBeLessThanOrEqual(125n * stochastic.risk.maxWinMultiple);
@@ -530,7 +541,11 @@ describe('sequential-cards: the rounding tape is a pre-settlement residual', () 
     });
 
     // It restores. That is the residual, and it is worth exactly one credit.
-    const restored = CardsBook.restore(stochastic, sealed);
+    const restored = CardsBook.restore(
+      stochastic,
+      sealed,
+      book.publishedRound ?? null,
+    );
     expect(restored.liquidBalance).toBe(whole + 1n);
     expect(restored.liquidBalance - book.liquidBalance).toBe(1n);
 

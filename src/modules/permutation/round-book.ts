@@ -688,15 +688,19 @@ export class PermutationBook {
    * no settlement — enforced below — so it is a book that has done nothing, and
    * reconstructing one is indistinguishable from calling
    * `new PermutationBook(definition)`, which any caller may do anyway. It is
-   * therefore the only snapshot the lifecycle contract's two-argument
-   * `book.restore(definition, snapshot)` can restore, and deliberately so: that
-   * signature has no round to hand over, so the one state it can produce is the
-   * one in which no money is at risk. Same argument as the `create` factory.
+   * therefore restored with the explicit `null` sentinel. Omitting the third
+   * argument is never accepted: the public contract makes the trust decision
+   * visible at every call site.
    */
   static restore(
     definition: PermutationDefinition,
     input: string | object,
-    expected?: PermutationRoundBinding,
+    expected: PermutationRoundBinding | null,
+  ): PermutationBook;
+  static restore(
+    definition: PermutationDefinition,
+    input: string | object,
+    expected?: PermutationRoundBinding | null,
   ): PermutationBook {
     assertPermutationDefinition(definition);
     const raw = parseSnapshotInput(input);
@@ -710,21 +714,22 @@ export class PermutationBook {
       fail('DEFINITION_MISMATCH', 'Snapshot belongs to another definition', '$.definition');
 
     const binding = raw.binding === null ? undefined : freezeBinding(raw.binding, '$.binding');
-    if (expected !== undefined) {
-      const wanted = freezeBinding(expected, '$.expected');
-      if (binding === undefined || !bindingsEqual(binding, wanted))
-        fail('COMMITMENT_MISMATCH', 'Snapshot belongs to another round', '$.binding');
-    } else if (binding !== undefined) {
-      // The bound snapshot's round comes from the caller or from nowhere. A
-      // consistent whole-round rewrite reconciles perfectly against everything
-      // below, so reconstructing one without out-of-band evidence would be this
-      // class asserting a round it has no way to know.
+    if (expected === undefined)
       fail(
-        'CLAIM_REJECTED',
-        'Restoring a bound snapshot needs the round the caller published: pass it as the third argument to PermutationBook.restore()',
-        '$.expected',
+        'COMMITMENT_MISMATCH',
+        'Restore requires the independently published round binding or explicit null',
+        '$.expectedBinding',
       );
-    }
+    const wanted = expected === null ? undefined : freezeBinding(expected, '$.expectedBinding');
+    if (
+      (binding === undefined) !== (wanted === undefined) ||
+      (binding !== undefined && wanted !== undefined && !bindingsEqual(binding, wanted))
+    )
+      fail(
+        'COMMITMENT_MISMATCH',
+        'Snapshot does not match the expected published round',
+        '$.expectedBinding',
+      );
     // An unbound book cannot have taken a bet or settled, so a snapshot claiming
     // otherwise is describing a state this class cannot reach.
     if (binding === undefined && (raw.claims.length !== 0 || raw.terminal))

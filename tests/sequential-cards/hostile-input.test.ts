@@ -126,7 +126,9 @@ describe('sequential-cards: hostile input', () => {
 
   it('fails closed on every hostile snapshot payload', () => {
     for (const value of hostileValues)
-      expect(() => CardsBook.restore(definition, value as object)).toThrowError(RevealEngineError);
+      expect(() => CardsBook.restore(definition, value as object, null)).toThrowError(
+        RevealEngineError,
+      );
     const book = new CardsBook(definition);
     const snapshot = book.snapshot() as unknown as Record<string, unknown>;
     for (const mutation of [
@@ -143,13 +145,17 @@ describe('sequential-cards: hostile input', () => {
         ...mutation,
         snapshotHash: snapshotHash({ ...snapshot, ...mutation, snapshotHash: undefined }),
       };
-      expect(() => CardsBook.restore(definition, JSON.stringify(tampered))).toThrowError(
+      expect(() => CardsBook.restore(definition, JSON.stringify(tampered), null)).toThrowError(
         RevealEngineError,
       );
     }
     // A snapshot for another definition never restores, however well sealed.
     expect(() =>
-      CardsBook.restore({ ...definition, id: 'someone-else-v1' }, JSON.stringify(snapshot)),
+      CardsBook.restore(
+        { ...definition, id: 'someone-else-v1' },
+        JSON.stringify(snapshot),
+        null,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'DEFINITION_MISMATCH' }));
     expect(cardsFingerprint(definition)).toMatch(/^[0-9a-f]{64}$/u);
   });

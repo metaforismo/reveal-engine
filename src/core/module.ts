@@ -34,6 +34,8 @@ export interface LifecycleShape {
   readonly claim: unknown;
   /** The module's transcript domain object. */
   readonly transcript: unknown;
+  /** Trusted published-round identity supplied independently of reconnect state. */
+  readonly roundBinding: unknown;
   /** The module's round book instance. */
   readonly book: unknown;
 }
@@ -307,7 +309,11 @@ export interface BookModel<S extends LifecycleShape> {
   /** Receipt action names this module mints, e.g. `['open', 'sell', 'settle']`. */
   readonly actions: readonly string[];
   create(definition: S['definition']): S['book'];
-  restore(definition: S['definition'], snapshot: string | object): S['book'];
+  restore(
+    definition: S['definition'],
+    snapshot: string | object,
+    expectedBinding: S['roundBinding'] | null,
+  ): S['book'];
   snapshot(book: S['book']): object;
 }
 

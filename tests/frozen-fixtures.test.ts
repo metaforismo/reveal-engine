@@ -95,6 +95,8 @@ describe('frozen wire fixtures', () => {
     const restored = RoundBook.restore(
       frozenGame,
       JSON.stringify(fixture.snapshot as Record<string, unknown>),
+      (fixture.snapshot as { publishedRound: { roundId: string; commitment: string } })
+        .publishedRound,
     );
     expect(restored.terminal).toBe(true);
     expect(restored.liquidBalance).toBe(1320n);
@@ -123,14 +125,15 @@ describe('frozen wire fixtures', () => {
 
   it('rejects a re-sealed mutation of the committed snapshot on its merits', () => {
     const snapshot = readFixture('round-book-v2.json').snapshot as Record<string, unknown>;
-    expect(() => RoundBook.restore(frozenGame, reseal(snapshot))).not.toThrow();
+    const binding = snapshot.publishedRound as { roundId: string; commitment: string };
+    expect(() => RoundBook.restore(frozenGame, reseal(snapshot), binding)).not.toThrow();
     for (const tampered of [
       { ...snapshot, liquidBalance: '999999' },
       { ...snapshot, capBasisStake: '999999' },
       { ...snapshot, terminal: false },
       { ...snapshot, ledgerRevision: 3 },
     ])
-      expect(() => RoundBook.restore(frozenGame, reseal(tampered))).toThrowError(
+      expect(() => RoundBook.restore(frozenGame, reseal(tampered), binding)).toThrowError(
         expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
       );
   });
@@ -138,13 +141,17 @@ describe('frozen wire fixtures', () => {
   it('also rejects an unsealed mutation, by the checksum', () => {
     const snapshot = readFixture('round-book-v2.json').snapshot as Record<string, unknown>;
     expect(() =>
-      RoundBook.restore(frozenGame, JSON.stringify({ ...snapshot, liquidBalance: '999999' })),
+      RoundBook.restore(
+        frozenGame,
+        JSON.stringify({ ...snapshot, liquidBalance: '999999' }),
+        snapshot.publishedRound as { roundId: string; commitment: string },
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
   it('retains the v1 book fixture as an explicit verification-only refusal vector', () => {
     const legacy = readFixture('round-book-v1.json').snapshot as object;
-    expect(() => RoundBook.restore(frozenGame, legacy as never)).toThrowError(
+    expect(() => RoundBook.restore(frozenGame, legacy as never, null)).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
   });

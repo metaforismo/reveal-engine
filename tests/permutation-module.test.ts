@@ -96,6 +96,10 @@ function captureError(operation: () => unknown): unknown {
   }
 }
 
+function restoreWithoutBinding(definition: PermutationDefinition, snapshot: string | object) {
+  return Reflect.apply(PermutationBook.restore, undefined, [definition, snapshot]) as PermutationBook;
+}
+
 describe('permutation module: contract surface', () => {
   it('registers alongside the progressive market without displacing it', () => {
     expect(listModules().map((module) => module.id)).toEqual([
@@ -1192,7 +1196,7 @@ describe('permutation module: snapshot and restore', () => {
     ['unknown key', JSON.stringify({ schema: 'reveal-engine/permutation-book-v2', extra: 1 })],
     ['not JSON', '{'],
   ])('fails closed on a hostile snapshot: %s', (_label, input) => {
-    const error = captureError(() => PermutationBook.restore(CLASSIC, input));
+    const error = captureError(() => PermutationBook.restore(CLASSIC, input, null));
     expect(error).toBeInstanceOf(RevealEngineError);
     expect((error as RevealEngineError).code).toBe('INVALID_SNAPSHOT');
   });
@@ -1577,7 +1581,7 @@ describe('permutation module: the round a book is bound to', () => {
     // Dropping the binding entirely does not turn a settled book into a book
     // that has done nothing.
     expect(() =>
-      PermutationBook.restore(CLASSIC, reseal({ ...snapshot, binding: null })),
+      PermutationBook.restore(CLASSIC, reseal({ ...snapshot, binding: null }), null),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.binding' }));
 
     // The honest snapshot restores against the round it was played in, and only
@@ -1586,7 +1590,7 @@ describe('permutation module: the round a book is bound to', () => {
       true,
     );
     expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot), bindingOf(other))).toThrowError(
-      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
   });
 });
@@ -1632,17 +1636,11 @@ describe('permutation module: the book reached through the declaration', () => {
     expect(snapshot).toEqual(book.snapshot());
     expect((snapshot as { schema: string }).schema).toBe(module.book.snapshotSchema);
 
-    // The contract's `restore` takes a definition and a snapshot and nothing
-    // else, so it has no round to hand over — and a bound snapshot's round is
-    // the one thing that cannot be read off the snapshot. It refuses rather than
-    // shipping the weaker reconstruction as the default a host falls into.
-    expect(() => module.book.restore(CLASSIC, snapshot)).toThrowError(
-      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
-    );
-
-    // The host that holds the published round reaches the class, which is this
-    // shape's `book` type and therefore already in hand.
-    const restored = PermutationBook.restore(CLASSIC, snapshot, bindingOf(transcript));
+    const restored = module.book.restore(
+      CLASSIC,
+      snapshot,
+      bindingOf(transcript),
+    ) as PermutationBook;
     expect(restored).toBeInstanceOf(PermutationBook);
     expect(restored.snapshot()).toEqual(snapshot);
     expect(restored.liquidBalance).toBe(480n);
@@ -1663,7 +1661,7 @@ describe('permutation module: the book reached through the declaration', () => {
 
     // What the contract path *can* restore is the state where no money is at
     // risk, which is the same narrowness `create` has and equally deliberate.
-    const fresh = module.book.restore(CLASSIC, new PermutationBook(CLASSIC).snapshot());
+    const fresh = module.book.restore(CLASSIC, new PermutationBook(CLASSIC).snapshot(), null);
     expect((fresh as PermutationBook).binding).toBeUndefined();
   });
 
@@ -2123,23 +2121,23 @@ describe('permutation module: which round a restored snapshot plays', () => {
     // The only control that bites: the caller holds round A, because publishing
     // A is what opened the round, and A is not what these bytes name.
     expect(() => PermutationBook.restore(CLASSIC, sealed, bindingOf(roundA))).toThrowError(
-      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
   });
 
   it('refuses every bound snapshot when the caller supplies no published round', async () => {
     const { roundA, book, snapshot } = await stakedOnA();
     // Staked and non-terminal.
-    expect(() => PermutationBook.restore(CLASSIC, reseal(snapshot))).toThrowError(
-      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    expect(() => restoreWithoutBinding(CLASSIC, reseal(snapshot))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
     // And settled, which carries a re-derivable proof and is refused all the
     // same: a proof says how a round went, never which round was played.
     await book.settle({ idempotencyKey: 's', revealedSeed: seedHex, transcript: roundA });
     const terminal = book.snapshot() as unknown as Record<string, unknown>;
     expect(terminal.terminal).toBe(true);
-    expect(() => PermutationBook.restore(CLASSIC, reseal(terminal))).toThrowError(
-      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    expect(() => restoreWithoutBinding(CLASSIC, reseal(terminal))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
     // Supplied, it restores and the money comes back with it.
     expect(
@@ -2153,12 +2151,11 @@ describe('permutation module: which round a restored snapshot plays', () => {
    * The realistic host bug is `restore(definition, snapshot, lookup() ?? null)`,
    * where the lookup missed. If a nullish or half-built binding were treated as
    * "no evidence supplied", it would take the evidence-free path — and on a
-   * *bound* snapshot that path is the whole vulnerability. Only `undefined`, the
-   * absent argument, means absent; everything else is a binding and is validated
-   * as one.
+   * *bound* snapshot that path is the whole vulnerability. `null` is the
+   * explicit unbound sentinel; every other supplied value is a binding and is
+   * validated as one.
    */
   it.each([
-    ['null', null],
     ['a number', 0],
     ['a string', 'staked-a'],
     ['an array', []],
@@ -2177,9 +2174,9 @@ describe('permutation module: which round a restored snapshot plays', () => {
       expect(error).toBeInstanceOf(RevealEngineError);
       expect(error).not.toBeInstanceOf(TypeError);
       expect((error as RevealEngineError).code).toBe('CLAIM_REJECTED');
-      // `$.expected`, or a field inside it — the argument the caller got wrong.
+      // `$.expectedBinding`, or a field inside it — the argument the caller got wrong.
       // Never `$.binding`, which would blame the snapshot for a caller's bug.
-      expect((error as RevealEngineError).path).toMatch(/^\$\.expected(\.|$)/u);
+      expect((error as RevealEngineError).path).toMatch(/^\$\.expectedBinding(\.|$)/u);
     },
   );
 
@@ -2193,9 +2190,8 @@ describe('permutation module: which round a restored snapshot plays', () => {
    * can check in one line, and a carve-out is the seam a later change reopens.
    *
    * The evidence-free path is therefore exactly the *unbound* snapshot, which is
-   * the one state that cannot hold a claim or a settlement — and, not by
-   * coincidence, the only thing the lifecycle contract's two-argument
-   * `book.restore(definition, snapshot)` can produce.
+   * the one state that cannot hold a claim or a settlement, selected with the
+   * lifecycle contract's explicit `null` sentinel.
    */
   it('restores only the unbound snapshot without evidence, and checks any that is offered', () => {
     const roundA = makePermutationTranscript(seedHex, CLASSIC, 'staked-a');
@@ -2206,12 +2202,12 @@ describe('permutation module: which round a restored snapshot plays', () => {
       unknown
     >;
     expect(bound.claims).toEqual([]);
-    expect(() => PermutationBook.restore(CLASSIC, reseal(bound))).toThrowError(
-      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    expect(() => restoreWithoutBinding(CLASSIC, reseal(bound))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
     const repointed = reseal({ ...bound, binding: bindingOf(roundB) });
     expect(() => PermutationBook.restore(CLASSIC, repointed, bindingOf(roundA))).toThrowError(
-      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
     expect(PermutationBook.restore(CLASSIC, repointed, bindingOf(roundB)).binding).toEqual(
       bindingOf(roundB),
@@ -2219,11 +2215,11 @@ describe('permutation module: which round a restored snapshot plays', () => {
 
     const unbound = new PermutationBook(CLASSIC).snapshot() as unknown as Record<string, unknown>;
     expect(unbound.binding).toBeNull();
-    expect(PermutationBook.restore(CLASSIC, reseal(unbound)).binding).toBeUndefined();
+    expect(PermutationBook.restore(CLASSIC, reseal(unbound), null).binding).toBeUndefined();
     // A caller naming a round is telling restore something these bytes
     // contradict, and is told so rather than handed an unbound book anyway.
     expect(() => PermutationBook.restore(CLASSIC, reseal(unbound), bindingOf(roundA))).toThrowError(
-      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }),
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
     // And the unbound path cannot be used to launder a staked ticket past the
     // evidence requirement: an unbound book cannot have staked anything.
@@ -2231,6 +2227,7 @@ describe('permutation module: which round a restored snapshot plays', () => {
       PermutationBook.restore(
         CLASSIC,
         reseal({ ...unbound, claims: [{ key: 'a', code: 'first', parameters: [0], stake: '25' }] }),
+        null,
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.binding' }));
   });

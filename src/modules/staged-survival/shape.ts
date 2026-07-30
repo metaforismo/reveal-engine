@@ -1,5 +1,5 @@
 import type { LifecycleShape } from '../../core/module.js';
-import type { SurvivalBook } from './book.js';
+import type { PublishedSurvivalRound, SurvivalBook } from './book.js';
 import type {
   SurvivalChoice,
   SurvivalClaimRef,
@@ -17,5 +17,6 @@ export interface StagedSurvivalShape extends LifecycleShape {
   readonly choice: SurvivalChoice;
   readonly claim: SurvivalClaimRef;
   readonly transcript: SurvivalTranscript;
+  readonly roundBinding: PublishedSurvivalRound;
   readonly book: SurvivalBook;
 }

@@ -29,7 +29,7 @@ boundary.
 | Multi-position rounds are not crushed by a single-basis cap                                                                   | `tests/lifecycle-module-contract.test.ts`                                                                                                                                                                        | stakes of 1 then 10,000 under a 10x cap credit the full 38,800 claim, and stay inside `capBasisStake * maxWinMultiple`                                                                                                                                                                     |
 | Hostile-input behaviour is unchanged from `main` after the relocation                                                         | side-by-side run of `uniform` on eight malformed contexts in a worktree                                                                                                                                          | identical error code and path on every case (`INVALID_CONTEXT`, `INVALID_ADAPTER`, `UNSUPPORTED_VERSION`)                                                                                                                                                                                  |
 | Seeded protocol stress, per-module digests gated against their baselines                                                      | `npm run test:stress`, `artifacts/stress-v3.json`                                                                                                                                                                | 500 rounds / 5,538 operations; `moduleDigests` for `progressive-market` and `staged-survival` both match the committed baseline; a corrupted baseline was verified to fail the run                                                                                                         |
-| Transcript/posterior/proof benchmark                                                                                          | `npm run bench`, `artifacts/benchmark-v3.json`                                                                                                                                                                   | 1,500 samples / 52,721 events; both committed `moduleDigests` unchanged                                                                                                                                                                                                                    |
+| Transcript/posterior/proof benchmark                                                                                          | `npm run bench`, `artifacts/benchmark-v3.json`, `tests/artifact-schema.test.ts`                                                                                                                                  | 1,500 samples / 52,721 events; both committed `moduleDigests` unchanged; CPU cost and CPU throughput gated against the committed baseline at the declared ±20% local-variance band                                                                                                  |
 | `sequential-cards` and `permutation` carry no stress or benchmark replay anchor                                               | `artifacts/stress-v3.json`, `artifacts/benchmark-v3.json`                                                                                                                                                        | **not closed here.** Both artifacts' `moduleDigests` hold two keys, not four: neither module joined the seeded workload, so their replay behaviour is pinned only by their frozen fixtures and conformance runs. Adding them is a workload change and a deliberate re-baseline             |
 | Production RGS, certification, regulatory approval, and production capacity                                                   | none                                                                                                                                                                                                             | not performed and not claimed                                                                                                                                                                                                                                                              |
 
@@ -63,7 +63,7 @@ boundary.
 | The define-time width bound is not so blunt that it refuses real work  | `tests/staged-survival-module.test.ts`                                                                                                                       | a 32-entity field in one width-32 lane at 60-bit denominators defines, and `survivorDistribution` returns 33 terms summing to exactly `1` with the closed-form mean                                                                                                                                                                                 |
 | Twelve conformance checks over both references                         | `npm run conformance`                                                                                                                                        | per definition: 12 checks, 1 definition-scoped run + 16 per round-scoped check. Across the two references: 18 fairness identities, 18 distributions, 18 lane geometries, 64 tapes, 96 choice logs, 64 commitment bodies, 96 seed commitments, 32 transcripts, 22 tampered transcripts, 32 snapshots, 156 tampered snapshots, 32 conservation checks |
 | Bounded load, correctness digest gated against its baseline            | `npm run test:stress`, `artifacts/stress-v3.json`                                                                                                            | 100 survival rounds inside the 500-round workload: 432 entries, 222 decisions and stages, 36 banks, 25 reconnects, 100 settlements + 100 idempotent replays, 100 replayed steps refused, 15 tampered commitments rejected; `moduleDigests['staged-survival']` matches the committed baseline                                                        |
-| Throughput of the build-and-verify path                                | `npm run bench`, `artifacts/benchmark-v3.json`                                                                                                               | 300 survival samples / 712 stages inside a 1,500-sample run; whole run 52,712 events at ~24,200 events/s, p50/p95/p99 0.344/3.820/4.372 ms                                                                                                                                                                                                          |
+| Throughput of the build-and-verify path                                | `npm run bench`, `artifacts/benchmark-v3.json`                                                                                                               | Re-baselined on the Apple M3 machine described below: 300 survival samples / 712 stages inside a 1,500-sample run; whole run 52,721 events in 109,949 ms wall / 7,831 ms CPU, 479.50 wall events/s / 6,732.27 events per CPU-second, p50/p95/p99 26.992/265.393/508.811 ms |
 | The v2 binding migration moved only workloads that exercise book state | `npm run test:stress`, `npm run bench`                                                                                                                       | Stress deliberately moved to `90a0f1e0…cd8d` for progressive market and `cc0e2647…42b7` for staged survival because both books now publish and persist their commitment binding. The transcript/posterior benchmark does not exercise those book schemas, so its two module digests remain byte-identical to the prior baseline                     |
 | The digest gate fails on drift and on a silently dropped module        | corrupt one anchor, then remove one, and re-run; `tests/artifact-schema.test.ts`                                                                             | both fail the run with exit code 1 and name the module; `compareModuleDigests()` is unit-tested over the union of both key sets, and the gate validates its own baseline with `assertStressArtifact` and fails rather than skipping when that baseline is malformed                                                                                 |
 | No core file was modified by this module                               | `git diff platform/core...platform/staged-survival -- src/core src/api src/protocol src/serialization src/conformance src/integration src/reference src/cli` | empty; the sole pre-existing `src/` change is the module registry entry. See `docs/adr/0008-round-entropy-without-a-core-change.md`                                                                                                                                                                                                                 |
@@ -83,10 +83,26 @@ boundary.
 
 ## Reading these figures
 
-Stress and benchmark timings are synthetic local measurements taken on one
-machine state and Node build. Throughput here varies by roughly ±20% run to run,
-so a single figure is a sample and not a claim. The replay anchors are the
-per-module correctness digests and the workload seeds, not the timings.
+Stress and benchmark timings are synthetic local measurements taken on a
+MacBook Air (Apple M3, 8 CPU cores, 16 GB memory), macOS arm64, Node v25.8.2.
+The hardware description is reproduced with
+`system_profiler SPHardwareDataType && node --version`; the exact recorded run is
+`artifacts/benchmark-v3.json`. A single figure is a sample, not a capacity
+claim. The replay anchors are the per-module correctness digests and workload
+identities, not the timings.
+
+The ordinary benchmark gate compares exact `moduleDigests`, then `cpuMs` and
+`eventsPerCpuSecond` against the committed run within the same symmetric ±20%
+band this ledger already declared for local measurements. Wall elapsed time,
+wall throughput and latency percentiles remain recorded evidence but are not
+gates: on a shared machine they include scheduler delay from other processes,
+which is not work this process performed. `tests/artifact-schema.test.ts` pins
+both the CPU drift comparison and that wall-clock exclusion. Only the explicit
+`npm run artifacts:update` path passes `--update-baseline`; `npm run bench`
+cannot silently move its own reference.
+
+Neither wall nor CPU throughput is a portable capacity promise, and neither
+should be quoted as a guarantee for another machine.
 
 `moduleDigests` replaced the single `correctnessDigest` of the `-v2` artifacts,
 which is why both schemas are now `-v3`: one digest over a whole run moves
@@ -101,11 +117,23 @@ counts, rejection counts, and exact-money rules did not change. The gate first
 refused the stale digests and named both modules; the new baselines were written
 only after the schema decision and migration were recorded in the changelog.
 
-The benchmark anchors did not move. That workload measures transcript,
-posterior, and proof paths rather than serialized book state, so its progressive
-and staged-survival digests remain byte-identical to the prior baseline. This is
-the scoped negative control for the re-baseline: only the workload that consumes
-the new book bindings changed.
+The benchmark's **correctness anchors did not move**. That workload measures
+transcript, posterior, and proof paths rather than serialized book state, so its
+progressive and staged-survival digests remain byte-identical to the prior
+baseline. Its performance sample was re-baselined on this machine because the
+committed 3,720.99 ms / 14,168.55 events/s / 7.915 ms p99 sample came from
+different, undocumented hardware. The independent review also ran the same
+workload at pre-fix commit `efc8e42`: 136.7 s, 386 events/s and 556 ms p99,
+slower than the reviewed main run (about 118 s, 446 events/s and 501 ms p99)
+with byte-identical `moduleDigests`. Reproduce the attribution by running
+`node --import tsx scripts/benchmark.ts` from temporary checkouts at `efc8e42`
+and `main`; it is evidence against a security-fix regression, not a claim that
+either wall-clock sample is portable.
+
+The current re-baseline is therefore performance metadata plus a CPU-cost drift
+gate, not a correctness reset. `artifacts/stress-v3.json` was not regenerated:
+its published-round migration digests remain `90a0f1e0…cd8d` and
+`cc0e2647…42b7`; benchmark remains `f8b8d166…7fa8` and `ba4dafcd…fd23`.
 
 Two of the four modules — `sequential-cards` and `permutation` — are not in the
 stress or benchmark workload, so neither artifact carries a digest for them. That

@@ -544,10 +544,10 @@ caller.**
 PermutationBook.restore(definition, snapshot, publishedRound);
 ```
 
-The third argument is **required whenever the snapshot carries a binding**. The
+The third argument is **required at every call site**. The
 snapshot's own binding is reconciled against it and is never the source. Omit it
-on a bound snapshot and the call fails with `CLAIM_REJECTED` at `$.expected`;
-supply a different round and it fails with `COMMITMENT_MISMATCH` at `$.binding`.
+and the call fails with `COMMITMENT_MISMATCH` at `$.expectedBinding`; supply a
+different round and it fails at the same typed boundary.
 An operator always holds that value, because publishing it is what opened the
 round — and, critically, it comes from outside the snapshot store the adversary
 would have had to rewrite.
@@ -558,16 +558,10 @@ bound snapshot. Restoring an empty one under another round genuinely is harmless
 `new PermutationBook(definition)` — but "bound implies evidence" is a rule an
 auditor checks in one line, and a carve-out is a seam a later change reopens.
 
-The evidence-free path is therefore exactly the **unbound** snapshot, which is
-the one state that cannot hold a claim or a settlement (`restore()` refuses one
-that does). That is also, deliberately, the only thing the lifecycle contract's
-two-argument `book.restore(definition, snapshot)` can produce: the signature has
-no round to hand over, so it refuses every bound snapshot rather than shipping
-the weaker reconstruction as the default a host falls into. It is the same
-narrowness as the contract's `create`, for the same reason — the states these two
-can reach are the states in which no money is at risk. A host reconnecting a real
-ticket calls the class, which is this shape's `book` type and therefore already
-in hand.
+The evidence-free path is therefore exactly the **unbound** snapshot, selected
+with the explicit `null` sentinel. The registry-level `BookModel.restore` carries
+the same third argument as the concrete class, so a host can reconnect a real
+ticket without downcasting.
 
 `tests/permutation-module.test.ts` builds the consistent rewrite out of exported
 functions only, shows it restoring as a fixed point and settling for `0` where
@@ -723,21 +717,11 @@ make our module fit" is a claim that should never pass silently:
    enum every host branches on, for a case that is already a refused claim. The
    module reports `CLAIM_REJECTED` with the path `$.stake` and a message that
    says what happened.
-3. **`book.restore(definition, snapshot)` has nowhere to put the published
-   round.** The contract's signature takes two arguments, and §9.1 establishes
-   that a bound snapshot cannot safely be reconstructed without a third. The
-   tempting core change is to widen the slot — `restore(definition, snapshot,
-evidence?)` with a new `S['restoreEvidence']` on the shape. It was not made.
-   Widening the contract for one module's control would put a slot on every
-   module that only one fills, and `defineLifecycleModule()` would then have to
-   validate a type it cannot say anything about. The module resolves it inside
-   its own boundary instead: the two-argument declaration restores exactly the
-   snapshots that carry no money — the unbound ones — and refuses the rest, which
-   is the same narrowness `create` already has and needs no new contract surface.
-   A host reaches the third argument through `PermutationBook`, which is this
-   shape's declared `book` type. If a second module ever needs out-of-band
-   restore evidence, that is the point at which the contract should grow the slot
-   and an ADR should argue for it; one module is not a pattern.
+3. **`book.restore` now carries the published round.** §9.1 established that a
+   bound snapshot cannot safely be reconstructed without it. The contract once
+   deferred widening for one module; the other three shipped books now need the
+   same control, so `S['roundBinding']` and the required third argument landed
+   together under ADR 0011.
 
 ## 11. Relationship to AETHER ORDER
 

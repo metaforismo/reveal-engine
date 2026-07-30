@@ -712,7 +712,12 @@ export class SurvivalBook {
   static restore(
     definition: SurvivalDefinition,
     input: string | object,
-    expectedBinding?: PublishedSurvivalRound,
+    expectedBinding: PublishedSurvivalRound | null,
+  ): SurvivalBook;
+  static restore(
+    definition: SurvivalDefinition,
+    input: string | object,
+    expectedBinding?: PublishedSurvivalRound | null,
   ): SurvivalBook {
     assertSurvivalDefinition(definition);
     const raw = parseSurvivalSnapshot(input);
@@ -724,10 +729,20 @@ export class SurvivalBook {
 
     const snapshotBinding =
       raw.publishedRound === null ? undefined : copyPublishedRound(raw.publishedRound);
+    if (expectedBinding === undefined)
+      fail(
+        'COMMITMENT_MISMATCH',
+        'Restore requires the independently published round binding or explicit null',
+        '$.expectedBinding',
+      );
+    const wanted =
+      expectedBinding === null ? undefined : copyPublishedRound(expectedBinding);
     if (
-      expectedBinding !== undefined &&
-      (snapshotBinding?.roundId !== expectedBinding.roundId ||
-        snapshotBinding.seedCommitment !== expectedBinding.seedCommitment)
+      (snapshotBinding === undefined) !== (wanted === undefined) ||
+      (snapshotBinding !== undefined &&
+        wanted !== undefined &&
+        (snapshotBinding.roundId !== wanted.roundId ||
+          snapshotBinding.seedCommitment !== wanted.seedCommitment))
     )
       fail(
         'COMMITMENT_MISMATCH',

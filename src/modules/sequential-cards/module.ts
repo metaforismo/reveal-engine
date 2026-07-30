@@ -109,7 +109,8 @@ export const sequentialCards: LifecycleModule<SequentialCardsShape> =
       maxOpenClaims: CARDS_MAX_OPEN_CLAIMS,
       actions: CARDS_ACTIONS,
       create: (definition) => new CardsBook(definition),
-      restore: (definition, snapshot) => CardsBook.restore(definition, snapshot),
+      restore: (definition, snapshot, expectedBinding) =>
+        CardsBook.restore(definition, snapshot, expectedBinding),
       snapshot: (book) => book.snapshot(),
     },
 

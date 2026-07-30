@@ -190,7 +190,11 @@ describe('lifecycle module contract', () => {
     });
     expect(receipt.credited).toBeGreaterThan(0n);
     const snapshot = progressiveMarket.book.snapshot(book);
-    const restored = progressiveMarket.book.restore(definition, snapshot);
+    const restored = progressiveMarket.book.restore(
+      definition,
+      snapshot,
+      book.publishedRound ?? null,
+    );
     expect(progressiveMarket.book.snapshot(restored)).toEqual(snapshot);
   });
 
@@ -591,7 +595,11 @@ describe('shape (a)/(c): permutation truth, zero elimination, combinatorial payt
     );
     await book.settle('settle', transcript);
     const snapshot = orderingFixtureModule.book.snapshot(book) as Record<string, unknown>;
-    const restored = orderingFixtureModule.book.restore(definition, JSON.stringify(snapshot));
+    const restored = orderingFixtureModule.book.restore(
+      definition,
+      JSON.stringify(snapshot),
+      null,
+    );
     expect(orderingFixtureModule.book.snapshot(restored)).toEqual(snapshot);
     expect(restored.claims).toHaveLength(2);
     expect(restored.capBasisStake).toBe(125n);
@@ -616,7 +624,7 @@ describe('shape (a)/(c): permutation truth, zero elimination, combinatorial payt
         snapshotHash: snapshotHash({ ...snapshot, ...mutation, snapshotHash: undefined }),
       };
       expect(() =>
-        orderingFixtureModule.book.restore(definition, JSON.stringify(tampered)),
+        orderingFixtureModule.book.restore(definition, JSON.stringify(tampered), null),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
     }
   });

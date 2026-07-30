@@ -450,7 +450,12 @@ export class RoundBook {
   static restore(
     game: GameDefinition,
     input: string | RoundBookSnapshot,
-    expectedBinding?: PublishedRoundBinding,
+    expectedBinding: PublishedRoundBinding | null,
+  ): RoundBook;
+  static restore(
+    game: GameDefinition,
+    input: string | RoundBookSnapshot,
+    expectedBinding?: PublishedRoundBinding | null,
   ): RoundBook {
     const raw = parseSnapshotInput(input);
     if (
@@ -476,12 +481,25 @@ export class RoundBook {
     assertPosteriorForGame(posterior, game);
     const snapshotBinding =
       raw.publishedRound === null ? undefined : copyBinding(raw.publishedRound);
+    if (expectedBinding === undefined)
+      fail(
+        'COMMITMENT_MISMATCH',
+        'Restore requires the independently published round binding or explicit null',
+        '$.expectedBinding',
+      );
+    const wanted = expectedBinding === null ? undefined : copyBinding(expectedBinding);
     if (
-      expectedBinding !== undefined &&
-      (snapshotBinding?.roundId !== expectedBinding.roundId ||
-        snapshotBinding.commitment !== expectedBinding.commitment)
+      (snapshotBinding === undefined) !== (wanted === undefined) ||
+      (snapshotBinding !== undefined &&
+        wanted !== undefined &&
+        (snapshotBinding.roundId !== wanted.roundId ||
+          snapshotBinding.commitment !== wanted.commitment))
     )
-      fail('COMMITMENT_MISMATCH', 'Snapshot does not match the expected published round');
+      fail(
+        'COMMITMENT_MISMATCH',
+        'Snapshot does not match the expected published round',
+        '$.expectedBinding',
+      );
     const book = new RoundBook(game, posterior, snapshotBinding);
     book.#frameRevision = assertSnapshotRevision(raw.frameRevision, '$.frameRevision');
     book.#evidence = raw.evidence.map((event, index) =>

@@ -14,7 +14,7 @@ import {
 } from '../../core/rational.js';
 import { snapshotHash } from '../../core/snapshot.js';
 import { survivalFingerprint } from './adapter.js';
-import { SurvivalBook } from './book.js';
+import { SurvivalBook, type PublishedSurvivalRound } from './book.js';
 import {
   SURVIVAL_BOOK_SCHEMA,
   type SurvivalChoice,
@@ -717,9 +717,20 @@ const snapshotIsRevalidated: Check = {
     const failures: ConformanceFailure[] = [];
     const canonical = conformanceRoundId(roundId, seedIndex);
     const staked = stakedSnapshotFor(definition, seedHex, canonical);
+    const published = staked.snapshot.publishedRound as PublishedSurvivalRound | null;
+    if (published === null) {
+      failures.push(
+        failure(
+          'SNAPSHOT_NOT_REVALIDATED',
+          '$.publishedRound',
+          'Staked conformance snapshot has no published round',
+        ),
+      );
+      return failures;
+    }
     count('snapshots');
     try {
-      const restored = SurvivalBook.restore(definition, staked.snapshot);
+      const restored = SurvivalBook.restore(definition, staked.snapshot, published);
       if (
         restored.stageRevision !== 1 ||
         restored.liquidBalance !== staked.credited ||
@@ -806,7 +817,7 @@ const snapshotIsRevalidated: Check = {
       count('tamperedSnapshots');
       let rejected = false;
       try {
-        SurvivalBook.restore(definition, snapshot);
+        SurvivalBook.restore(definition, snapshot, published);
       } catch {
         rejected = true;
       }

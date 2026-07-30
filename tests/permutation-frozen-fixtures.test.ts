@@ -39,6 +39,13 @@ const PUBLISHED_ROUND: PermutationRoundBinding = {
   ).commitment,
 };
 
+function restoreWithoutBinding(snapshot: string | object): PermutationBook {
+  return Reflect.apply(PermutationBook.restore, undefined, [
+    frozenPermutationGame,
+    snapshot,
+  ]) as PermutationBook;
+}
+
 /**
  * `permutation-transcript-v1` and `permutation-book-v2` are frozen on disk, not
  * round-tripped at run time.
@@ -249,15 +256,17 @@ describe('frozen permutation wire fixtures', () => {
    */
   it('refuses the committed bound snapshot when no published round is supplied', () => {
     const snapshot = readFixture('permutation-book-v2.json').snapshot as Record<string, unknown>;
-    expect(() => PermutationBook.restore(frozenPermutationGame, reseal(snapshot))).toThrowError(
-      expect.objectContaining({ code: 'CLAIM_REJECTED', path: '$.expected' }),
+    expect(() => restoreWithoutBinding(reseal(snapshot))).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
     );
     expect(() =>
       PermutationBook.restore(frozenPermutationGame, reseal(snapshot), {
         ...PUBLISHED_ROUND,
         roundId: `${FROZEN_PERMUTATION_ROUND_ID}-other`,
       }),
-    ).toThrowError(expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.binding' }));
+    ).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
+    );
   });
 
   /**
@@ -281,13 +290,17 @@ describe('frozen permutation wire fixtures', () => {
     expect(snapshot.schema).toBe('reveal-engine/permutation-book-v1');
     expect(snapshot).not.toHaveProperty('binding');
     // Re-sealed, so the refusal is on the schema and not on the checksum.
-    expect(() => PermutationBook.restore(frozenPermutationGame, reseal(snapshot))).toThrowError(
+    expect(() =>
+      PermutationBook.restore(frozenPermutationGame, reseal(snapshot), null),
+    ).toThrowError(
       expect.objectContaining({ code: 'UNSUPPORTED_VERSION', path: '$.schema' }),
     );
     // And adding the missing field back does not make it a v2 snapshot: the
     // schema tag is the decision, not the field list.
     const dressed = { ...snapshot, binding: (round.snapshot as { binding: unknown }).binding };
-    expect(() => PermutationBook.restore(frozenPermutationGame, reseal(dressed))).toThrowError(
+    expect(() =>
+      PermutationBook.restore(frozenPermutationGame, reseal(dressed), null),
+    ).toThrowError(
       expect.objectContaining({ code: 'UNSUPPORTED_VERSION' }),
     );
   });

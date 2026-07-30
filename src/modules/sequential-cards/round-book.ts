@@ -417,6 +417,11 @@ export class CardsBook {
   get roundId(): string | undefined {
     return this.#roundId;
   }
+  get publishedRound(): PublishedCardsRound | undefined {
+    return this.#roundId === undefined || this.#seedCommitment === undefined
+      ? undefined
+      : Object.freeze({ roundId: this.#roundId, seedCommitment: this.#seedCommitment });
+  }
   get stepRevision(): number {
     return this.#steps.length;
   }
@@ -1141,7 +1146,12 @@ export class CardsBook {
   static restore(
     definition: SequentialCardsDefinition,
     input: string | object,
-    expectedBinding?: PublishedCardsRound,
+    expectedBinding: PublishedCardsRound | null,
+  ): CardsBook;
+  static restore(
+    definition: SequentialCardsDefinition,
+    input: string | object,
+    expectedBinding?: PublishedCardsRound | null,
   ): CardsBook {
     assertCardsDefinition(definition);
     const raw = parseCardsSnapshot(definition, input);
@@ -1156,10 +1166,17 @@ export class CardsBook {
     const bound = raw.roundId !== null || raw.seedCommitment !== null;
     if (bound && (raw.roundId === null || raw.seedCommitment === null))
       fail('INVALID_SNAPSHOT', 'Round binding is incomplete', '$.seedCommitment');
+    if (expectedBinding === undefined)
+      fail(
+        'COMMITMENT_MISMATCH',
+        'Restore requires the independently published round binding or explicit null',
+        '$.expectedBinding',
+      );
     if (
-      expectedBinding !== undefined &&
-      (raw.roundId !== expectedBinding.roundId ||
-        raw.seedCommitment !== expectedBinding.seedCommitment)
+      (expectedBinding === null) !== !bound ||
+      (expectedBinding !== null &&
+        (raw.roundId !== expectedBinding.roundId ||
+          raw.seedCommitment !== expectedBinding.seedCommitment))
     )
       fail(
         'COMMITMENT_MISMATCH',

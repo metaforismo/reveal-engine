@@ -107,8 +107,12 @@ export const progressiveMarket: LifecycleModule<ProgressiveMarketShape> =
       maxOpenClaims: 1,
       actions: ROUND_ACTIONS,
       create: (definition) => new RoundBook(definition, initialPosterior(definition)),
-      restore: (definition, snapshot) =>
-        RoundBook.restore(definition, snapshot as Parameters<typeof RoundBook.restore>[1]),
+      restore: (definition, snapshot, expectedBinding) =>
+        RoundBook.restore(
+          definition,
+          snapshot as Parameters<typeof RoundBook.restore>[1],
+          expectedBinding,
+        ),
       snapshot: (book) => book.snapshot(),
     },
 

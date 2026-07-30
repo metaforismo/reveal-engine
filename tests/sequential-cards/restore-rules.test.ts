@@ -53,6 +53,18 @@ function reseal(value: Mutable): string {
   });
 }
 
+/**
+ * These tests target post-binding restore invariants. Their fixture builder is
+ * the trusted publisher, so keep that round fixed while mutating other fields.
+ */
+function restoreSnapshot(definition: typeof triadMiddleReference, input: string | Mutable) {
+  const snapshot = typeof input === 'string' ? (JSON.parse(input) as Mutable) : input;
+  return CardsBook.restore(definition, input, {
+    roundId: snapshot.roundId as string,
+    seedCommitment: snapshot.seedCommitment as string,
+  });
+}
+
 interface WireEntry {
   readonly fingerprint: string;
   readonly receipt: Mutable;
@@ -209,7 +221,7 @@ describe("sequential-cards: restore() replays the round's own rules", () => {
     ];
 
     for (const [label, tampered] of cases) {
-      const restore = (): CardsBook => CardsBook.restore(definition, tampered);
+      const restore = (): CardsBook => restoreSnapshot(definition, tampered);
       expect(restore, label).toThrowError(RevealEngineError);
       expect(restore, label).toThrowError(
         expect.objectContaining({ code: 'INVALID_SNAPSHOT' }) as unknown as Error,
@@ -289,7 +301,7 @@ describe("sequential-cards: restore() replays the round's own rules", () => {
       ],
     ];
     for (const [label, tampered] of cases) {
-      const restore = (): CardsBook => CardsBook.restore(definition, tampered);
+      const restore = (): CardsBook => restoreSnapshot(definition, tampered);
       expect(restore, label).toThrowError(RevealEngineError);
       expect(restore, label).toThrowError(
         expect.objectContaining({ code: 'INVALID_SNAPSHOT' }) as unknown as Error,
@@ -331,7 +343,11 @@ describe("sequential-cards: restore() replays the round's own rules", () => {
         selectionId: 'a',
         positions: [target],
       });
-      const restored = CardsBook.restore(definition, book.serialize());
+      const restored = CardsBook.restore(
+        definition,
+        book.serialize(),
+        book.publishedRound ?? null,
+      );
       expect(restored.snapshot()).toEqual(book.snapshot());
       expect(restored.selections[0]?.claim).toEqual(book.selections[0]?.claim);
       expect(restored.selections[0]?.claim).not.toEqual(rational(0n));
@@ -462,7 +478,7 @@ describe('sequential-cards: restore() replays the rules of a liquidation too', (
    * would keep passing after the guard it is supposed to be about was deleted.
    */
   const refuses = (label: string, tampered: string, guard: string): void => {
-    const restore = (): CardsBook => CardsBook.restore(definition, tampered);
+    const restore = (): CardsBook => restoreSnapshot(definition, tampered);
     expect(restore, label).toThrowError(RevealEngineError);
     expect(restore, label).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT', message: guard }) as unknown as Error,
@@ -576,7 +592,11 @@ describe('sequential-cards: restore() replays the rules of a liquidation too', (
     const { book } = await revealedRound((candidate) => candidate.offers('a').includes('cash'));
     await book.cash({ idempotencyKey: 'cash', expectedStepRevision: 1, selectionId: 'a' });
     expect(book.liquidBalance).toBeGreaterThan(0n);
-    const restored = CardsBook.restore(definition, book.serialize());
+    const restored = CardsBook.restore(
+      definition,
+      book.serialize(),
+      book.publishedRound ?? null,
+    );
     expect(restored.snapshot()).toEqual(book.snapshot());
     expect(restored.liquidBalance).toBe(book.liquidBalance);
   });
@@ -676,7 +696,7 @@ describe('sequential-cards: the frame rule on a two-reveal round', () => {
     };
 
     for (const frame of [0, 1]) {
-      const restore = (): CardsBook => CardsBook.restore(cascade, forge(frame));
+      const restore = (): CardsBook => restoreSnapshot(cascade, forge(frame));
       expect(restore, `a cash fenced to revision ${frame}`).toThrowError(
         expect.objectContaining({
           code: 'INVALID_SNAPSHOT',
@@ -686,6 +706,6 @@ describe('sequential-cards: the frame rule on a two-reveal round', () => {
     }
     // The frame the round really is standing at restores, so the rule refuses a
     // pairing rather than refusing liquidations.
-    expect(() => CardsBook.restore(cascade, forge(2))).not.toThrow();
+    expect(() => restoreSnapshot(cascade, forge(2))).not.toThrow();
   });
 });

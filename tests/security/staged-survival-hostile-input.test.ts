@@ -339,7 +339,9 @@ describe('staged-survival: the snapshot boundary', () => {
   it('rejects a re-sealed rewrite of every money-bearing field', async () => {
     const book = await stakedBook();
     const snapshot = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
-    expect(SurvivalBook.restore(definition, snapshot).liquidBalance).toBe(book.liquidBalance);
+    expect(
+      SurvivalBook.restore(definition, snapshot, book.publishedRound ?? null).liquidBalance,
+    ).toBe(book.liquidBalance);
 
     const rewrites: readonly [string, Record<string, unknown>][] = [
       [
@@ -441,7 +443,7 @@ describe('staged-survival: the snapshot boundary', () => {
     for (const [label, rewritten] of rewrites) {
       let thrown: unknown;
       try {
-        SurvivalBook.restore(definition, reseal(rewritten));
+        SurvivalBook.restore(definition, reseal(rewritten), book.publishedRound ?? null);
       } catch (error) {
         thrown = error;
       }
@@ -471,9 +473,15 @@ describe('staged-survival: the snapshot boundary', () => {
     // The decision absorbed the subset: it is in the choice, and nowhere else.
     expect(committed.pendingBanked).toEqual([]);
     expect((committed.choices as { banked: number[] }[])[1]?.banked).toEqual([...pending]);
-    expect(SurvivalBook.restore(definition, committed).liquidBalance).toBe(book.liquidBalance);
+    expect(
+      SurvivalBook.restore(definition, committed, book.publishedRound ?? null).liquidBalance,
+    ).toBe(book.liquidBalance);
     expect(() =>
-      SurvivalBook.restore(definition, reseal({ ...committed, pendingBanked: [...pending] })),
+      SurvivalBook.restore(
+        definition,
+        reseal({ ...committed, pendingBanked: [...pending] }),
+        book.publishedRound ?? null,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
 
     // Same forgery once the decision has resolved. Here there is no pending
@@ -483,9 +491,15 @@ describe('staged-survival: the snapshot boundary', () => {
     await book.resolve(second.steps[1] as SurvivalStep);
     const resolved = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
     expect(resolved.pendingBanked).toEqual([]);
-    expect(SurvivalBook.restore(definition, resolved).liquidBalance).toBe(book.liquidBalance);
+    expect(
+      SurvivalBook.restore(definition, resolved, book.publishedRound ?? null).liquidBalance,
+    ).toBe(book.liquidBalance);
     expect(() =>
-      SurvivalBook.restore(definition, reseal({ ...resolved, pendingBanked: [...pending] })),
+      SurvivalBook.restore(
+        definition,
+        reseal({ ...resolved, pendingBanked: [...pending] }),
+        book.publishedRound ?? null,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
@@ -503,7 +517,9 @@ describe('staged-survival: the snapshot boundary', () => {
     await book.bank('bank-first', [0]);
     const snapshot = JSON.parse(JSON.stringify(book.snapshot())) as Record<string, unknown>;
     expect(snapshot.choices).toEqual([]);
-    expect(SurvivalBook.restore(definition, snapshot).liquidBalance).toBe(955n);
+    expect(
+      SurvivalBook.restore(definition, snapshot, book.publishedRound ?? null).liquidBalance,
+    ).toBe(955n);
     const entries = snapshot.entries as { entity: number; stake: string }[];
     const receipts = snapshot.receipts as { receipt: { action: string } }[];
     expect(() =>
@@ -517,6 +533,7 @@ describe('staged-survival: the snapshot boundary', () => {
           ),
           capBasisStake: '1000',
         }),
+        book.publishedRound ?? null,
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.entries' }));
   });
@@ -541,6 +558,7 @@ describe('staged-survival: the snapshot boundary', () => {
               index === 0 ? { ...entry, stake: String(stake) } : entry,
             ),
           }),
+          book.publishedRound ?? null,
         );
       } catch (error) {
         thrown = error;
@@ -555,7 +573,11 @@ describe('staged-survival: the snapshot boundary', () => {
     // Deliberately NOT re-sealed: this case exists to prove the checksum still
     // catches a corrupted payload, and it stands in for no merits-based check.
     expect(() =>
-      SurvivalBook.restore(definition, { ...snapshot, liquidBalance: '1' }),
+      SurvivalBook.restore(
+        definition,
+        { ...snapshot, liquidBalance: '1' },
+        book.publishedRound ?? null,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
@@ -596,7 +618,9 @@ describe('staged-survival: the snapshot boundary', () => {
     const pending = (snapshot.choices as { contractId: string; banked: number[] }[])[1];
     expect(pending).toEqual({ contractId: 'split', banked: [0, 1, 2] });
     // The honest pending decision still restores, credit and all.
-    expect(SurvivalBook.restore(definition, snapshot).liquidBalance).toBe(book.liquidBalance);
+    expect(
+      SurvivalBook.restore(definition, snapshot, book.publishedRound ?? null).liquidBalance,
+    ).toBe(book.liquidBalance);
     expect(book.liquidBalance).toBeGreaterThan(0n);
 
     const repoint = (contractId: string, banked: number[]): Record<string, unknown> => {
@@ -620,7 +644,11 @@ describe('staged-survival: the snapshot boundary', () => {
     for (const contractId of ['wide', 'not-a-contract']) {
       let thrown: unknown;
       try {
-        SurvivalBook.restore(definition, repoint(contractId, [0, 1, 2]));
+        SurvivalBook.restore(
+          definition,
+          repoint(contractId, [0, 1, 2]),
+          book.publishedRound ?? null,
+        );
       } catch (error) {
         thrown = error;
       }
@@ -639,7 +667,13 @@ describe('staged-survival: the snapshot boundary', () => {
     // The subset a pending decision claims to have withdrawn is held to the
     // same field. Entity 7 is inside the wire parser's bound — that is the
     // module maximum, not this definition's five — and was never running.
-    expect(() => SurvivalBook.restore(definition, repoint('split', [0, 1, 2, 7]))).toThrowError(
+    expect(() =>
+      SurvivalBook.restore(
+        definition,
+        repoint('split', [0, 1, 2, 7]),
+        book.publishedRound ?? null,
+      ),
+    ).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.choices[1].banked' }),
     );
   });
@@ -668,7 +702,7 @@ describe('staged-survival: the snapshot boundary', () => {
     for (const [label, payload] of cases) {
       let thrown: unknown;
       try {
-        SurvivalBook.restore(definition, payload as object);
+        SurvivalBook.restore(definition, payload as object, book.publishedRound ?? null);
       } catch (error) {
         thrown = error;
       }
@@ -1035,7 +1069,7 @@ describe('staged-survival: every exported helper fails in the module’s taxonom
       'deriveStepsChoices',
       (value) => deriveSteps(definition, { draws: [], digest: '' } as never, value as never),
     ],
-    ['restore', (value) => SurvivalBook.restore(definition, value as never)],
+    ['restore', (value) => SurvivalBook.restore(definition, value as never, null)],
   ];
 
   it('never lets an untyped error out of an exported entry point', () => {
@@ -1224,7 +1258,11 @@ describe('staged-survival: resolve() and restore() admit the same steps', () => 
       }
       accepted += 1;
       // Accepted live, so it must reconnect — and reconnect to the same book.
-      const restored = SurvivalBook.restore(definition, book.snapshot());
+      const restored = SurvivalBook.restore(
+        definition,
+        book.snapshot(),
+        book.publishedRound ?? null,
+      );
       expect({ shape: index, live: restored.live }).toEqual({ shape: index, live: book.live });
       expect(restored.steps).toEqual(book.steps);
     }

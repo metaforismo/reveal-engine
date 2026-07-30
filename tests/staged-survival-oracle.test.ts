@@ -462,7 +462,13 @@ describe('staged-survival oracle: three entities, two stages, enumerated exhaust
           if (receipt.capped) capped += 1;
         }
         expect(book.liquidBalance).toBeLessThanOrEqual(ceiling);
-        expect(SurvivalBook.restore(cappedTrial, book.snapshot()).liquidBalance).toBe(
+        expect(
+          SurvivalBook.restore(
+            cappedTrial,
+            book.snapshot(),
+            book.publishedRound ?? null,
+          ).liquidBalance,
+        ).toBe(
           book.liquidBalance,
         );
       }
@@ -533,7 +539,13 @@ describe('staged-survival oracle: three entities, two stages, enumerated exhaust
     }
     // Three uncapped banks would have paid 10,800 against a 6,000 ceiling.
     expect(liquid).toBe(ceiling);
-    expect(SurvivalBook.restore(cappedTrial, book.snapshot()).liquidBalance).toBe(ceiling);
+    expect(
+      SurvivalBook.restore(
+        cappedTrial,
+        book.snapshot(),
+        book.publishedRound ?? null,
+      ).liquidBalance,
+    ).toBe(ceiling);
   });
 });
 

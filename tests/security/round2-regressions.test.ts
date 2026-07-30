@@ -190,25 +190,27 @@ describe('round 2: object snapshot preflight', () => {
       name: 'progressive',
       make: () =>
         new RoundBook(binaryBeaconReference, initialPosterior(binaryBeaconReference)).snapshot(),
-      restore: (snapshot: object) => RoundBook.restore(binaryBeaconReference, snapshot as never),
+      restore: (snapshot: object) =>
+        RoundBook.restore(binaryBeaconReference, snapshot as never, null),
       array: 'evidence',
     },
     {
       name: 'cards',
       make: () => new CardsBook(triadMiddleReference).snapshot(),
-      restore: (snapshot: object) => CardsBook.restore(triadMiddleReference, snapshot),
+      restore: (snapshot: object) => CardsBook.restore(triadMiddleReference, snapshot, null),
       array: 'choices',
     },
     {
       name: 'survival',
       make: () => new SurvivalBook(fiveRunnerReference).snapshot(),
-      restore: (snapshot: object) => SurvivalBook.restore(fiveRunnerReference, snapshot),
+      restore: (snapshot: object) => SurvivalBook.restore(fiveRunnerReference, snapshot, null),
       array: 'choices',
     },
     {
       name: 'permutation',
       make: () => new PermutationBook(aetherOrderClassicReference).snapshot(),
-      restore: (snapshot: object) => PermutationBook.restore(aetherOrderClassicReference, snapshot),
+      restore: (snapshot: object) =>
+        PermutationBook.restore(aetherOrderClassicReference, snapshot, null),
       array: 'claims',
     },
   ] as const;

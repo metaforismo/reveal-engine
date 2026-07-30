@@ -818,8 +818,8 @@ const snapshotIsRevalidated: Check = {
     // stronger check below is one a host can simply forget to ask for.
     count('snapshotTampers');
     try {
-      PermutationBook.restore(definition, JSON.stringify(snapshot));
-      reject('$.expected', 'Restore rebuilt a bound snapshot without a published round');
+      PermutationBook.restore(definition, JSON.stringify(snapshot), null);
+      reject('$.expectedBinding', 'Restore rebuilt a bound snapshot without a published round');
     } catch {
       // Expected: a bound snapshot restores only against a round the caller holds.
     }

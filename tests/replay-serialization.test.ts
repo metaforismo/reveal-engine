@@ -70,9 +70,16 @@ describe('snapshot, reconnect, and deterministic replay', () => {
       RoundBook.restore(
         binaryBeaconReference,
         reseal({ ...snapshot, liquidBalance: '999' }) as never,
+        book.publishedRound ?? null,
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
-    expect(() => RoundBook.restore(constellationReference, book.serialize())).toThrowError(
+    expect(() =>
+      RoundBook.restore(
+        constellationReference,
+        book.serialize(),
+        book.publishedRound ?? null,
+      ),
+    ).toThrowError(
       expect.objectContaining({ code: 'ADAPTER_MISMATCH' }),
     );
   });
@@ -91,14 +98,22 @@ describe('snapshot, reconnect, and deterministic replay', () => {
     });
     const snapshot = JSON.parse(book.serialize()) as Record<string, unknown>;
     expect(() =>
-      RoundBook.restore(binaryBeaconReference, { ...snapshot, extra: true } as never),
+      RoundBook.restore(
+        binaryBeaconReference,
+        { ...snapshot, extra: true } as never,
+        book.publishedRound ?? null,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
     const receipts = structuredClone(snapshot.receipts) as Array<{
       receipt: { balanceDelta: string };
     }>;
     receipts[0]!.receipt.balanceDelta = 'not-an-integer';
     expect(() =>
-      RoundBook.restore(binaryBeaconReference, reseal({ ...snapshot, receipts }) as never),
+      RoundBook.restore(
+        binaryBeaconReference,
+        reseal({ ...snapshot, receipts }) as never,
+        book.publishedRound ?? null,
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 

@@ -131,6 +131,10 @@ describe('sequential-cards: frozen wire fixtures', () => {
     const restored = CardsBook.restore(
       frozenCardsDefinition,
       JSON.stringify(fixture.snapshot as Record<string, unknown>),
+      {
+        roundId: FROZEN_CARDS_ROUND_ID,
+        seedCommitment: (fixture.snapshot as { seedCommitment: string }).seedCommitment,
+      },
     );
     expect(restored.terminal).toBe(true);
     expect(restored.ledgerRevision).toBe(4);
@@ -159,7 +163,11 @@ describe('sequential-cards: frozen wire fixtures', () => {
 
   it('rejects a re-sealed mutation of the committed snapshot on its merits', () => {
     const snapshot = readFixture('cards-book-v2.json').snapshot as Record<string, unknown>;
-    expect(() => CardsBook.restore(frozenCardsDefinition, reseal(snapshot))).not.toThrow();
+    const binding = {
+      roundId: snapshot.roundId as string,
+      seedCommitment: snapshot.seedCommitment as string,
+    };
+    expect(() => CardsBook.restore(frozenCardsDefinition, reseal(snapshot), binding)).not.toThrow();
     const selections = snapshot.selections as Record<string, unknown>[];
     for (const tampered of [
       { ...snapshot, liquidBalance: '999999' },
@@ -189,7 +197,7 @@ describe('sequential-cards: frozen wire fixtures', () => {
       },
     ])
       expect(
-        () => CardsBook.restore(frozenCardsDefinition, reseal(tampered)),
+        () => CardsBook.restore(frozenCardsDefinition, reseal(tampered), binding),
         JSON.stringify(tampered).slice(0, 120),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
@@ -200,13 +208,17 @@ describe('sequential-cards: frozen wire fixtures', () => {
       CardsBook.restore(
         frozenCardsDefinition,
         JSON.stringify({ ...snapshot, liquidBalance: '999999' }),
+        {
+          roundId: snapshot.roundId as string,
+          seedCommitment: snapshot.seedCommitment as string,
+        },
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
   it('retains the v1 book fixture as an explicit non-migratable refusal vector', () => {
     const legacy = readFixture('cards-book-v1.json').snapshot as object;
-    expect(() => CardsBook.restore(frozenCardsDefinition, legacy)).toThrowError(
+    expect(() => CardsBook.restore(frozenCardsDefinition, legacy, null)).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
   });

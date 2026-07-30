@@ -67,7 +67,9 @@ describe('sequential-cards: a command prices what it validated', () => {
     // 25 credits at 24/25 RTP on a 1/3 prior: 25 · (24/25) / (1/3) = 72.
     expect(selection?.claim).toEqual({ numerator: 72n, denominator: 1n });
     // The receipt fingerprints what the round actually holds, so it reconnects.
-    expect(() => CardsBook.restore(definition, book.serialize())).not.toThrow();
+    expect(() =>
+      CardsBook.restore(definition, book.serialize(), book.publishedRound ?? null),
+    ).not.toThrow();
   });
 
   it('reads each ticket field exactly once, however the row answers', async () => {
@@ -94,7 +96,9 @@ describe('sequential-cards: a command prices what it validated', () => {
     expect(receipt.debited).toBe(25n);
     expect(book.selections[0]?.stake).toBe(25n);
     expect(book.selections[0]?.claim).toEqual({ numerator: 72n, denominator: 1n });
-    expect(() => CardsBook.restore(definition, book.serialize())).not.toThrow();
+    expect(() =>
+      CardsBook.restore(definition, book.serialize(), book.publishedRound ?? null),
+    ).not.toThrow();
   });
 
   it('stores the reveal it fingerprinted, not the one the caller kept editing', async () => {
@@ -118,7 +122,9 @@ describe('sequential-cards: a command prices what it validated', () => {
     expect(book.steps[0]?.sorted).toEqual(honest.sorted);
     // ADR 0005 Decision 2 made a reveal a ledger command so the board could not
     // say something the receipts had not signed. This is that property.
-    expect(() => CardsBook.restore(definition, book.serialize())).not.toThrow();
+    expect(() =>
+      CardsBook.restore(definition, book.serialize(), book.publishedRound ?? null),
+    ).not.toThrow();
   });
 
   it('stores the cover it fingerprinted when the target array is rewritten', async () => {
@@ -147,7 +153,9 @@ describe('sequential-cards: a command prices what it validated', () => {
 
     expect(book.selections[0]?.positions).toEqual([target]);
     expect(book.decisions[0]?.positions).toEqual([target]);
-    expect(() => CardsBook.restore(definition, book.serialize())).not.toThrow();
+    expect(() =>
+      CardsBook.restore(definition, book.serialize(), book.publishedRound ?? null),
+    ).not.toThrow();
   });
 
   it('settles dormant on the window it validated, not the one the caller rewrote', async () => {
@@ -185,7 +193,9 @@ describe('sequential-cards: a command prices what it validated', () => {
     request.reason = 'account-state-changed';
     await pending;
     expect(book.settlementReason).toBe('ROUND_DORMANT');
-    expect(() => CardsBook.restore(dormant, book.serialize())).not.toThrow();
+    expect(() =>
+      CardsBook.restore(dormant, book.serialize(), book.publishedRound ?? null),
+    ).not.toThrow();
 
     // And the refusal leaves nothing behind: a second round refused a second
     // short of the window is untouched, whatever the request says afterwards.

@@ -4,15 +4,15 @@
   "workloadSeed": 1592598566,
   "rounds": 500,
   "operations": 5538,
-  "elapsedMs": 24085.532291,
-  "throughputOpsPerSecond": 229.93056300729444,
+  "elapsedMs": 136719.22083399998,
+  "throughputOpsPerSecond": 40.5063747892775,
   "latency": {
-    "p50Ms": 0.02824999999938882,
-    "p95Ms": 2.3092500000020664,
-    "p99Ms": 33.4985829999996,
-    "maxMs": 192.75279099999898
+    "p50Ms": 0.057874999998603016,
+    "p95Ms": 35.62745800000266,
+    "p99Ms": 185.90333299999475,
+    "maxMs": 1464.3456250000163
   },
-  "heapDeltaBytes": 1036456,
+  "heapDeltaBytes": 0,
   "maxSnapshotBytes": 5647,
   "maxTranscriptBytes": 1262,
   "accepted": {
@@ -45,7 +45,7 @@
     "heapDeltaBytes": 268435456,
     "snapshotBytes": 8388608
   },
-  "status": "pass",
+  "status": "fail",
   "runtime": {
     "node": "v25.8.2",
     "platform": "darwin",

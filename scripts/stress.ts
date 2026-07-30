@@ -161,7 +161,10 @@ for (let round = 0; round < rounds; round += 1) {
     if (event.index + 1 === Math.ceil(transcript.evidence.length / 2) && round % 10 === 0) {
       const serialized = book.serialize();
       maxSnapshotBytes = Math.max(maxSnapshotBytes, Buffer.byteLength(serialized));
-      book = RoundBook.restore(game, serialized);
+      book = RoundBook.restore(game, serialized, {
+        roundId: transcript.context.roundId,
+        commitment: transcript.commitment,
+      });
       count(accepted, 'reconnect');
     }
   }
@@ -220,10 +223,11 @@ for (let round = 0; round < survivalRounds; round += 1) {
       .toString(16)
       .padStart(64, '0'),
   });
-  let book = new SurvivalBook(game, {
+  const binding = {
     roundId: parseRoundRefId(roundId).roundId,
     seedCommitment: survivalSeedCommitment(seedHex, game, roundIdentityOf(game, roundId)),
-  });
+  };
+  let book = new SurvivalBook(game, binding);
   for (let entity = 0; entity < game.entities; entity += 1)
     recordSurvival(await timed(() => book.enter(`enter-${round}-${entity}`, entity, 1_000n)));
 
@@ -256,7 +260,7 @@ for (let round = 0; round < survivalRounds; round += 1) {
       if (round % 4 === 0) {
         const serialized = JSON.stringify(book.snapshot());
         maxSnapshotBytes = Math.max(maxSnapshotBytes, Buffer.byteLength(serialized));
-        book = SurvivalBook.restore(game, serialized);
+        book = SurvivalBook.restore(game, serialized, binding);
         count(accepted, 'survival:reconnect');
       }
     }

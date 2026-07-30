@@ -136,20 +136,13 @@ export const permutation: LifecycleModule<PermutationShape> =
       // `new PermutationBook(definition, binding)` directly and never sees the
       // unbound state at all.
       //
-      // `restore` is the same shape of narrowness, and it is the safe half
-      // rather than the weak one. `PermutationBook.restore` *requires* the round
-      // the caller published whenever the snapshot carries a binding, because a
-      // consistent whole-round rewrite of a bound snapshot is indistinguishable
-      // from the truth in process. This two-argument signature has no round to
-      // hand over, so it restores exactly the snapshots that risk no money — the
-      // unbound ones — and refuses every bound snapshot with `CLAIM_REJECTED` at
-      // `$.expected`. A host reconnecting a real ticket calls
-      // `PermutationBook.restore(definition, snapshot, publishedRound)`; the
-      // class is this shape's `book` type, so resolving the module by id already
-      // gives access to it. See `PermutationBook.restore` and
+      // `restore` carries the independently stored published round for the same
+      // reason as the concrete class. `null` is an explicit unbound sentinel,
+      // valid only for a snapshot that is itself unbound. See ADR 0011 and
       // `docs/modules/permutation.md` §9.1.
       create: (definition) => new PermutationBook(definition),
-      restore: (definition, snapshot) => PermutationBook.restore(definition, snapshot),
+      restore: (definition, snapshot, expectedBinding) =>
+        PermutationBook.restore(definition, snapshot, expectedBinding),
       snapshot: (book) => book.snapshot(),
     },
 

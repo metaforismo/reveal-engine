@@ -555,7 +555,11 @@ describe('sequential-cards: the multi-position round book', () => {
       transcript,
     });
     const snapshot = book.snapshot() as unknown as Record<string, unknown>;
-    const restored = CardsBook.restore(definition, JSON.stringify(snapshot));
+    const restored = CardsBook.restore(
+      definition,
+      JSON.stringify(snapshot),
+      book.publishedRound ?? null,
+    );
     expect(restored.snapshot()).toEqual(book.snapshot());
     expect(restored.terminal).toBe(true);
     expect(restored.decisions).toEqual(book.decisions);
@@ -593,7 +597,12 @@ describe('sequential-cards: the multi-position round book', () => {
         snapshotHash: snapshotHash({ ...snapshot, ...mutation, snapshotHash: undefined }),
       };
       expect(
-        () => CardsBook.restore(definition, JSON.stringify(tampered)),
+        () =>
+          CardsBook.restore(
+            definition,
+            JSON.stringify(tampered),
+            book.publishedRound ?? null,
+          ),
         JSON.stringify(Object.keys(mutation)),
       ).toThrowError(
         expect.objectContaining({
@@ -621,7 +630,13 @@ describe('sequential-cards: the multi-position round book', () => {
     });
     expect(book.choices).toEqual([{ index: 0, kind: 'back', position: 2 }]);
     const snapshot = book.snapshot() as unknown as Record<string, unknown>;
-    expect(CardsBook.restore(definition, JSON.stringify(snapshot)).choices).toEqual(book.choices);
+    expect(
+      CardsBook.restore(
+        definition,
+        JSON.stringify(snapshot),
+        book.publishedRound ?? null,
+      ).choices,
+    ).toEqual(book.choices);
     // The log is rebuilt from the open receipt and the transform log, so a
     // rewritten one cannot survive even with the checksum recomputed over it.
     const tampered = {
@@ -635,6 +650,7 @@ describe('sequential-cards: the multi-position round book', () => {
           ...tampered,
           snapshotHash: snapshotHash({ ...tampered, snapshotHash: undefined }),
         }),
+        book.publishedRound ?? null,
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
@@ -751,6 +767,7 @@ describe('sequential-cards: the multi-position round book', () => {
           ...tampered,
           snapshotHash: snapshotHash({ ...tampered, snapshotHash: undefined }),
         }),
+        book.publishedRound ?? null,
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
@@ -878,7 +895,11 @@ describe('sequential-cards: the multi-position round book', () => {
       selectionId: (cashable as { id: string }).id,
     });
     const snapshot = book.snapshot();
-    const restored = CardsBook.restore(definition, JSON.stringify(snapshot));
+    const restored = CardsBook.restore(
+      definition,
+      JSON.stringify(snapshot),
+      book.publishedRound ?? null,
+    );
     expect(restored.snapshot()).toEqual(snapshot);
     expect(restored.terminal).toBe(false);
     expect(restored.liquidBalance).toBe(book.liquidBalance);

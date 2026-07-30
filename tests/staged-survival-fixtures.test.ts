@@ -139,14 +139,34 @@ describe('frozen staged-survival wire fixtures', () => {
   it('restores both committed snapshots and rebuilds them byte for byte', () => {
     const fixture = readFixture('staged-survival-book-v2.json');
     for (const key of ['midSnapshot', 'snapshot'] as const) {
-      const snapshot = fixture[key] as object;
-      const restored = SurvivalBook.restore(fiveRunnerReference, snapshot);
+      const snapshot = fixture[key] as {
+        publishedRound: { roundId: string; seedCommitment: string };
+      };
+      const restored = SurvivalBook.restore(
+        fiveRunnerReference,
+        snapshot,
+        snapshot.publishedRound,
+      );
       expect(JSON.parse(JSON.stringify(restored.snapshot()))).toEqual(snapshot);
     }
-    const settled = SurvivalBook.restore(fiveRunnerReference, fixture.snapshot as object);
+    const settledSnapshot = fixture.snapshot as {
+      publishedRound: { roundId: string; seedCommitment: string };
+    };
+    const settled = SurvivalBook.restore(
+      fiveRunnerReference,
+      settledSnapshot,
+      settledSnapshot.publishedRound,
+    );
     expect(settled.terminal).toBe(true);
     expect(settled.claims.every((claim) => !claim.live)).toBe(true);
-    const mid = SurvivalBook.restore(fiveRunnerReference, fixture.midSnapshot as object);
+    const midSnapshot = fixture.midSnapshot as {
+      publishedRound: { roundId: string; seedCommitment: string };
+    };
+    const mid = SurvivalBook.restore(
+      fiveRunnerReference,
+      midSnapshot,
+      midSnapshot.publishedRound,
+    );
     expect(mid.terminal).toBe(false);
     expect(mid.stageRevision).toBe(1);
   });
@@ -189,7 +209,7 @@ describe('frozen staged-survival wire fixtures', () => {
 
   it('retains the v1 book fixture as an explicit non-migratable refusal vector', () => {
     const legacy = readFixture('staged-survival-book-v1.json').snapshot as object;
-    expect(() => SurvivalBook.restore(fiveRunnerReference, legacy)).toThrowError(
+    expect(() => SurvivalBook.restore(fiveRunnerReference, legacy, null)).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
   });

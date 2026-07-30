@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   assertBenchmarkArtifact,
   assertStressArtifact,
+  compareBenchmarkDrift,
   compareModuleDigests,
 } from '../scripts/artifact-schema.js';
 describe('artifact schemas', () => {
@@ -56,5 +57,30 @@ describe('artifact schemas', () => {
     expect(compareModuleDigests({ market: a }, { market: a, survival: b })).toEqual([
       `  survival: baseline (not anchored by the baseline), current ${b}`,
     ]);
+  });
+
+  it('compares benchmark CPU cost and CPU throughput within the declared drift band', () => {
+    const baseline = { cpuMs: 100, eventsPerCpuSecond: 1_000 };
+    expect(
+      compareBenchmarkDrift(baseline, { cpuMs: 120, eventsPerCpuSecond: 800 }, 0.2),
+    ).toEqual([]);
+    expect(
+      compareBenchmarkDrift(baseline, { cpuMs: 121, eventsPerCpuSecond: 790 }, 0.2).map((line) =>
+        line.trim().split(':')[0],
+      ),
+    ).toEqual(['cpuMs', 'eventsPerCpuSecond']);
+  });
+
+  /**
+   * The regression that keeps the gate honest about what it measures.
+   *
+   * Wall clock is recorded but must never be gated. This synthetic pair models
+   * identical CPU cost under very different scheduler delay; if a future
+   * revision reintroduces wall clock into the drift comparison, this fails.
+   */
+  it('ignores wall-clock spread that leaves CPU cost unchanged', () => {
+    const quiet = { cpuMs: 4_250, eventsPerCpuSecond: 12_400, elapsedMs: 3_720 };
+    const starved = { cpuMs: 4_310, eventsPerCpuSecond: 12_270, elapsedMs: 298_410 };
+    expect(compareBenchmarkDrift(quiet, starved, 0.2)).toEqual([]);
   });
 });

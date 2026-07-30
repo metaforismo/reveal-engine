@@ -103,6 +103,7 @@ export interface OrderingShape extends LifecycleShape {
   readonly choice: never;
   readonly claim: OrderingBet;
   readonly transcript: OrderingTranscript;
+  readonly roundBinding: never;
   readonly book: OrderingBook;
 }
 
@@ -823,7 +824,8 @@ export const orderingFixtureModule: LifecycleModule<OrderingShape> =
       maxOpenClaims: MAX_OPEN_CLAIMS,
       actions: ACTIONS,
       create: (definition) => new OrderingBook(definition),
-      restore: (definition, snapshot) => OrderingBook.restore(definition, snapshot),
+      restore: (definition, snapshot, _expectedBinding) =>
+        OrderingBook.restore(definition, snapshot),
       snapshot: (book) => book.snapshot(),
     },
     conformance: {

@@ -1114,7 +1114,11 @@ const everyRoundSettles: Check = {
     for (const [reason, snapshot] of honest) {
       count('dormantSettlements');
       try {
-        const restored = CardsBook.restore(definition, snapshot);
+        const raw = JSON.parse(snapshot) as CardsBookSnapshot;
+        const restored = CardsBook.restore(definition, snapshot, {
+          roundId: raw.roundId as string,
+          seedCommitment: raw.seedCommitment as string,
+        });
         if (JSON.stringify(restored.snapshot()) !== snapshot)
           reject('A dormant settlement does not re-serialize identically');
         // Terminal, reasoned, and — because `restore()` re-derives the deal,
@@ -1183,7 +1187,11 @@ const everyRoundSettles: Check = {
     for (const tampered of tampers) {
       count('dormantTampers');
       try {
-        CardsBook.restore(definition, tampered);
+        const raw = JSON.parse(tampered) as CardsBookSnapshot;
+        CardsBook.restore(definition, tampered, {
+          roundId: raw.roundId as string,
+          seedCommitment: raw.seedCommitment as string,
+        });
         reject('Restore accepted a dormant settlement no round could have issued');
       } catch {
         // Expected.
@@ -2096,10 +2104,21 @@ const snapshotIsRevalidated: Check = {
     };
     const empty = new CardsBook(definition).snapshot();
     const staked = stakedCardsSnapshot(definition, seedHex, roundId);
+    const stakedBinding = {
+      roundId: staked.roundId as string,
+      seedCommitment: staked.seedCommitment as string,
+    };
     count('snapshots', 2);
     for (const snapshot of [empty, staked])
       try {
-        const restored = CardsBook.restore(definition, JSON.stringify(snapshot));
+        const binding =
+          snapshot.roundId === null
+            ? null
+            : {
+                roundId: snapshot.roundId,
+                seedCommitment: snapshot.seedCommitment as string,
+              };
+        const restored = CardsBook.restore(definition, JSON.stringify(snapshot), binding);
         if (JSON.stringify(restored.snapshot()) !== JSON.stringify(snapshot))
           reject('A restored book does not re-serialize identically');
       } catch (error) {
@@ -2133,7 +2152,7 @@ const snapshotIsRevalidated: Check = {
         reseal,
       );
       try {
-        const restored = CardsBook.restore(definition, honest);
+        const restored = CardsBook.restore(definition, honest, stakedBinding);
         if (JSON.stringify(restored.snapshot()) !== honest)
           reject('A restored cash-out does not re-serialize identically');
         if (restored.liquidBalance <= 0n)
@@ -2214,7 +2233,7 @@ const snapshotIsRevalidated: Check = {
     for (const tampered of tampers) {
       count('snapshotTampers');
       try {
-        CardsBook.restore(definition, tampered);
+        CardsBook.restore(definition, tampered, stakedBinding);
         reject('Restore accepted a tampered snapshot');
       } catch {
         // Expected: a tampered snapshot must not restore.

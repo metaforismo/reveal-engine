@@ -50,14 +50,20 @@ export interface BenchmarkArtifact {
   readonly evidenceClass: 'synthetic-local-or-ci';
   readonly samples: number;
   readonly events: number;
+  /** Wall clock. Recorded as information; never gated — see `cpuMs`. */
   readonly elapsedMs: number;
+  /** CPU time consumed by the workload. This is what the drift band judges. */
+  readonly cpuMs: number;
+  /** Wall-clock throughput. Recorded as information; never gated. */
   readonly eventsPerSecond: number;
+  /** Throughput per CPU-second. This is what the drift band judges. */
+  readonly eventsPerCpuSecond: number;
+  /** Per-sample wall-clock latency. Recorded as information; never gated. */
   readonly latency: LatencySummary;
   readonly moduleDigests: ModuleDigests;
   readonly thresholds: {
-    readonly elapsedMs: number;
-    readonly p99Ms: number;
-    readonly minimumEventsPerSecond: number;
+    /** Symmetric drift band around the committed local baseline. */
+    readonly maxRelativeDrift: number;
   };
   readonly status: 'pass' | 'fail';
   readonly runtime: StressArtifact['runtime'];
@@ -132,7 +138,9 @@ export function assertBenchmarkArtifact(value: unknown): asserts value is Benchm
       'samples',
       'events',
       'elapsedMs',
+      'cpuMs',
       'eventsPerSecond',
+      'eventsPerCpuSecond',
       'latency',
       'moduleDigests',
       'thresholds',
@@ -150,15 +158,52 @@ export function assertBenchmarkArtifact(value: unknown): asserts value is Benchm
   integer(artifact.samples, '$.samples', true);
   integer(artifact.events, '$.events', true);
   finite(artifact.elapsedMs, '$.elapsedMs', true);
+  finite(artifact.cpuMs, '$.cpuMs', true);
   finite(artifact.eventsPerSecond, '$.eventsPerSecond', true);
+  finite(artifact.eventsPerCpuSecond, '$.eventsPerCpuSecond', true);
   latency(artifact.latency, '$.latency');
   moduleDigests(artifact.moduleDigests, '$.moduleDigests');
   const thresholds = record(artifact.thresholds, '$.thresholds');
-  exactKeys(thresholds, ['elapsedMs', 'p99Ms', 'minimumEventsPerSecond'], '$.thresholds');
-  finite(thresholds.elapsedMs, '$.thresholds.elapsedMs', true);
-  finite(thresholds.p99Ms, '$.thresholds.p99Ms', true);
-  finite(thresholds.minimumEventsPerSecond, '$.thresholds.minimumEventsPerSecond', true);
+  exactKeys(thresholds, ['maxRelativeDrift'], '$.thresholds');
+  finite(thresholds.maxRelativeDrift, '$.thresholds.maxRelativeDrift', true);
+  if (thresholds.maxRelativeDrift > 1)
+    invalid('$.thresholds.maxRelativeDrift', 'expected a fraction no greater than one');
   artifactRuntime(artifact.runtime);
+}
+
+/**
+ * Compares the benchmark's CPU-cost signals against one recorded run.
+ *
+ * Deliberately CPU time and not wall clock. Wall clock measures how busy the
+ * machine was, not only what this code costs. Gating scheduler contention would
+ * tempt exactly the wrong fix — re-baselining a starved run, or widening the
+ * band until contention fits inside it. CPU cost instead targets the work this
+ * process newly does, or newly stopped doing.
+ *
+ * The band is symmetric because these figures are evidence of one local machine
+ * state, not portable capacity promises. A much cheaper run is as much a change
+ * of workload as a much dearer one and should ask for an explicit re-baseline.
+ *
+ * Wall clock, wall-clock throughput, and the latency summary stay in the
+ * artifact as information — read them, do not gate on them.
+ */
+export function compareBenchmarkDrift(
+  baseline: Pick<BenchmarkArtifact, 'cpuMs' | 'eventsPerCpuSecond'>,
+  current: Pick<BenchmarkArtifact, 'cpuMs' | 'eventsPerCpuSecond'>,
+  tolerance: number,
+): readonly string[] {
+  const metrics = [
+    ['cpuMs', baseline.cpuMs, current.cpuMs],
+    ['eventsPerCpuSecond', baseline.eventsPerCpuSecond, current.eventsPerCpuSecond],
+  ] as const;
+  return metrics.flatMap(([name, expected, observed]) => {
+    const drift = Math.abs(observed - expected) / expected;
+    return drift <= tolerance
+      ? []
+      : [
+          `  ${name}: baseline ${expected}, current ${observed}, relative drift ${(drift * 100).toFixed(2)}%`,
+        ];
+  });
 }
 /**
  * Compares a run's replay anchors against a baseline's, in both directions.

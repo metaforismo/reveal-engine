@@ -1,6 +1,6 @@
 import type { LifecycleShape } from '../../core/module.js';
 import type { EvidenceEvent, GameDefinition, Transcript } from './contracts.js';
-import type { RoundBook } from './round-book.js';
+import type { PublishedRoundBinding, RoundBook } from './round-book.js';
 
 /**
  * Type bag for the progressive market.
@@ -17,5 +17,6 @@ export interface ProgressiveMarketShape extends LifecycleShape {
   readonly choice: never;
   readonly claim: number;
   readonly transcript: Transcript;
+  readonly roundBinding: PublishedRoundBinding;
   readonly book: RoundBook;
 }

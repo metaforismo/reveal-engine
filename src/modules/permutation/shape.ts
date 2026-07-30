@@ -3,6 +3,7 @@ import type {
   PermutationBet,
   PermutationDefinition,
   PermutationOrder,
+  PermutationRoundBinding,
   PermutationStep,
   PermutationTranscript,
 } from './contracts.js';
@@ -22,5 +23,6 @@ export interface PermutationShape extends LifecycleShape {
   readonly choice: never;
   readonly claim: PermutationBet;
   readonly transcript: PermutationTranscript;
+  readonly roundBinding: PermutationRoundBinding;
   readonly book: PermutationBook;
 }

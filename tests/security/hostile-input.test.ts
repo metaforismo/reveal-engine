@@ -263,7 +263,7 @@ describe('permutation module fails closed on hostile input', () => {
   it.each([null, undefined, 0, 'x', [], {}, '{"schema":1}'])(
     'restores hostile snapshot %# to a typed INVALID_SNAPSHOT',
     (input) => {
-      const error = captureError(() => PermutationBook.restore(definition, input as never));
+      const error = captureError(() => PermutationBook.restore(definition, input as never, null));
       expect(error).toBeInstanceOf(RevealEngineError);
       expect((error as RevealEngineError).code).toBe('INVALID_SNAPSHOT');
     },

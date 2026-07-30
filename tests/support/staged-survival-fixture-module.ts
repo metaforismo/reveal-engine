@@ -132,6 +132,7 @@ export interface SurvivalShape extends LifecycleShape {
   readonly choice: string;
   readonly claim: { readonly entity: number; readonly contractId: string };
   readonly transcript: SurvivalTranscript;
+  readonly roundBinding: never;
   readonly book: SurvivalBook;
 }
 
@@ -1080,7 +1081,8 @@ export const stagedSurvivalFixtureModule: LifecycleModule<SurvivalShape> =
       maxOpenClaims: MAX_OPEN_CLAIMS,
       actions: ACTIONS,
       create: (definition) => new SurvivalBook(definition),
-      restore: (definition, snapshot) => SurvivalBook.restore(definition, snapshot),
+      restore: (definition, snapshot, _expectedBinding) =>
+        SurvivalBook.restore(definition, snapshot),
       snapshot: (book) => book.snapshot(),
     },
     conformance: {

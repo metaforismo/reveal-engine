@@ -7,7 +7,7 @@ import type {
   RevealStep,
   SequentialCardsDefinition,
 } from './contracts.js';
-import type { CardsBook } from './round-book.js';
+import type { CardsBook, PublishedCardsRound } from './round-book.js';
 
 /**
  * Type bag for the sequential-cards module.
@@ -24,5 +24,6 @@ export interface SequentialCardsShape extends LifecycleShape {
   readonly choice: PlayerChoice;
   readonly claim: CardsClaim;
   readonly transcript: CardsTranscript;
+  readonly roundBinding: PublishedCardsRound;
   readonly book: CardsBook;
 }

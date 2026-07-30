@@ -218,7 +218,7 @@ describe('shape (b): a round whose transcript is a function of seed and choices'
     await book.resolve(steps[0] as SurvivalStep);
 
     const snapshot = survival.book.snapshot(book) as Record<string, unknown>;
-    const restored = survival.book.restore(definition, JSON.stringify(snapshot));
+    const restored = survival.book.restore(definition, JSON.stringify(snapshot), null);
     // A round that loses its decision log cannot be settled at all: the proof is
     // a function of it. So the log is state, and it must survive the reconnect.
     expect(restored.choices).toEqual(['steady']);
@@ -237,7 +237,9 @@ describe('shape (b): a round whose transcript is a function of seed and choices'
       { claims: [] },
     ]) {
       const tampered = reseal({ ...snapshot, ...mutation });
-      expect(() => survival.book.restore(definition, JSON.stringify(tampered))).toThrowError(
+      expect(() =>
+        survival.book.restore(definition, JSON.stringify(tampered), null),
+      ).toThrowError(
         expect.objectContaining({
           code: expect.stringMatching(/INVALID_SNAPSHOT|INVALID_CHOICE/u),
         }),

@@ -263,9 +263,14 @@ const snapshotIsRevalidated: Check = {
       failures.push({ code: 'SNAPSHOT_NOT_REVALIDATED', path, message });
     };
     const snapshot = stakedSnapshotFor(game, seedHex, roundId);
+    const published = snapshot.publishedRound;
+    if (published === null) {
+      reject('$.publishedRound', 'Staked conformance snapshot has no published round');
+      return failures;
+    }
     count('snapshots');
     try {
-      const restored = RoundBook.restore(game, JSON.stringify(snapshot));
+      const restored = RoundBook.restore(game, JSON.stringify(snapshot), published);
       if (JSON.stringify(restored.snapshot()) !== JSON.stringify(snapshot))
         reject('$.snapshot', 'Restored book does not re-serialize identically');
     } catch (error) {
@@ -312,7 +317,7 @@ const snapshotIsRevalidated: Check = {
     for (const [path, tampered] of tampers) {
       count('snapshotTampers');
       try {
-        RoundBook.restore(game, tampered);
+        RoundBook.restore(game, tampered, published);
         reject(path, 'Restore accepted a tampered snapshot');
       } catch {
         // Expected: a tampered snapshot must not restore.

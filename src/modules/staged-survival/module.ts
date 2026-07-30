@@ -96,7 +96,8 @@ export const stagedSurvival: LifecycleModule<StagedSurvivalShape> =
       maxOpenClaims: SURVIVAL_LIMITS.maxEntities,
       actions: SURVIVAL_ACTIONS,
       create: (definition) => new SurvivalBook(definition),
-      restore: (definition, snapshot) => SurvivalBook.restore(definition, snapshot),
+      restore: (definition, snapshot, expectedBinding) =>
+        SurvivalBook.restore(definition, snapshot, expectedBinding),
       snapshot: (book) => book.snapshot(),
     },
 

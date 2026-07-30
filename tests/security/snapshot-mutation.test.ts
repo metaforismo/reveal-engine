@@ -50,6 +50,10 @@ function reseal(snapshot: Json): RoundBookSnapshot {
 const game = constellationReference;
 let valid: Json;
 
+function publishedBinding(snapshot: Json): { roundId: string; commitment: string } {
+  return snapshot.publishedRound as { roundId: string; commitment: string };
+}
+
 beforeAll(async () => {
   const seedHex = seed(31);
   const transcript = makeTranscript(seedHex, game, 'snapshot-mutation');
@@ -79,7 +83,7 @@ beforeAll(async () => {
 
 describe('re-sealed snapshot mutations are rejected on their merits', () => {
   it('accepts the unmutated re-sealed snapshot', () => {
-    expect(() => RoundBook.restore(game, reseal(valid))).not.toThrow();
+    expect(() => RoundBook.restore(game, reseal(valid), publishedBinding(valid))).not.toThrow();
   });
 
   const bump = (value: unknown): unknown =>
@@ -133,7 +137,7 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
 
   it.each(cases)('rejects a re-sealed mutation of the %s', (_label, path, mutate) => {
     const mutated = reseal(writeAt(valid, path, mutate(readAt(valid, path))));
-    expect(() => RoundBook.restore(game, mutated)).toThrowError(
+    expect(() => RoundBook.restore(game, mutated, publishedBinding(valid))).toThrowError(
       expect.objectContaining({
         code: expect.stringMatching(
           /^(INVALID_SNAPSHOT|ADAPTER_MISMATCH|INVALID_(EVIDENCE|POSTERIOR|RATIONAL))$/u,
@@ -143,19 +147,29 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
   });
 
   it('rejects added, removed, and reordered structural fields', () => {
-    expect(() => RoundBook.restore(game, reseal({ ...valid, extra: 1 }))).toThrowError(
+    expect(() =>
+      RoundBook.restore(game, reseal({ ...valid, extra: 1 }), publishedBinding(valid)),
+    ).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
     const { terminal: _dropped, ...missing } = valid;
-    expect(() => RoundBook.restore(game, reseal(missing))).toThrowError(
+    expect(() => RoundBook.restore(game, reseal(missing), publishedBinding(valid))).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
     );
     const receipts = structuredClone(valid.receipts) as unknown[];
     expect(() =>
-      RoundBook.restore(game, reseal({ ...valid, receipts: [...receipts].reverse() })),
+      RoundBook.restore(
+        game,
+        reseal({ ...valid, receipts: [...receipts].reverse() }),
+        publishedBinding(valid),
+      ),
     ).not.toThrow();
     expect(() =>
-      RoundBook.restore(game, reseal({ ...valid, receipts: receipts.slice(0, 2) })),
+      RoundBook.restore(
+        game,
+        reseal({ ...valid, receipts: receipts.slice(0, 2) }),
+        publishedBinding(valid),
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
@@ -192,7 +206,7 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
     expect(settled.credited).toBe(0n);
 
     const moved = writeAt(honest, ['position', 'outcome'], transcript.truth);
-    expect(() => RoundBook.restore(game, reseal(moved))).toThrowError(
+    expect(() => RoundBook.restore(game, reseal(moved), binding)).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.position.outcome' }),
     );
   });
@@ -223,14 +237,18 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
 
     const path = ['position', 'contingentPayout', 'numerator'] as const;
     const inflated = writeAt(honest, path, String(BigInt(readAt(honest, path) as string) * 1000n));
-    expect(() => RoundBook.restore(game, reseal(inflated))).toThrowError(
+    expect(() => RoundBook.restore(game, reseal(inflated), binding)).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.position.contingentPayout' }),
     );
   });
 
   it('still rejects a mutation that was not re-sealed', () => {
     expect(() =>
-      RoundBook.restore(game, writeAt(valid, ['liquidBalance'], '999') as never),
+      RoundBook.restore(
+        game,
+        writeAt(valid, ['liquidBalance'], '999') as never,
+        publishedBinding(valid),
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 

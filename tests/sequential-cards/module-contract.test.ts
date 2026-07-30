@@ -676,7 +676,11 @@ describe('sequential-cards: the lifecycle contract', () => {
     expect(receipt.action).toBe('settle');
     expect(book.terminal).toBe(true);
     const snapshot = sequentialCards.book.snapshot(book);
-    const restored = sequentialCards.book.restore(definition, snapshot);
+    const restored = sequentialCards.book.restore(
+      definition,
+      snapshot,
+      book.publishedRound ?? null,
+    );
     expect(sequentialCards.book.snapshot(restored)).toEqual(snapshot);
   });
 
