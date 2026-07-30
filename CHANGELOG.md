@@ -17,6 +17,12 @@ and integrated together: `sequential-cards`, `staged-survival` and
   choice; bind it into command fingerprints and snapshots; refuse rebinding;
   compare it before transcript self-verification; and can compare it with the
   host's independently retained value during restore.
+- **Breaking API:** the third argument to `RoundBook.restore()`,
+  `CardsBook.restore()`, `SurvivalBook.restore()`, `PermutationBook.restore()`,
+  and `BookModel.restore()` is now required (`null` explicitly means unbound).
+  All four books refuse omission or mismatch with `COMMITMENT_MISMATCH` at
+  `$.expectedBinding`, replacing `PermutationBook`'s previous `CLAIM_REJECTED`
+  contract.
 - This is a deliberate snapshot wire break:
   `reveal-engine/round-book-v2`, `reveal-engine/cards-book-v2`, and
   `staged-survival/book-v2` replace their v1 books. The v1 fixtures remain

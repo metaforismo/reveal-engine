@@ -735,8 +735,7 @@ export class SurvivalBook {
         'Restore requires the independently published round binding or explicit null',
         '$.expectedBinding',
       );
-    const wanted =
-      expectedBinding === null ? undefined : copyPublishedRound(expectedBinding);
+    const wanted = expectedBinding === null ? undefined : copyPublishedRound(expectedBinding);
     if (
       (snapshotBinding === undefined) !== (wanted === undefined) ||
       (snapshotBinding !== undefined &&

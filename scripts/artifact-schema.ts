@@ -172,6 +172,47 @@ export function assertBenchmarkArtifact(value: unknown): asserts value is Benchm
 }
 
 /**
+ * The subset of a benchmark artifact any schema version can be trusted for.
+ *
+ * A baseline recorded before ADR 0012 has no `cpuMs` or `eventsPerCpuSecond`
+ * and its `thresholds` carry the old absolute keys. Those fields anchor the
+ * drift band and nothing else, so their absence narrows what a run may assert;
+ * it does not make the baseline unreadable. Identity, workload size and the
+ * replay digests — the parts that actually catch a regression — are present in
+ * every version, and this validates exactly those.
+ */
+export function assertBenchmarkBaseline(
+  value: unknown,
+): asserts value is Pick<
+  BenchmarkArtifact,
+  'schema' | 'evidenceClass' | 'samples' | 'events' | 'moduleDigests' | 'status'
+> &
+  Partial<Pick<BenchmarkArtifact, 'cpuMs' | 'eventsPerCpuSecond' | 'thresholds'>> {
+  const artifact = record(value, '$');
+  if (
+    artifact.schema !== 'reveal-engine/benchmark-v3' ||
+    artifact.evidenceClass !== 'synthetic-local-or-ci' ||
+    (artifact.status !== 'pass' && artifact.status !== 'fail')
+  )
+    invalid('$', 'invalid benchmark identity');
+  integer(artifact.samples, '$.samples', true);
+  integer(artifact.events, '$.events', true);
+  moduleDigests(artifact.moduleDigests, '$.moduleDigests');
+}
+
+/**
+ * Whether this artifact can take part in the CPU drift band.
+ *
+ * Both sides of the comparison need a CPU anchor; a pre-ADR-0012 baseline has
+ * none, so the band is skipped rather than computed against a missing number.
+ */
+export function hasCpuAnchor(
+  value: Partial<Pick<BenchmarkArtifact, 'cpuMs' | 'eventsPerCpuSecond'>>,
+): value is Pick<BenchmarkArtifact, 'cpuMs' | 'eventsPerCpuSecond'> {
+  return typeof value.cpuMs === 'number' && typeof value.eventsPerCpuSecond === 'number';
+}
+
+/**
  * Compares the benchmark's CPU-cost signals against one recorded run.
  *
  * Deliberately CPU time and not wall clock. Wall clock measures how busy the

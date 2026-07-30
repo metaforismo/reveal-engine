@@ -149,9 +149,7 @@ describe('re-sealed snapshot mutations are rejected on their merits', () => {
   it('rejects added, removed, and reordered structural fields', () => {
     expect(() =>
       RoundBook.restore(game, reseal({ ...valid, extra: 1 }), publishedBinding(valid)),
-    ).toThrowError(
-      expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
-    );
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
     const { terminal: _dropped, ...missing } = valid;
     expect(() => RoundBook.restore(game, reseal(missing), publishedBinding(valid))).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),

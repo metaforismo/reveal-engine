@@ -142,11 +142,7 @@ describe('frozen staged-survival wire fixtures', () => {
       const snapshot = fixture[key] as {
         publishedRound: { roundId: string; seedCommitment: string };
       };
-      const restored = SurvivalBook.restore(
-        fiveRunnerReference,
-        snapshot,
-        snapshot.publishedRound,
-      );
+      const restored = SurvivalBook.restore(fiveRunnerReference, snapshot, snapshot.publishedRound);
       expect(JSON.parse(JSON.stringify(restored.snapshot()))).toEqual(snapshot);
     }
     const settledSnapshot = fixture.snapshot as {
@@ -162,11 +158,7 @@ describe('frozen staged-survival wire fixtures', () => {
     const midSnapshot = fixture.midSnapshot as {
       publishedRound: { roundId: string; seedCommitment: string };
     };
-    const mid = SurvivalBook.restore(
-      fiveRunnerReference,
-      midSnapshot,
-      midSnapshot.publishedRound,
-    );
+    const mid = SurvivalBook.restore(fiveRunnerReference, midSnapshot, midSnapshot.publishedRound);
     expect(mid.terminal).toBe(false);
     expect(mid.stageRevision).toBe(1);
   });

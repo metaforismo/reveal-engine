@@ -237,9 +237,7 @@ describe('shape (b): a round whose transcript is a function of seed and choices'
       { claims: [] },
     ]) {
       const tampered = reseal({ ...snapshot, ...mutation });
-      expect(() =>
-        survival.book.restore(definition, JSON.stringify(tampered), null),
-      ).toThrowError(
+      expect(() => survival.book.restore(definition, JSON.stringify(tampered), null)).toThrowError(
         expect.objectContaining({
           code: expect.stringMatching(/INVALID_SNAPSHOT|INVALID_CHOICE/u),
         }),

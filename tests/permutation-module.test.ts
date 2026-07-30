@@ -97,7 +97,10 @@ function captureError(operation: () => unknown): unknown {
 }
 
 function restoreWithoutBinding(definition: PermutationDefinition, snapshot: string | object) {
-  return Reflect.apply(PermutationBook.restore, undefined, [definition, snapshot]) as PermutationBook;
+  return Reflect.apply(PermutationBook.restore, undefined, [
+    definition,
+    snapshot,
+  ]) as PermutationBook;
 }
 
 describe('permutation module: contract surface', () => {

@@ -42,13 +42,13 @@ Each lifecycle shape declares its `roundBinding` type. `null` is the explicit
 sentinel for a genuinely unbound snapshot. The four books enforce the same
 matrix:
 
-| Snapshot | Third argument | Result |
-| --- | --- | --- |
-| bound | same binding | restore and continue semantic re-validation |
-| bound | different binding or `null` | `COMMITMENT_MISMATCH` |
-| unbound | `null` | restore the pre-publication empty state |
-| unbound | any binding | `COMMITMENT_MISMATCH` |
-| either | omitted at runtime | `COMMITMENT_MISMATCH` at `$.expectedBinding` |
+| Snapshot | Third argument              | Result                                       |
+| -------- | --------------------------- | -------------------------------------------- |
+| bound    | same binding                | restore and continue semantic re-validation  |
+| bound    | different binding or `null` | `COMMITMENT_MISMATCH`                        |
+| unbound  | `null`                      | restore the pre-publication empty state      |
+| unbound  | any binding                 | `COMMITMENT_MISMATCH`                        |
+| either   | omitted at runtime          | `COMMITMENT_MISMATCH` at `$.expectedBinding` |
 
 The comparison happens after bounded snapshot/schema/definition parsing and
 before settlement-proof or transcript self-verification. TypeScript callers

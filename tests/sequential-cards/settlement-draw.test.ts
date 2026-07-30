@@ -185,11 +185,7 @@ describe('sequential-cards: the settlement draw', () => {
     const book = await revealedRound(roundId, 25n);
     if (book.offers('MIDDLE').includes('cash'))
       await book.cash({ idempotencyKey: 'cash', expectedStepRevision: 1, selectionId: 'MIDDLE' });
-    const restored = CardsBook.restore(
-      stochastic,
-      book.serialize(),
-      book.publishedRound ?? null,
-    );
+    const restored = CardsBook.restore(stochastic, book.serialize(), book.publishedRound ?? null);
     expect(restored.snapshot()).toEqual(book.snapshot());
     expect(restored.liquidBalance).toBe(book.liquidBalance);
 
@@ -214,9 +210,7 @@ describe('sequential-cards: the settlement draw', () => {
     const { roundingSeed: _dropped, ...tapeless } = snapshot;
     expect(() =>
       CardsBook.restore(stochastic, reseal(tapeless), book.publishedRound ?? null),
-    ).toThrowError(
-      expect.objectContaining({ code: 'INVALID_SNAPSHOT' }),
-    );
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
   });
 
   it('keeps the deterministic wire format exactly as it was', async () => {
@@ -541,11 +535,7 @@ describe('sequential-cards: the rounding tape is a pre-settlement residual', () 
     });
 
     // It restores. That is the residual, and it is worth exactly one credit.
-    const restored = CardsBook.restore(
-      stochastic,
-      sealed,
-      book.publishedRound ?? null,
-    );
+    const restored = CardsBook.restore(stochastic, sealed, book.publishedRound ?? null);
     expect(restored.liquidBalance).toBe(whole + 1n);
     expect(restored.liquidBalance - book.liquidBalance).toBe(1n);
 

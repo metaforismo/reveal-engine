@@ -343,11 +343,7 @@ describe("sequential-cards: restore() replays the round's own rules", () => {
         selectionId: 'a',
         positions: [target],
       });
-      const restored = CardsBook.restore(
-        definition,
-        book.serialize(),
-        book.publishedRound ?? null,
-      );
+      const restored = CardsBook.restore(definition, book.serialize(), book.publishedRound ?? null);
       expect(restored.snapshot()).toEqual(book.snapshot());
       expect(restored.selections[0]?.claim).toEqual(book.selections[0]?.claim);
       expect(restored.selections[0]?.claim).not.toEqual(rational(0n));
@@ -592,11 +588,7 @@ describe('sequential-cards: restore() replays the rules of a liquidation too', (
     const { book } = await revealedRound((candidate) => candidate.offers('a').includes('cash'));
     await book.cash({ idempotencyKey: 'cash', expectedStepRevision: 1, selectionId: 'a' });
     expect(book.liquidBalance).toBeGreaterThan(0n);
-    const restored = CardsBook.restore(
-      definition,
-      book.serialize(),
-      book.publishedRound ?? null,
-    );
+    const restored = CardsBook.restore(definition, book.serialize(), book.publishedRound ?? null);
     expect(restored.snapshot()).toEqual(book.snapshot());
     expect(restored.liquidBalance).toBe(book.liquidBalance);
   });

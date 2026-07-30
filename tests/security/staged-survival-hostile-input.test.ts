@@ -668,11 +668,7 @@ describe('staged-survival: the snapshot boundary', () => {
     // same field. Entity 7 is inside the wire parser's bound — that is the
     // module maximum, not this definition's five — and was never running.
     expect(() =>
-      SurvivalBook.restore(
-        definition,
-        repoint('split', [0, 1, 2, 7]),
-        book.publishedRound ?? null,
-      ),
+      SurvivalBook.restore(definition, repoint('split', [0, 1, 2, 7]), book.publishedRound ?? null),
     ).toThrowError(
       expect.objectContaining({ code: 'INVALID_SNAPSHOT', path: '$.choices[1].banked' }),
     );

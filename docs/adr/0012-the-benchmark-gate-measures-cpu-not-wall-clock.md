@@ -19,13 +19,13 @@ That conclusion was wrong, and the way it was wrong is the reason for this ADR.
 The machine was running an agent swarm: six of its processes had become zombies
 and were still burning CPU. Measured directly rather than inferred:
 
-| Run | wall clock | CPU time | ratio | `moduleDigests` |
-| --- | --- | --- | --- | --- |
-| starved | 298.4 s | 7.7 s | 39x | identical |
-| starved | 375.7 s (140 events/s) | — | — | identical |
-| loaded | 8.2–10.9 s | 4.24–4.37 s | 1.9–2.5x | identical |
-| quiet | 5.4 s (9,700 events/s, p99 13 ms) | — | — | identical |
-| committed baseline | 3.7 s (14,168 events/s) | — | — | identical |
+| Run                | wall clock                        | CPU time    | ratio    | `moduleDigests` |
+| ------------------ | --------------------------------- | ----------- | -------- | --------------- |
+| starved            | 298.4 s                           | 7.7 s       | 39x      | identical       |
+| starved            | 375.7 s (140 events/s)            | —           | —        | identical       |
+| loaded             | 8.2–10.9 s                        | 4.24–4.37 s | 1.9–2.5x | identical       |
+| quiet              | 5.4 s (9,700 events/s, p99 13 ms) | —           | —        | identical       |
+| committed baseline | 3.7 s (14,168 events/s)           | —           | —        | identical       |
 
 Wall clock spanned two orders of magnitude on one machine within one hour. CPU
 time held at ~4.2 s, stable to under 3%. The replay digests were byte-identical
@@ -35,7 +35,7 @@ wall-clock spread on the same machine in the same hour; CPU starvation can, and
 did.
 
 Two further facts confirm the attribution. The reviewer's own control — a
-worktree at the pre-fix baseline `efc8e42` — failed *identically*, which is what
+worktree at the pre-fix baseline `efc8e42` — failed _identically_, which is what
 happens when both runs are starved by the same contention, not evidence of a
 stale anchor. And `npm run test:stress`, run on the same machine at the same
 moment, passed: it costs ~1.8 s against a 30 s threshold (16x headroom) where

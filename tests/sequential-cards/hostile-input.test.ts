@@ -151,11 +151,7 @@ describe('sequential-cards: hostile input', () => {
     }
     // A snapshot for another definition never restores, however well sealed.
     expect(() =>
-      CardsBook.restore(
-        { ...definition, id: 'someone-else-v1' },
-        JSON.stringify(snapshot),
-        null,
-      ),
+      CardsBook.restore({ ...definition, id: 'someone-else-v1' }, JSON.stringify(snapshot), null),
     ).toThrowError(expect.objectContaining({ code: 'DEFINITION_MISMATCH' }));
     expect(cardsFingerprint(definition)).toMatch(/^[0-9a-f]{64}$/u);
   });

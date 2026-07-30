@@ -300,6 +300,15 @@ const elapsedMs = performance.now() - started;
 const heapDeltaBytes = Math.max(0, process.memoryUsage().heapUsed - heapStart);
 const latency = latencySummary(latencies);
 const thresholds = {
+  // NOTE, and an inconsistency worth naming rather than hiding: these two are
+  // absolute wall-clock ceilings, which is exactly the design ADR 0012 removed
+  // from the benchmark gate for measuring the machine rather than the engine.
+  // They survive here because this run's real gate is `moduleDigests` — a
+  // byte-for-byte replay anchor that no amount of contention moves — and these
+  // ceilings are a coarse "something is catastrophically wrong" backstop around
+  // it, sized with wide headroom rather than as a performance budget. They are
+  // load-fragile all the same, and the same CPU-cost treatment should replace
+  // them once a baseline can be captured on a quiet machine.
   elapsedMs: 30_000,
   p99Ms: 100,
   heapDeltaBytes: 256 * 1024 * 1024,

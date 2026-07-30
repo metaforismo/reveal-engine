@@ -292,16 +292,12 @@ describe('frozen permutation wire fixtures', () => {
     // Re-sealed, so the refusal is on the schema and not on the checksum.
     expect(() =>
       PermutationBook.restore(frozenPermutationGame, reseal(snapshot), null),
-    ).toThrowError(
-      expect.objectContaining({ code: 'UNSUPPORTED_VERSION', path: '$.schema' }),
-    );
+    ).toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_VERSION', path: '$.schema' }));
     // And adding the missing field back does not make it a v2 snapshot: the
     // schema tag is the decision, not the field list.
     const dressed = { ...snapshot, binding: (round.snapshot as { binding: unknown }).binding };
     expect(() =>
       PermutationBook.restore(frozenPermutationGame, reseal(dressed), null),
-    ).toThrowError(
-      expect.objectContaining({ code: 'UNSUPPORTED_VERSION' }),
-    );
+    ).toThrowError(expect.objectContaining({ code: 'UNSUPPORTED_VERSION' }));
   });
 });

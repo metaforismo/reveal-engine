@@ -463,14 +463,9 @@ describe('staged-survival oracle: three entities, two stages, enumerated exhaust
         }
         expect(book.liquidBalance).toBeLessThanOrEqual(ceiling);
         expect(
-          SurvivalBook.restore(
-            cappedTrial,
-            book.snapshot(),
-            book.publishedRound ?? null,
-          ).liquidBalance,
-        ).toBe(
-          book.liquidBalance,
-        );
+          SurvivalBook.restore(cappedTrial, book.snapshot(), book.publishedRound ?? null)
+            .liquidBalance,
+        ).toBe(book.liquidBalance);
       }
     }
     // Counted from the model rather than asserted, then pinned: the sweep is
@@ -540,11 +535,7 @@ describe('staged-survival oracle: three entities, two stages, enumerated exhaust
     // Three uncapped banks would have paid 10,800 against a 6,000 ceiling.
     expect(liquid).toBe(ceiling);
     expect(
-      SurvivalBook.restore(
-        cappedTrial,
-        book.snapshot(),
-        book.publishedRound ?? null,
-      ).liquidBalance,
+      SurvivalBook.restore(cappedTrial, book.snapshot(), book.publishedRound ?? null).liquidBalance,
     ).toBe(ceiling);
   });
 });

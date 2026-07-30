@@ -595,11 +595,7 @@ describe('shape (a)/(c): permutation truth, zero elimination, combinatorial payt
     );
     await book.settle('settle', transcript);
     const snapshot = orderingFixtureModule.book.snapshot(book) as Record<string, unknown>;
-    const restored = orderingFixtureModule.book.restore(
-      definition,
-      JSON.stringify(snapshot),
-      null,
-    );
+    const restored = orderingFixtureModule.book.restore(definition, JSON.stringify(snapshot), null);
     expect(orderingFixtureModule.book.snapshot(restored)).toEqual(snapshot);
     expect(restored.claims).toHaveLength(2);
     expect(restored.capBasisStake).toBe(125n);

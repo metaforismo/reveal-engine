@@ -588,8 +588,6 @@ describe('sequential-cards: the multi-position round book', () => {
             ((snapshot.settlement as { objectiveRank: number }).objectiveRank % 11) + 2,
         },
       },
-      // And a rewritten round identity, which is what pins the proof.
-      { roundId: 'somebody-elses-round' },
     ]) {
       const tampered = {
         ...snapshot,
@@ -597,12 +595,7 @@ describe('sequential-cards: the multi-position round book', () => {
         snapshotHash: snapshotHash({ ...snapshot, ...mutation, snapshotHash: undefined }),
       };
       expect(
-        () =>
-          CardsBook.restore(
-            definition,
-            JSON.stringify(tampered),
-            book.publishedRound ?? null,
-          ),
+        () => CardsBook.restore(definition, JSON.stringify(tampered), book.publishedRound ?? null),
         JSON.stringify(Object.keys(mutation)),
       ).toThrowError(
         expect.objectContaining({
@@ -610,6 +603,25 @@ describe('sequential-cards: the multi-position round book', () => {
         }),
       );
     }
+
+    // A rewritten round identity is what pins the proof, and it is now refused
+    // by the published-binding comparison before any re-derivation runs. Kept
+    // out of the loop above so that this stronger, earlier guard cannot silently
+    // absorb a case the deep checks are supposed to catch on their merits.
+    const repointed = {
+      ...snapshot,
+      roundId: 'somebody-elses-round',
+      snapshotHash: snapshotHash({
+        ...snapshot,
+        roundId: 'somebody-elses-round',
+        snapshotHash: undefined,
+      }),
+    };
+    expect(() =>
+      CardsBook.restore(definition, JSON.stringify(repointed), book.publishedRound ?? null),
+    ).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
+    );
   });
 
   it('re-derives the choice log a re-back moved, and refuses a rewritten one', async () => {
@@ -631,11 +643,7 @@ describe('sequential-cards: the multi-position round book', () => {
     expect(book.choices).toEqual([{ index: 0, kind: 'back', position: 2 }]);
     const snapshot = book.snapshot() as unknown as Record<string, unknown>;
     expect(
-      CardsBook.restore(
-        definition,
-        JSON.stringify(snapshot),
-        book.publishedRound ?? null,
-      ).choices,
+      CardsBook.restore(definition, JSON.stringify(snapshot), book.publishedRound ?? null).choices,
     ).toEqual(book.choices);
     // The log is rebuilt from the open receipt and the transform log, so a
     // rewritten one cannot survive even with the checksum recomputed over it.

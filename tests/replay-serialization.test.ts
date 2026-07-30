@@ -74,14 +74,8 @@ describe('snapshot, reconnect, and deterministic replay', () => {
       ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
     expect(() =>
-      RoundBook.restore(
-        constellationReference,
-        book.serialize(),
-        book.publishedRound ?? null,
-      ),
-    ).toThrowError(
-      expect.objectContaining({ code: 'ADAPTER_MISMATCH' }),
-    );
+      RoundBook.restore(constellationReference, book.serialize(), book.publishedRound ?? null),
+    ).toThrowError(expect.objectContaining({ code: 'ADAPTER_MISMATCH' }));
   });
 
   it('rejects unknown snapshot fields and malformed receipt wire values', async () => {

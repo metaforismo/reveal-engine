@@ -174,7 +174,6 @@ describe('sequential-cards: frozen wire fixtures', () => {
       { ...snapshot, capBasisStake: '999999' },
       { ...snapshot, terminal: false },
       { ...snapshot, ledgerRevision: 3 },
-      { ...snapshot, roundId: 'a-different-round' },
       { ...snapshot, decisions: [] },
       {
         ...snapshot,
@@ -200,6 +199,20 @@ describe('sequential-cards: frozen wire fixtures', () => {
         () => CardsBook.restore(frozenCardsDefinition, reseal(tampered), binding),
         JSON.stringify(tampered).slice(0, 120),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_SNAPSHOT' }));
+
+    // Re-pointing the round is refused earlier and by a different guard: the
+    // published binding is compared before anything is re-derived, so this one
+    // never reaches the merits. Asserted separately rather than folded into the
+    // list above, so neither claim can quietly start standing in for the other.
+    expect(() =>
+      CardsBook.restore(
+        frozenCardsDefinition,
+        reseal({ ...snapshot, roundId: 'a-different-round' }),
+        binding,
+      ),
+    ).toThrowError(
+      expect.objectContaining({ code: 'COMMITMENT_MISMATCH', path: '$.expectedBinding' }),
+    );
   });
 
   it('also rejects an unsealed mutation, by the checksum', () => {

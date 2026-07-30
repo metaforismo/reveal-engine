@@ -28,8 +28,10 @@ import {
 } from '../src/modules/staged-survival/index.js';
 import {
   assertBenchmarkArtifact,
+  assertBenchmarkBaseline,
   compareBenchmarkDrift,
   compareModuleDigests,
+  hasCpuAnchor,
   latencySummary,
   runtime,
   type BenchmarkArtifact,
@@ -42,19 +44,50 @@ const updateBaseline = process.argv.includes('--update-baseline');
 if (updateBaseline && outputPath !== BASELINE_PATH)
   throw new Error(`--update-baseline requires --output ${BASELINE_PATH}`);
 
-let baseline: BenchmarkArtifact | undefined;
+/**
+ * A baseline is only worth comparing against if it was recorded on a machine
+ * that was actually free to run it. Wall clock over CPU time is the cheapest
+ * honest test of that: a process that got a core to itself lands near 1, and one
+ * that spent its life descheduled lands far above it. Recording a starved run as
+ * the baseline is the specific mistake this guard exists to make impossible —
+ * it inflates `cpuMs` too, so the next honest run reads as a 50% improvement and
+ * the gate fires backwards.
+ */
+const MAX_CAPTURE_WALL_TO_CPU = 1.5;
+
+/** What a baseline is trusted for; the CPU anchor is optional by schema age. */
+type BenchmarkBaseline = Pick<
+  BenchmarkArtifact,
+  'schema' | 'evidenceClass' | 'samples' | 'events' | 'moduleDigests' | 'status'
+> &
+  Partial<Pick<BenchmarkArtifact, 'cpuMs' | 'eventsPerCpuSecond' | 'thresholds'>>;
+
+let baseline: BenchmarkBaseline | undefined;
 if (!updateBaseline) {
   if (!existsSync(BASELINE_PATH))
     throw new Error(
-      `Benchmark baseline is missing at ${BASELINE_PATH}. Run npm run artifacts:update.`,
+      `Benchmark baseline is missing at ${BASELINE_PATH}. Run npm run artifacts:update on an otherwise idle machine.`,
     );
   const value: unknown = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
-  assertBenchmarkArtifact(value);
+  // A baseline predating ADR 0012 carries no `cpuMs`, so it cannot anchor the
+  // CPU drift band. That is a reason to gate on less, not a reason to brick the
+  // gate: the replay digests and the workload identity are the parts that
+  // actually catch a regression, and they are present in every schema version.
+  // Refusing to run at all would make `npm run verify` unreachable until
+  // someone finds a quiet machine — which is how a gate gets deleted rather
+  // than fixed.
+  assertBenchmarkBaseline(value);
   if (value.status !== 'pass')
     throw new Error(
-      `Benchmark baseline at ${BASELINE_PATH} is not a passing baseline. Run npm run artifacts:update.`,
+      `Benchmark baseline at ${BASELINE_PATH} is not a passing baseline. Run npm run artifacts:update on an otherwise idle machine.`,
     );
   baseline = value;
+  if (!hasCpuAnchor(baseline))
+    process.stderr.write(
+      `notice: the benchmark baseline at ${BASELINE_PATH} predates the CPU-cost gate and carries ` +
+        'no cpuMs, so this run gates on replay digests and workload identity only. Re-take it ' +
+        'with npm run artifacts:update on an otherwise idle machine to restore the drift band.\n',
+    );
 }
 
 const games = [blackSignalReference, constellationReference, binaryBeaconReference];
@@ -135,7 +168,14 @@ const cpuMs = (cpuUsage.user + cpuUsage.system) / 1000;
 const latency = latencySummary(latencies);
 const eventsPerSecond = events / (elapsedMs / 1000);
 const eventsPerCpuSecond = events / (cpuMs / 1000);
-const thresholds = baseline?.thresholds ?? { maxRelativeDrift: 0.2 };
+// A pre-ADR-0012 baseline carries the old absolute thresholds, which are not
+// this artifact's shape and are not what the gate judges any more. Take the
+// band from the baseline only when it is actually a drift band.
+const baselineBand = baseline?.thresholds;
+const thresholds =
+  baselineBand && typeof baselineBand.maxRelativeDrift === 'number'
+    ? baselineBand
+    : { maxRelativeDrift: 0.2 };
 const draft = {
   schema: 'reveal-engine/benchmark-v3',
   evidenceClass: 'synthetic-local-or-ci',
@@ -165,12 +205,25 @@ if (baseline !== undefined) {
         `current ${draft.samples} samples / ${draft.events} events`,
     );
   failures.push(...compareModuleDigests(baseline.moduleDigests, draft.moduleDigests));
-  failures.push(...compareBenchmarkDrift(baseline, draft, thresholds.maxRelativeDrift));
+  // The drift band needs a CPU anchor on both sides; without one the digests
+  // and the workload check above are what this run can honestly assert.
+  if (hasCpuAnchor(baseline) && hasCpuAnchor(draft))
+    failures.push(...compareBenchmarkDrift(baseline, draft, thresholds.maxRelativeDrift));
 }
 const status = failures.length === 0 ? 'pass' : 'fail';
 const artifact: BenchmarkArtifact = { ...draft, status };
 assertBenchmarkArtifact(artifact);
-if (outputPath) {
+const wallToCpu = elapsedMs / cpuMs;
+if (updateBaseline && wallToCpu > MAX_CAPTURE_WALL_TO_CPU) {
+  console.error(
+    `Refusing to record a baseline from a starved run: wall clock ${elapsedMs.toFixed(0)} ms ` +
+      `against ${cpuMs.toFixed(0)} ms of CPU is a ${wallToCpu.toFixed(1)}x ratio, over the ` +
+      `${MAX_CAPTURE_WALL_TO_CPU}x ceiling. Contention inflates cpuMs as well as wall clock, so ` +
+      "this run would enshrine the machine's load as the engine's cost. Close what else is " +
+      'running and take the baseline again.',
+  );
+  process.exitCode = 1;
+} else if (outputPath) {
   mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, `${JSON.stringify(artifact, null, 2)}\n`);
 }
